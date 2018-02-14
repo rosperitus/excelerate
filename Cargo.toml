@@ -1,0 +1,38 @@
+[package]
+name = "excelerate"
+version = "0.1.0"
+edition = "2024"
+description = "Read, write and recalculate spreadsheets: xlsx, xls, ods, csv, html, and a 501-function formula engine"
+license = "MIT"
+repository = "https://github.com/excelerate-rs/excelerate"
+homepage = "https://github.com/excelerate-rs/excelerate"
+documentation = "https://docs.rs/excelerate"
+readme = "README.md"
+keywords = ["xlsx", "spreadsheet", "excel", "ods", "formula"]
+categories = ["parser-implementations", "encoding", "wasm"]
+
+[features]
+default = ["formulas", "write"]
+# The formula engine: parser, evaluator and the 443 builtins. The bulk of the
+# crate by volume, and what a reader-only build drops first.
+formulas = []
+# Writing files back out, in every format that has a writer.
+write = []
+
+[dependencies]
+# Already in the tree under `zip`; naming it here is what lets the Gnumeric
+# reader gunzip its one XML part.
+flate2 = "1.1.9"
+quick-xml = "0.42.0"
+thiserror = "2.0.20"
+zip = "8.6.0"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"

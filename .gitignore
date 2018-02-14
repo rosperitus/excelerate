@@ -1,0 +1,11 @@
+/target
+
+# Reference implementations, read-only and not ours to carry.
+/PhpSpreadsheet/
+/excelize-master/
+
+# Output of the example converters.
+/tests/test1_out*.xlsx
+
+# Third-party sources kept alongside for comparison (BetterOffice).
+tmp/
