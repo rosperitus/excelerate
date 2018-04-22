@@ -16,7 +16,7 @@ pub mod model;
 // pub mod progress;
 // pub mod reader;
 // pub mod shared;
-// pub mod style;
+pub mod style;
 // #[cfg(feature = "write")]
 // pub mod writer;
 
