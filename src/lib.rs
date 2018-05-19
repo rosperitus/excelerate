@@ -14,7 +14,7 @@ pub use error::{CellError, Error, Result};
 
 pub mod model;
 // pub mod progress;
-// pub mod reader;
+pub mod reader;
 // pub mod shared;
 pub mod style;
 // #[cfg(feature = "write")]
