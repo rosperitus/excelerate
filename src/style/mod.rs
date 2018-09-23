@@ -853,4 +853,4 @@ mod tests {
         assert!((f.size_points() - 11.5).abs() < f64::EPSILON);
     }
 }
-// pub mod format;
+pub mod format;
