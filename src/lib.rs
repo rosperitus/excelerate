@@ -17,8 +17,8 @@ pub mod model;
 pub mod reader;
 pub mod shared;
 pub mod style;
-// #[cfg(feature = "write")]
-// pub mod writer;
+#[cfg(feature = "write")]
+pub mod writer;
 
 // #[cfg(target_arch = "wasm32")]
 // pub mod wasm;
