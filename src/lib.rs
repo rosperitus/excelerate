@@ -6,8 +6,8 @@
 pub mod coordinate;
 // pub mod edit;
 pub mod error;
-// #[cfg(feature = "formulas")]
-// pub mod formula;
+#[cfg(feature = "formulas")]
+pub mod formula;
 
 pub use coordinate::{CellRef, Col, Range, Row};
 pub use error::{CellError, Error, Result};
