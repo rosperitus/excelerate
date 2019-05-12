@@ -9,7 +9,7 @@
 
 // pub mod custom;
 pub mod eval;
-// pub mod functions;
+pub mod functions;
 pub mod parser;
 pub mod value;
 
