@@ -25,9 +25,9 @@
 // pub mod engineering;
 // pub mod ets;
 // pub mod financial;
-// pub mod info;
+pub mod info;
 // pub mod lambda;
-// pub mod logical;
+pub mod logical;
 // pub mod lookup;
 pub mod math;
 // pub mod regression;
@@ -176,27 +176,27 @@ fn lazy(name: &str) -> Option<Lazy> {
     Some(match name {
 //         "BYCOL" => lambda::bycol,
 //         "BYROW" => lambda::byrow,
-//         "IF" => logical::if_,
+        "IF" => logical::if_,
 //         "LAMBDA" => lambda::lambda,
 //         "LET" => lambda::let_,
 //         "MAKEARRAY" => lambda::makearray,
 //         "MAP" => lambda::map,
 //         "REDUCE" => lambda::reduce,
 //         "SCAN" => lambda::scan,
-//         "IFERROR" => logical::iferror,
-//         "IFNA" => logical::ifna,
-//         "IFS" => logical::ifs,
-//         "SWITCH" => logical::switch,
+        "IFERROR" => logical::iferror,
+        "IFNA" => logical::ifna,
+        "IFS" => logical::ifs,
+        "SWITCH" => logical::switch,
         "SUBTOTAL" => math::subtotal,
         "AGGREGATE" => math::aggregate,
 //         "AREAS" => lookup::areas,
-//         "ISREF" => info::isref,
-//         "ISOMITTED" => info::isomitted,
-//         "ISFORMULA" => info::isformula,
-//         "FORMULATEXT" => info::formulatext,
-//         "SHEET" => info::sheet,
-//         "SHEETS" => info::sheets,
-//         "CELL" => info::cell_info,
+        "ISREF" => info::isref,
+        "ISOMITTED" => info::isomitted,
+        "ISFORMULA" => info::isformula,
+        "FORMULATEXT" => info::formulatext,
+        "SHEET" => info::sheet,
+        "SHEETS" => info::sheets,
+        "CELL" => info::cell_info,
 //         "ANCHORARRAY" => lookup::anchorarray,
 //         "INDIRECT" => lookup::indirect,
 //         "SINGLE" => lookup::single,
@@ -629,12 +629,12 @@ fn eager_distributions(name: &str) -> Option<Eager> {
 fn eager_logic_text(name: &str) -> Option<Eager> {
     Some(match name {
         // Logic.
-//         "AND" => logical::and,
-//         "FALSE" => logical::false_,
-//         "NOT" => logical::not,
-//         "OR" => logical::or,
-//         "TRUE" => logical::true_,
-//         "XOR" => logical::xor,
+        "AND" => logical::and,
+        "FALSE" => logical::false_,
+        "NOT" => logical::not,
+        "OR" => logical::or,
+        "TRUE" => logical::true_,
+        "XOR" => logical::xor,
         // Text.
 //         "CONCAT" | "CONCATENATE" => text::concatenate,
 //         "EXACT" => text::exact,
@@ -675,17 +675,17 @@ fn eager_logic_text(name: &str) -> Option<Eager> {
 //         "NUMBERVALUE" => text::numbervalue,
 //         "FIXED" => text::fixed,
         // Information.
-//         "ISBLANK" => info::isblank,
-//         "ISERR" => info::iserr,
-//         "ISERROR" => info::iserror,
-//         "ISLOGICAL" => info::islogical,
-//         "ISNA" => info::isna,
-//         "ISNONTEXT" => info::isnontext,
-//         "ISNUMBER" => info::isnumber,
-//         "ISTEXT" => info::istext,
-//         "N" => info::n,
-//         "NA" => info::na,
-//         "TYPE" => info::type_,
+        "ISBLANK" => info::isblank,
+        "ISERR" => info::iserr,
+        "ISERROR" => info::iserror,
+        "ISLOGICAL" => info::islogical,
+        "ISNA" => info::isna,
+        "ISNONTEXT" => info::isnontext,
+        "ISNUMBER" => info::isnumber,
+        "ISTEXT" => info::istext,
+        "N" => info::n,
+        "NA" => info::na,
+        "TYPE" => info::type_,
         _ => return None,
     })
 }
@@ -715,9 +715,9 @@ fn eager_lookup(name: &str) -> Option<Eager> {
 //         "XMATCH" => lookup::xmatch,
 //         "LOOKUP" => lookup::lookup_vector,
         // Information.
-//         "ISEVEN" => info::iseven,
-//         "ISODD" => info::isodd,
-//         "ERROR.TYPE" => info::error_type,
+        "ISEVEN" => info::iseven,
+        "ISODD" => info::isodd,
+        "ERROR.TYPE" => info::error_type,
 //         "HLOOKUP" => lookup::hlookup,
 //         "INDEX" => lookup::index,
 //         "MATCH" => lookup::match_,
