@@ -24,7 +24,7 @@ pub mod date;
 pub mod distributions;
 // pub mod engineering;
 // pub mod ets;
-// pub mod financial;
+pub mod financial;
 pub mod info;
 // pub mod lambda;
 pub mod logical;
@@ -214,7 +214,7 @@ fn lazy(name: &str) -> Option<Lazy> {
 /// Functions that work in serial dates, and so need the workbook's epoch.
 fn dated(name: &str) -> Option<Dated> {
     Some(match name {
-//         "AMORDEGRC" => financial::amordegrc,
+        "AMORDEGRC" => financial::amordegrc,
 //         "COUPDAYBS" => securities::coupdaybs,
 //         "COUPDAYS" => securities::coupdays,
 //         "COUPDAYSNC" => securities::coupdaysnc,
@@ -241,7 +241,7 @@ fn dated(name: &str) -> Option<Dated> {
 //         "YIELD" => securities::yield_,
 //         "YIELDDISC" => securities::yielddisc,
 //         "YIELDMAT" => securities::yieldmat,
-//         "AMORLINC" => financial::amorlinc,
+        "AMORLINC" => financial::amorlinc,
         "DATE" => date::date,
         "DATEVALUE" => date::datevalue,
         "TIMEVALUE" => date::timevalue,
@@ -389,33 +389,33 @@ fn eager_math(name: &str) -> Option<Eager> {
 fn eager_finance(name: &str) -> Option<Eager> {
     Some(match name {
         // Finance.
-//         "FV" => financial::fv,
-//         "PV" => financial::pv,
-//         "PMT" => financial::pmt,
-//         "NPER" => financial::nper,
-//         "RATE" => financial::rate,
-//         "IPMT" => financial::ipmt,
-//         "PPMT" => financial::ppmt,
-//         "CUMIPMT" => financial::cumipmt,
-//         "CUMPRINC" => financial::cumprinc,
-//         "ISPMT" => financial::ispmt,
-//         "NPV" => financial::npv,
-//         "IRR" => financial::irr,
-//         "MIRR" => financial::mirr,
-//         "XNPV" => financial::xnpv,
-//         "XIRR" => financial::xirr,
-//         "FVSCHEDULE" => financial::fvschedule,
-//         "SLN" => financial::sln,
-//         "SYD" => financial::syd,
-//         "DB" => financial::db,
-//         "DDB" => financial::ddb,
-//         "VDB" => financial::vdb,
-//         "EFFECT" => financial::effect,
-//         "NOMINAL" => financial::nominal,
-//         "RRI" => financial::rri,
-//         "PDURATION" => financial::pduration,
-//         "DOLLARDE" => financial::dollarde,
-//         "DOLLARFR" => financial::dollarfr,
+        "FV" => financial::fv,
+        "PV" => financial::pv,
+        "PMT" => financial::pmt,
+        "NPER" => financial::nper,
+        "RATE" => financial::rate,
+        "IPMT" => financial::ipmt,
+        "PPMT" => financial::ppmt,
+        "CUMIPMT" => financial::cumipmt,
+        "CUMPRINC" => financial::cumprinc,
+        "ISPMT" => financial::ispmt,
+        "NPV" => financial::npv,
+        "IRR" => financial::irr,
+        "MIRR" => financial::mirr,
+        "XNPV" => financial::xnpv,
+        "XIRR" => financial::xirr,
+        "FVSCHEDULE" => financial::fvschedule,
+        "SLN" => financial::sln,
+        "SYD" => financial::syd,
+        "DB" => financial::db,
+        "DDB" => financial::ddb,
+        "VDB" => financial::vdb,
+        "EFFECT" => financial::effect,
+        "NOMINAL" => financial::nominal,
+        "RRI" => financial::rri,
+        "PDURATION" => financial::pduration,
+        "DOLLARDE" => financial::dollarde,
+        "DOLLARFR" => financial::dollarfr,
         _ => return None,
     })
 }
