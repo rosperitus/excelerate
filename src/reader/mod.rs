@@ -1,7 +1,7 @@
 //! Readers for spreadsheet file formats.
 
 // pub(crate) mod chart;
-// pub mod csv;
+pub mod csv;
 // pub mod detect;
 // pub mod gnumeric;
 // pub mod html;
@@ -13,7 +13,7 @@ pub mod xlsx;
 // pub mod xml2003;
 pub(crate) mod zipxml;
 
-// pub use csv::{CsvOptions, FormattedNumbers, read_csv, read_csv_str, read_csv_with};
+pub use csv::{CsvOptions, FormattedNumbers, read_csv, read_csv_str, read_csv_with};
 // pub use detect::{
 //     Format, format_of, read, read_bytes, read_bytes_limited, read_bytes_limited_with,
 // };
