@@ -5,7 +5,7 @@ pub mod csv;
 // pub mod detect;
 // pub mod gnumeric;
 // pub mod html;
-// pub mod ods;
+pub mod ods;
 // pub(crate) mod ole;
 // pub mod slk;
 // pub mod xls;
@@ -19,7 +19,7 @@ pub use csv::{CsvOptions, FormattedNumbers, read_csv, read_csv_str, read_csv_wit
 // };
 // pub use gnumeric::{read_gnumeric, read_gnumeric_from, read_gnumeric_str};
 // pub use html::{read_html, read_html_str};
-// pub use ods::{read_ods, read_ods_from};
+pub use ods::{read_ods, read_ods_from};
 // pub use slk::{read_slk, read_slk_str};
 // pub use xls::{read_xls, read_xls_from};
 pub use xlsx::read_xlsx;

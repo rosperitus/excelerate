@@ -2,7 +2,7 @@
 
 pub mod date;
 pub mod date_parse;
-// pub mod odf_formula;
+pub mod odf_formula;
 pub mod special;
 
 /// Seconds since the Unix epoch, as the clock of whatever platform this runs
