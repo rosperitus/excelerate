@@ -10,7 +10,7 @@ pub(crate) mod ole;
 pub mod slk;
 pub mod xls;
 pub mod xlsx;
-// pub mod xml2003;
+pub mod xml2003;
 pub(crate) mod zipxml;
 
 pub use csv::{CsvOptions, FormattedNumbers, read_csv, read_csv_str, read_csv_with};
@@ -23,4 +23,4 @@ pub use ods::{read_ods, read_ods_from};
 pub use slk::{read_slk, read_slk_str};
 pub use xls::{read_xls, read_xls_from};
 pub use xlsx::read_xlsx;
-// pub use xml2003::{read_xml2003, read_xml2003_str};
+pub use xml2003::{read_xml2003, read_xml2003_str};
