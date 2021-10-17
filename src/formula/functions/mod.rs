@@ -19,7 +19,7 @@
     reason = "a `#[must_use]` on each of hundreds of table entries says nothing"
 )]
 
-// pub mod database;
+pub mod database;
 pub mod date;
 pub mod distributions;
 pub mod engineering;
@@ -498,18 +498,18 @@ fn eager_stats(name: &str) -> Option<Eager> {
 fn eager_engineering(name: &str) -> Option<Eager> {
     Some(match name {
         // Databases.
-//         "DSUM" => database::dsum,
-//         "DPRODUCT" => database::dproduct,
-//         "DAVERAGE" => database::daverage,
-//         "DMAX" => database::dmax,
-//         "DMIN" => database::dmin,
-//         "DCOUNT" => database::dcount,
-//         "DCOUNTA" => database::dcounta,
-//         "DSTDEV" => database::dstdev,
-//         "DSTDEVP" => database::dstdevp,
-//         "DVAR" => database::dvar,
-//         "DVARP" => database::dvarp,
-//         "DGET" => database::dget,
+        "DSUM" => database::dsum,
+        "DPRODUCT" => database::dproduct,
+        "DAVERAGE" => database::daverage,
+        "DMAX" => database::dmax,
+        "DMIN" => database::dmin,
+        "DCOUNT" => database::dcount,
+        "DCOUNTA" => database::dcounta,
+        "DSTDEV" => database::dstdev,
+        "DSTDEVP" => database::dstdevp,
+        "DVAR" => database::dvar,
+        "DVARP" => database::dvarp,
+        "DGET" => database::dget,
         // Engineering: number bases, bits, steps and the error function.
         "BIN2DEC" => engineering::bin2dec,
         "OCT2DEC" => engineering::oct2dec,
