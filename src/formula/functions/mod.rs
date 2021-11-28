@@ -30,7 +30,7 @@ pub mod info;
 pub mod logical;
 pub mod lookup;
 pub mod math;
-// pub mod regression;
+pub mod regression;
 // pub mod securities;
 pub mod stats;
 pub mod text;
@@ -572,10 +572,10 @@ fn eager_engineering(name: &str) -> Option<Eager> {
 fn eager_distributions(name: &str) -> Option<Eager> {
     Some(match name {
         // Least squares.
-//         "LINEST" => regression::linest,
-//         "LOGEST" => regression::logest,
-//         "TREND" => regression::trend,
-//         "GROWTH" => regression::growth,
+        "LINEST" => regression::linest,
+        "LOGEST" => regression::logest,
+        "TREND" => regression::trend,
+        "GROWTH" => regression::growth,
         // Tests of a hypothesis.
         "CHISQ.TEST" | "CHITEST" => distributions::chisq_test,
         "F.TEST" | "FTEST" => distributions::f_test,
