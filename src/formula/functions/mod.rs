@@ -23,7 +23,7 @@ pub mod database;
 pub mod date;
 pub mod distributions;
 pub mod engineering;
-// pub mod ets;
+pub mod ets;
 pub mod financial;
 pub mod info;
 // pub mod lambda;
@@ -469,10 +469,10 @@ fn eager_stats(name: &str) -> Option<Eager> {
         "INTERCEPT" => stats::intercept,
         "STEYX" => stats::steyx,
         "FORECAST" | "FORECAST.LINEAR" => stats::forecast,
-//         "FORECAST.ETS" => ets::forecast_ets,
-//         "FORECAST.ETS.CONFINT" => ets::forecast_ets_confint,
-//         "FORECAST.ETS.SEASONALITY" => ets::forecast_ets_seasonality,
-//         "FORECAST.ETS.STAT" => ets::forecast_ets_stat,
+        "FORECAST.ETS" => ets::forecast_ets,
+        "FORECAST.ETS.CONFINT" => ets::forecast_ets_confint,
+        "FORECAST.ETS.SEASONALITY" => ets::forecast_ets_seasonality,
+        "FORECAST.ETS.STAT" => ets::forecast_ets_stat,
         "FISHER" => stats::fisher,
         "FISHERINV" => stats::fisherinv,
         "PHI" => stats::phi,
