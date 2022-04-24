@@ -26,7 +26,7 @@ pub mod engineering;
 pub mod ets;
 pub mod financial;
 pub mod info;
-// pub mod lambda;
+pub mod lambda;
 pub mod logical;
 pub mod lookup;
 pub mod math;
@@ -174,15 +174,15 @@ pub fn is_known(name: &str) -> bool {
 /// Functions that choose what to evaluate for themselves.
 fn lazy(name: &str) -> Option<Lazy> {
     Some(match name {
-//         "BYCOL" => lambda::bycol,
-//         "BYROW" => lambda::byrow,
+        "BYCOL" => lambda::bycol,
+        "BYROW" => lambda::byrow,
         "IF" => logical::if_,
-//         "LAMBDA" => lambda::lambda,
-//         "LET" => lambda::let_,
-//         "MAKEARRAY" => lambda::makearray,
-//         "MAP" => lambda::map,
-//         "REDUCE" => lambda::reduce,
-//         "SCAN" => lambda::scan,
+        "LAMBDA" => lambda::lambda,
+        "LET" => lambda::let_,
+        "MAKEARRAY" => lambda::makearray,
+        "MAP" => lambda::map,
+        "REDUCE" => lambda::reduce,
+        "SCAN" => lambda::scan,
         "IFERROR" => logical::iferror,
         "IFNA" => logical::ifna,
         "IFS" => logical::ifs,
