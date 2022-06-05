@@ -34,7 +34,7 @@ pub mod regression;
 pub mod securities;
 pub mod stats;
 pub mod text;
-// pub mod web;
+pub mod web;
 
 use crate::error::CellError;
 use crate::formula::eval::{Engine, Origin};
@@ -660,7 +660,7 @@ fn eager_logic_text(name: &str) -> Option<Eager> {
         "TEXTSPLIT" => text::textsplit,
         "ARRAYTOTEXT" => text::arraytotext,
         "VALUETOTEXT" => text::valuetotext,
-//         "ENCODEURL" => web::encodeurl,
+        "ENCODEURL" => web::encodeurl,
         "PROPER" => text::proper,
         "CLEAN" => text::clean,
         "T" => text::t,
