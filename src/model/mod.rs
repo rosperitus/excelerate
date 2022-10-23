@@ -9,7 +9,7 @@
 // pub mod autofilter;
 // pub mod chart;
 // pub mod pivot;
-// pub mod protection;
+pub mod protection;
 // pub mod table;
 
 use crate::coordinate::{CellRef, Col, Range, Row};
@@ -21,7 +21,7 @@ use std::collections::BTreeMap;
 // pub use autofilter::{
 //     AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator,
 // };
-// pub use protection::{PasswordHash, ProtectedRange, SheetProtection, WorkbookProtection};
+pub use protection::{PasswordHash, ProtectedRange, SheetProtection, WorkbookProtection};
 
 /// Longest string a cell can hold (`DataType::MAX_STRING_LENGTH`).
 pub const MAX_STRING_LENGTH: usize = 32_767;
