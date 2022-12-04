@@ -6,7 +6,7 @@
 //! sheet context takes it as a parameter. That removes every reason to reach
 //! for `Rc<RefCell<_>>`.
 
-// pub mod autofilter;
+pub mod autofilter;
 // pub mod chart;
 // pub mod pivot;
 pub mod protection;
@@ -18,9 +18,9 @@ use crate::shared::date::Epoch;
 use crate::style::{Color, DiffFont, StyleId, StyleTable};
 use std::collections::BTreeMap;
 
-// pub use autofilter::{
-//     AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator,
-// };
+pub use autofilter::{
+    AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator,
+};
 pub use protection::{PasswordHash, ProtectedRange, SheetProtection, WorkbookProtection};
 
 /// Longest string a cell can hold (`DataType::MAX_STRING_LENGTH`).
