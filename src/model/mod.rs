@@ -10,7 +10,7 @@ pub mod autofilter;
 // pub mod chart;
 // pub mod pivot;
 pub mod protection;
-// pub mod table;
+pub mod table;
 
 use crate::coordinate::{CellRef, Col, Range, Row};
 use crate::error::{CellError, Error, Result};
