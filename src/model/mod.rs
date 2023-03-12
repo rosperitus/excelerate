@@ -8,7 +8,7 @@
 
 pub mod autofilter;
 // pub mod chart;
-// pub mod pivot;
+pub mod pivot;
 pub mod protection;
 pub mod table;
 
