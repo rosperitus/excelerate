@@ -1,0 +1,35 @@
+<?xml version="1.0"?>
+<?mso-application progid="Excel.Sheet"?>
+<Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
+ xmlns:o="urn:schemas-microsoft-com:office:office"
+ xmlns:x="urn:schemas-microsoft-com:office:excel"
+ xmlns:ss="urn:schemas-microsoft-com:office:spreadsheet">
+ <Styles>
+  <Style ss:ID="Default" ss:Name="Normal"><Font ss:FontName="Calibri" ss:Size="11"/></Style>
+  <Style ss:ID="s21"><NumberFormat ss:Format="0.00"/><Font ss:Bold="1" ss:Color="#FF0000"/>
+   <Alignment ss:Horizontal="Center" ss:Vertical="Top" ss:WrapText="1"/></Style>
+ </Styles>
+ <Worksheet ss:Name="Data">
+  <Table>
+   <Column ss:Width="96" ss:Span="1"/>
+   <Row ss:Height="20">
+    <Cell><Data ss:Type="String">plain</Data></Cell>
+    <Cell><Data ss:Type="String">&#x43F;&#x440;&#x438;&#x432;&#x435;&#x442; &amp; &lt;xml&gt;</Data></Cell>
+   </Row>
+   <Row>
+    <Cell ss:StyleID="s21"><Data ss:Type="Number">1234.5</Data></Cell>
+    <Cell><Data ss:Type="Boolean">1</Data></Cell>
+    <Cell><Data ss:Type="Error">#DIV/0!</Data></Cell>
+   </Row>
+   <Row>
+    <Cell ss:Index="2" ss:Formula="=R[-1]C[-1]*2"><Data ss:Type="Number">2469</Data></Cell>
+   </Row>
+   <Row>
+    <Cell ss:MergeAcross="1" ss:MergeDown="1"><Data ss:Type="String">merged</Data></Cell>
+   </Row>
+  </Table>
+ </Worksheet>
+ <Worksheet ss:Name="Second">
+  <Table><Row><Cell><Data ss:Type="Number">7</Data></Cell></Row></Table>
+ </Worksheet>
+</Workbook>

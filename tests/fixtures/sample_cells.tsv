@@ -1,0 +1,15 @@
+# sheet_index	sheet_title	coord	type	value
+0	Data	A1	s	text
+0	Data	B1	n	42
+0	Data	C1	b	TRUE
+0	Data	D1	f	=1+1
+0	Data	E1	e	#DIV/0!
+0	Data	F1	n	45658
+0	Data	A2	s	multi\nline
+0	Data	B2	n	-3.5
+0	Data	C2	b	FALSE
+0	Data	D2	f	=B1*2
+0	Data	A3	s	кириллица & <xml>
+0	Data	B3	n	0
+0	Data	A5	null	
+1	Second	A1	s	other sheet

@@ -1,0 +1,7 @@
+# coord	font_name	font_size	bold	italic	underline	strike	font_argb	font_theme	fill_type	fill_argb	border_left	border_right	border_top	border_bottom	border_bottom_argb	align_h	align_v	wrap	indent	rotation	locked	hidden
+A1	Arial	14	1	0	none	0	FFFF0000	-1	solid	FFFFFF00	none	none	none	none	FF000000	general	bottom	0	0	0	inherit	inherit
+A2	Calibri	11	0	1	double	1	FF000000	-1	none	FFFFFFFF	none	none	none	none	FF000000	general	bottom	0	0	0	inherit	inherit
+A3	Calibri	11	0	0	none	0	FF000000	-1	none	FFFFFFFF	thin	medium	dashed	double	FF0000FF	general	bottom	0	0	0	inherit	inherit
+A4	Calibri	11	0	0	none	0	FF000000	-1	none	FFFFFFFF	none	none	none	none	FF000000	center	top	1	0	45	inherit	inherit
+A5	Calibri	11	0	0	none	0	FF000000	-1	none	FFFFFFFF	none	none	none	none	FF000000	general	bottom	0	0	0	unprotected	protected
+A6	Calibri	11	0	0	none	0	FF4F81BD	4	none	FFFFFFFF	none	none	none	none	FF000000	general	bottom	0	0	0	inherit	inherit

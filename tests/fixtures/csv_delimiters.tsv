@@ -1,0 +1,15 @@
+# text	delimiter
+a,b,c\nd,e,f\n	,
+a;b;c\nd;e;f\n	;
+a\tb\tc\nd\te\tf\n	\t
+a|b|c\nd|e|f\n	|
+a:b:c\nd:e:f\n	:
+a b c\nd e f\n	 
+a~b~c\nd~e~f\n	~
+"a,b";c\n"d,e,f";g\n	;
+abc\ndef\n	,
+a,b;c\nd,e;f\n	,
+one\n	,
+	,
+a,b,c\n	,
+name;value\nx;1\ny;2\nz;3\n	;

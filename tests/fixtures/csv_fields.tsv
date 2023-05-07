@@ -1,0 +1,16 @@
+# record	field...
+a,b,c	a	b	c
+a,,c	a		c
+,,			
+"a","b"	a	b
+"a,b",c	a,b	c
+"say ""hi""",x	say "hi"	x
+"two\nlines",x	two\nlines	x
+a"b,c	a"b	c
+" leading","trailing "	 leading	trailing 
+a,"",b	a		b
+""""	"
+a,b\r	a	b
+x	x
+"unclosed,a	unclosed,a\n
+a,"b"c,d	a	bc	d
