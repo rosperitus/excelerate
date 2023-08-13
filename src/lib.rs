@@ -4,7 +4,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod coordinate;
-// pub mod edit;
+pub mod edit;
 pub mod error;
 #[cfg(feature = "formulas")]
 pub mod formula;
