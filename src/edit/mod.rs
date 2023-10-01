@@ -7,7 +7,7 @@
 //! protect a reference here: an absolute address names a cell, and inserting a
 //! row above that cell moves the cell.
 
-// mod anchor;
+mod anchor;
 // mod chart;
 
 use crate::coordinate::{
