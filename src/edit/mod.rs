@@ -8,7 +8,7 @@
 //! row above that cell moves the cell.
 
 mod anchor;
-// mod chart;
+mod chart;
 
 use crate::coordinate::{
     CellRef, Col, MAX_COL, MAX_ROW, Range, Row, parse_ref_at, scan_formula, scan_references,
