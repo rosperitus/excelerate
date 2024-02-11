@@ -1,0 +1,1066 @@
+//! Charts: what a chart draws, what it reads, and where it sits.
+//!
+//!
+//! A chart is two parts. The drawing of a sheet holds a frame — the anchor,
+//! the name — pointing at `xl/charts/chartN.xml`, and that part holds the
+//! chart itself: plots, their series, the axes, the title, the legend. Both
+//! halves land in one [`Chart`] on [`crate::model::Worksheet::charts`].
+//!
+//! **What is modelled and what is carried.** A chart part is mostly about
+//! looks: fills, line widths, fonts, label positions, effects, each in its own
+//! corner of `DrawingML`. The model names what a program asks of a chart —
+//! kind, series and the cells they read, axes and their scale, title, legend —
+//! and keeps everything else as the markup it was written in, in slots that
+//! say where it stood. A series edited through the model keeps its colour.
+//!
+//! **How it is written.** A chart the program did not touch goes back byte for
+//! byte, whatever the file held beyond the model. One that was changed is
+//! rendered from the model and its carried markup; one created in code gets
+//! the defaults Excel writes for a new chart. Which is which is decided by
+//! comparing the chart with what was read, so there is no dirty flag to
+//! forget.
+//!
+//! **`chartEx`** — waterfall, funnel, treemap, sunburst, histogram, box and
+//! whisker, region map — is a different schema from Office 2016 and is read
+//! into [`ChartEx`] on [`crate::model::Worksheet::extended_charts`], but not
+//! written from it: its parts travel whole.
+
+use crate::coordinate::{Col, Row};
+use crate::model::DefinedName;
+
+/// A chart on a sheet.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Chart {
+    /// The name the frame carries, which is what the selection pane shows.
+    pub name: String,
+    /// Where the chart sits on the sheet.
+    ///
+    /// A chart inside a group of shapes reports the group's anchor, and moving
+    /// it is not written: the group positions its members, and taking one out
+    /// of it is an edit of the group.
+    pub anchor: Anchor,
+    /// The title above the plot, when the chart has one of its own.
+    pub title: Option<Title>,
+    /// Whether the automatic title was switched off. A chart of one series
+    /// with no title of its own shows that series' name unless this is set.
+    pub auto_title_deleted: bool,
+    /// The plots, in drawing order. A combination chart — columns with a line
+    /// over them — has more than one.
+    pub plots: Vec<Plot>,
+    /// The axes the plots refer to by id.
+    pub axes: Vec<ChartAxis>,
+    /// The legend, when there is one.
+    pub legend: Option<Legend>,
+    /// Everything the model does not name, where it stood.
+    pub markup: ChartMarkup,
+    /// The part this chart was read from; `None` for a chart made in code.
+    pub origin: Option<ChartOrigin>,
+}
+
+impl Chart {
+    /// Whether the chart still says what it said when it was read, and so
+    /// goes back as the bytes that arrived.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.origin
+            .as_ref()
+            .is_some_and(|o| self.same_placement(&o.read) && self.same_content(&o.read))
+    }
+
+    /// Takes the chart as it stands for what was read.
+    ///
+    /// For edits that change the carried bytes and the model the same way —
+    /// a row inserted above the data moves both the series in the part and
+    /// the series here — so the chart still counts as untouched.
+    pub(crate) fn settle(&mut self) {
+        if let Some(mut origin) = self.origin.take() {
+            origin.read = Box::new(self.clone());
+            self.origin = Some(origin);
+        }
+    }
+
+    /// Whether the frame is where, and what, it was.
+    pub(crate) fn same_placement(&self, other: &Self) -> bool {
+        self.name == other.name && self.anchor == other.anchor
+    }
+
+    /// Whether the chart part would say the same thing.
+    pub(crate) fn same_content(&self, other: &Self) -> bool {
+        // Destructured so a field added later cannot be forgotten here.
+        let Self {
+            name: _,
+            anchor: _,
+            title,
+            auto_title_deleted,
+            plots,
+            axes,
+            legend,
+            markup,
+            origin: _,
+        } = self;
+        *title == other.title
+            && *auto_title_deleted == other.auto_title_deleted
+            && *plots == other.plots
+            && *axes == other.axes
+            && *legend == other.legend
+            && *markup == other.markup
+    }
+
+    /// Every formula the chart reads through, for an edit that rewrites them.
+    pub(crate) fn formulas_mut(&mut self) -> Vec<&mut String> {
+        let mut out = Vec::new();
+        let titles = self
+            .title
+            .iter_mut()
+            .chain(self.axes.iter_mut().filter_map(|a| a.title.as_mut()));
+        out.extend(
+            titles
+                .filter_map(|t| t.text.as_mut())
+                .filter_map(ChartText::formula_mut),
+        );
+        for series in self.plots.iter_mut().flat_map(|p| &mut p.series) {
+            out.extend(series.name.as_mut().and_then(ChartText::formula_mut));
+            for data in [
+                &mut series.categories,
+                &mut series.values,
+                &mut series.bubble_sizes,
+            ] {
+                out.extend(data.as_mut().and_then(DataSource::formula_mut));
+            }
+        }
+        out
+    }
+
+    /// Every stretch of carried markup, for an edit that rewrites the
+    /// references inside it: a data label or a trend line can read a cell too.
+    pub(crate) fn markups_mut(&mut self) -> Vec<&mut String> {
+        let ChartMarkup {
+            before_chart,
+            before_plot_area,
+            plot_area_layout,
+            after_axes,
+            after_legend,
+            after_chart,
+        } = &mut self.markup;
+        let mut out = vec![
+            before_chart,
+            before_plot_area,
+            plot_area_layout,
+            after_axes,
+            after_legend,
+            after_chart,
+        ];
+        out.extend(self.title.as_mut().map(|t| &mut t.markup));
+        out.extend(self.legend.as_mut().map(|l| &mut l.markup));
+        for axis in &mut self.axes {
+            let AxisMarkup {
+                gridlines,
+                ticks,
+                tail,
+            } = &mut axis.markup;
+            out.extend([gridlines, ticks, tail]);
+            out.extend(axis.title.as_mut().map(|t| &mut t.markup));
+        }
+        for plot in &mut self.plots {
+            out.push(&mut plot.markup);
+            for series in &mut plot.series {
+                let SeriesMarkup {
+                    before_data,
+                    after_data,
+                } = &mut series.markup;
+                out.extend([before_data, after_data]);
+                for data in [
+                    &mut series.categories,
+                    &mut series.values,
+                    &mut series.bubble_sizes,
+                ] {
+                    if let Some(DataSource::Levels { formula, markup }) = data {
+                        out.push(markup);
+                        out.extend(formula.as_mut());
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+/// Where the chart came from, so an untouched one can go back as it was.
+///
+/// Opaque on purpose: nothing in it is a property of the chart.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartOrigin {
+    /// The drawing part holding the frame.
+    pub(crate) drawing: String,
+    /// The chart part.
+    pub(crate) part: String,
+    /// The chart as it was read.
+    pub(crate) read: Box<Chart>,
+    /// The attributes of the root element, namespace declarations included:
+    /// the carried markup uses whatever prefixes they bind.
+    pub(crate) root_attributes: String,
+    /// The prefix the part gave the chart namespace, empty for a default
+    /// namespace (which is how excelize writes it).
+    pub(crate) prefix: String,
+    /// Whether the frame sits inside a group of shapes.
+    pub(crate) grouped: bool,
+}
+
+impl ChartOrigin {
+    /// The chart part inside the package.
+    #[must_use]
+    pub fn part(&self) -> &str {
+        &self.part
+    }
+
+    /// The drawing part the frame lives in.
+    #[must_use]
+    pub fn drawing(&self) -> &str {
+        &self.drawing
+    }
+}
+
+/// Where a drawing object sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    /// Between two cells: each corner is tied to its own.
+    TwoCell {
+        /// The top left corner.
+        from: Marker,
+        /// The bottom right corner.
+        to: Marker,
+        /// What moving or resizing the cells underneath does to the object.
+        /// `None` is the format's default, which behaves as
+        /// [`EditAs::TwoCell`].
+        edit_as: Option<EditAs>,
+    },
+    /// At a cell, with a size of its own in EMU.
+    OneCell {
+        /// The top left corner.
+        from: Marker,
+        /// Width, in EMU (914 400 to the inch).
+        width: i64,
+        /// Height, in EMU.
+        height: i64,
+    },
+    /// At a point on the sheet, in EMU, whatever the cells do.
+    Absolute {
+        /// Distance from the left edge of the sheet.
+        x: i64,
+        /// Distance from the top edge.
+        y: i64,
+        /// Width.
+        width: i64,
+        /// Height.
+        height: i64,
+    },
+}
+
+impl Default for Anchor {
+    /// Eight columns by fifteen rows from `A1`, the size Excel gives a new
+    /// chart.
+    fn default() -> Self {
+        Self::TwoCell {
+            from: Marker::default(),
+            to: Marker {
+                col: Col::new(8).unwrap_or_default(),
+                row: Row::new(15).unwrap_or_default(),
+                ..Marker::default()
+            },
+            edit_as: None,
+        }
+    }
+}
+
+/// A corner of an object: a cell, and how far into it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Marker {
+    /// The column.
+    pub col: Col,
+    /// How far right of the column's left edge, in EMU.
+    pub col_offset: i64,
+    /// The row.
+    pub row: Row,
+    /// How far below the row's top edge, in EMU.
+    pub row_offset: i64,
+}
+
+/// What a two-cell anchor does when the cells under it move.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditAs {
+    /// Moves and resizes with the cells.
+    TwoCell,
+    /// Moves with its top left cell, keeping its size.
+    OneCell,
+    /// Stays where it is.
+    Absolute,
+}
+
+impl EditAs {
+    /// Reads the `editAs` attribute.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "twoCell" => Some(Self::TwoCell),
+            "oneCell" => Some(Self::OneCell),
+            "absolute" => Some(Self::Absolute),
+            _ => None,
+        }
+    }
+
+    /// The attribute value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::TwoCell => "twoCell",
+            Self::OneCell => "oneCell",
+            Self::Absolute => "absolute",
+        }
+    }
+}
+
+/// Text a chart shows: typed in, or read from a cell.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ChartText {
+    /// Read from a cell, and the value it had when the file was saved.
+    Reference {
+        /// The cell, as a formula: `Sheet1!$B$1`.
+        formula: String,
+        /// What the cell held.
+        cache: Option<String>,
+    },
+    /// Typed into the chart.
+    Text {
+        /// The words, paragraphs separated by `\n`.
+        text: String,
+        /// The formatted text it was read from, carried whole: it is used
+        /// again as long as it still says `text`, and dropped for plain text
+        /// once `text` is changed.
+        rich: Option<String>,
+    },
+}
+
+impl ChartText {
+    /// Plain text, with no formatting.
+    #[must_use]
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            rich: None,
+        }
+    }
+
+    /// The words shown, whichever way they got there.
+    #[must_use]
+    pub fn shown(&self) -> Option<&str> {
+        match self {
+            Self::Reference { cache, .. } => cache.as_deref(),
+            Self::Text { text, .. } => Some(text),
+        }
+    }
+
+    fn formula_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::Reference { formula, .. } => Some(formula),
+            Self::Text { .. } => None,
+        }
+    }
+}
+
+/// A title over the chart or beside an axis.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Title {
+    /// What it says; `None` when Excel makes the text up — a series name over
+    /// the chart, nothing beside an axis.
+    pub text: Option<ChartText>,
+    /// Position, overlay and formatting, carried as written.
+    pub markup: String,
+}
+
+/// One plot: a chart type and the series drawn that way.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Plot {
+    /// The chart type and what it needs said about itself.
+    pub kind: PlotKind,
+    /// Whether each point gets its own colour. Excel sets it for pies.
+    pub vary_colors: Option<bool>,
+    /// The series, in the order the file lists them.
+    pub series: Vec<Series>,
+    /// Ids of the axes this plot is drawn against, from [`Chart::axes`].
+    /// Two for a flat chart, three for a 3-D one; none for a pie.
+    pub axis_ids: Vec<u32>,
+    /// What follows the series — labels, gap width, overlap, hole size, drop
+    /// lines — carried as written.
+    pub markup: String,
+}
+
+impl Plot {
+    /// A plot of that kind and nothing else yet.
+    #[must_use]
+    pub const fn new(kind: PlotKind) -> Self {
+        Self {
+            kind,
+            vary_colors: None,
+            series: Vec::new(),
+            axis_ids: Vec::new(),
+            markup: String::new(),
+        }
+    }
+}
+
+/// The chart types of the 2006 schema.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlotKind {
+    /// Columns or bars.
+    Bar {
+        /// Upright columns or sideways bars.
+        direction: BarDirection,
+        /// Side by side or stacked.
+        grouping: Grouping,
+        /// Drawn in 3-D.
+        three_d: bool,
+    },
+    /// Lines.
+    Line {
+        /// On their own or stacked.
+        grouping: Grouping,
+        /// Drawn in 3-D.
+        three_d: bool,
+    },
+    /// Filled areas.
+    Area {
+        /// On their own or stacked.
+        grouping: Grouping,
+        /// Drawn in 3-D.
+        three_d: bool,
+    },
+    /// A pie.
+    Pie {
+        /// Drawn in 3-D.
+        three_d: bool,
+    },
+    /// A pie with a hole.
+    Doughnut,
+    /// A pie with some slices pulled out into a second pie or a bar.
+    OfPie {
+        /// A bar rather than a second pie.
+        bar: bool,
+    },
+    /// Points at x and y.
+    Scatter(ScatterStyle),
+    /// A spider web.
+    Radar(RadarStyle),
+    /// Points at x and y with a size.
+    Bubble,
+    /// High, low, close and optionally open.
+    Stock,
+    /// A surface.
+    Surface {
+        /// Drawn in 3-D.
+        three_d: bool,
+        /// Only the wires, no fill.
+        wireframe: bool,
+    },
+}
+
+impl PlotKind {
+    /// Whether the plot is drawn against axes at all.
+    #[must_use]
+    pub const fn has_axes(self) -> bool {
+        !matches!(self, Self::Pie { .. } | Self::Doughnut | Self::OfPie { .. })
+    }
+
+    /// Whether the series place their points by x and y values rather than by
+    /// category.
+    #[must_use]
+    pub const fn plots_xy(self) -> bool {
+        matches!(self, Self::Scatter(_) | Self::Bubble)
+    }
+}
+
+/// Which way the bars go.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BarDirection {
+    /// Upright: columns.
+    #[default]
+    Column,
+    /// Sideways: bars.
+    Bar,
+}
+
+/// How the series of a plot are laid out against each other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Grouping {
+    /// Each series on its own, one behind another.
+    #[default]
+    Standard,
+    /// Side by side.
+    Clustered,
+    /// On top of each other.
+    Stacked,
+    /// On top of each other, scaled to 100 %.
+    PercentStacked,
+}
+
+impl Grouping {
+    /// Reads the `grouping` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "clustered" => Self::Clustered,
+            "stacked" => Self::Stacked,
+            "percentStacked" => Self::PercentStacked,
+            _ => Self::Standard,
+        }
+    }
+
+    /// The value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Clustered => "clustered",
+            Self::Stacked => "stacked",
+            Self::PercentStacked => "percentStacked",
+        }
+    }
+}
+
+/// How a scatter plot joins its points.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScatterStyle {
+    /// As the series' own formatting says.
+    None,
+    /// Straight lines.
+    Line,
+    /// Straight lines with markers.
+    LineMarker,
+    /// Markers only.
+    #[default]
+    Marker,
+    /// Smooth lines.
+    Smooth,
+    /// Smooth lines with markers.
+    SmoothMarker,
+}
+
+impl ScatterStyle {
+    /// Reads the `scatterStyle` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "none" => Self::None,
+            "line" => Self::Line,
+            "lineMarker" => Self::LineMarker,
+            "smooth" => Self::Smooth,
+            "smoothMarker" => Self::SmoothMarker,
+            _ => Self::Marker,
+        }
+    }
+
+    /// The value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Line => "line",
+            Self::LineMarker => "lineMarker",
+            Self::Marker => "marker",
+            Self::Smooth => "smooth",
+            Self::SmoothMarker => "smoothMarker",
+        }
+    }
+}
+
+/// How a radar plot draws its series.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RadarStyle {
+    /// Lines.
+    #[default]
+    Standard,
+    /// Lines with markers.
+    Marker,
+    /// Filled.
+    Filled,
+}
+
+impl RadarStyle {
+    /// Reads the `radarStyle` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "marker" => Self::Marker,
+            "filled" => Self::Filled,
+            _ => Self::Standard,
+        }
+    }
+
+    /// The value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Marker => "marker",
+            Self::Filled => "filled",
+        }
+    }
+}
+
+/// One series of a plot.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Series {
+    /// Its index, which picks its default colour.
+    pub index: u32,
+    /// Its place in the drawing order.
+    pub order: u32,
+    /// The name the legend shows.
+    pub name: Option<ChartText>,
+    /// The categories along the axis; for a scatter or bubble plot, the x
+    /// values.
+    pub categories: Option<DataSource>,
+    /// The values plotted; for a scatter or bubble plot, the y values.
+    pub values: Option<DataSource>,
+    /// The size of each bubble, for a bubble plot.
+    pub bubble_sizes: Option<DataSource>,
+    /// Formatting around the data, carried as written.
+    pub markup: SeriesMarkup,
+}
+
+/// What a series says beyond the model, split where the data sits.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SeriesMarkup {
+    /// Fill and line, markers, per-point formatting, labels, trend lines,
+    /// error bars — everything between the name and the data.
+    pub before_data: String,
+    /// Smoothing, bar shape, extensions — everything after the data.
+    pub after_data: String,
+}
+
+/// Where a series gets its numbers or labels.
+#[derive(Debug, Clone, PartialEq)]
+pub enum DataSource {
+    /// Numbers.
+    Numbers {
+        /// The cells, as a formula; `None` for numbers typed into the chart.
+        formula: Option<String>,
+        /// The number format the values were shown in.
+        format_code: Option<String>,
+        /// How many points there are, gaps included.
+        count: Option<u32>,
+        /// The values when the file was saved, by point index. A missing
+        /// index is a gap.
+        points: Vec<(u32, f64)>,
+    },
+    /// Text.
+    Strings {
+        /// The cells, as a formula; `None` for labels typed into the chart.
+        formula: Option<String>,
+        /// How many points there are, gaps included.
+        count: Option<u32>,
+        /// The labels when the file was saved, by point index.
+        points: Vec<(u32, String)>,
+    },
+    /// Categories in several levels — region, then city — carried whole
+    /// besides the formula.
+    Levels {
+        /// The cells, as a formula.
+        formula: Option<String>,
+        /// The element as written, formula included.
+        markup: String,
+    },
+}
+
+impl DataSource {
+    /// Numbers read from cells, with nothing cached: Excel fills the cache in
+    /// when it opens the file.
+    #[must_use]
+    pub fn numbers(formula: impl Into<String>) -> Self {
+        Self::Numbers {
+            formula: Some(formula.into()),
+            format_code: None,
+            count: None,
+            points: Vec::new(),
+        }
+    }
+
+    /// Labels read from cells, with nothing cached.
+    #[must_use]
+    pub fn strings(formula: impl Into<String>) -> Self {
+        Self::Strings {
+            formula: Some(formula.into()),
+            count: None,
+            points: Vec::new(),
+        }
+    }
+
+    /// The cells the data is read from.
+    #[must_use]
+    pub fn formula(&self) -> Option<&str> {
+        match self {
+            Self::Numbers { formula, .. }
+            | Self::Strings { formula, .. }
+            | Self::Levels { formula, .. } => formula.as_deref(),
+        }
+    }
+
+    /// The same, to rewrite. A multi-level source keeps its formula inside
+    /// the carried markup as well, so it is left to that markup's own rewrite.
+    fn formula_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::Numbers { formula, .. } | Self::Strings { formula, .. } => formula.as_mut(),
+            Self::Levels { .. } => None,
+        }
+    }
+}
+
+/// An axis.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartAxis {
+    /// What the axis measures.
+    pub kind: AxisKind,
+    /// The id plots refer to it by.
+    pub id: u32,
+    /// The id of the axis this one crosses.
+    pub cross_axis: u32,
+    /// Which edge of the plot it runs along.
+    pub position: AxisPosition,
+    /// Hidden: the axis exists for the plot to be drawn against, but is not
+    /// shown.
+    pub deleted: bool,
+    /// Runs from maximum to minimum.
+    pub reversed: bool,
+    /// Lowest value shown; automatic when `None`.
+    pub min: Option<f64>,
+    /// Highest value shown; automatic when `None`.
+    pub max: Option<f64>,
+    /// Base of a logarithmic scale.
+    pub log_base: Option<f64>,
+    /// The title beside the axis.
+    pub title: Option<Title>,
+    /// The number format of the labels, and whether it follows the source
+    /// cells.
+    pub number_format: Option<(String, bool)>,
+    /// Formatting, carried as written.
+    pub markup: AxisMarkup,
+}
+
+impl ChartAxis {
+    /// An axis of categories along the bottom, crossing `cross_axis`.
+    #[must_use]
+    pub fn category(id: u32, cross_axis: u32) -> Self {
+        Self::new(AxisKind::Category, id, cross_axis, AxisPosition::Bottom)
+    }
+
+    /// An axis of values up the left side, crossing `cross_axis`.
+    #[must_use]
+    pub fn value(id: u32, cross_axis: u32) -> Self {
+        Self::new(AxisKind::Value, id, cross_axis, AxisPosition::Left)
+    }
+
+    /// An axis with nothing set beyond what it is and where.
+    #[must_use]
+    pub fn new(kind: AxisKind, id: u32, cross_axis: u32, position: AxisPosition) -> Self {
+        Self {
+            kind,
+            id,
+            cross_axis,
+            position,
+            deleted: false,
+            reversed: false,
+            min: None,
+            max: None,
+            log_base: None,
+            title: None,
+            number_format: None,
+            markup: AxisMarkup::default(),
+        }
+    }
+}
+
+/// What an axis says beyond the model, split where the model's elements sit.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AxisMarkup {
+    /// The major and minor gridlines.
+    pub gridlines: String,
+    /// Tick marks, label position, line and label formatting.
+    pub ticks: String,
+    /// Where it crosses, label spacing, units, extensions.
+    pub tail: String,
+}
+
+/// What an axis measures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AxisKind {
+    /// Categories, spaced evenly.
+    Category,
+    /// Numbers.
+    Value,
+    /// Dates, spaced by time.
+    Date,
+    /// The series, front to back on a 3-D chart.
+    Series,
+}
+
+impl AxisKind {
+    /// The element name.
+    #[must_use]
+    pub const fn element(self) -> &'static str {
+        match self {
+            Self::Category => "catAx",
+            Self::Value => "valAx",
+            Self::Date => "dateAx",
+            Self::Series => "serAx",
+        }
+    }
+}
+
+/// An edge of the plot area.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AxisPosition {
+    /// Along the bottom.
+    #[default]
+    Bottom,
+    /// Up the left.
+    Left,
+    /// Up the right.
+    Right,
+    /// Along the top.
+    Top,
+}
+
+impl AxisPosition {
+    /// Reads the `axPos` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "l" => Self::Left,
+            "r" => Self::Right,
+            "t" => Self::Top,
+            _ => Self::Bottom,
+        }
+    }
+
+    /// The value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bottom => "b",
+            Self::Left => "l",
+            Self::Right => "r",
+            Self::Top => "t",
+        }
+    }
+}
+
+/// A legend.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct Legend {
+    /// Where it sits.
+    pub position: LegendPosition,
+    /// Hidden entries, layout, overlay and formatting, carried as written.
+    pub markup: String,
+}
+
+/// Where the legend sits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LegendPosition {
+    /// Below the plot.
+    Bottom,
+    /// Left of it.
+    Left,
+    /// Right of it.
+    #[default]
+    Right,
+    /// Above it.
+    Top,
+    /// In the top right corner.
+    TopRight,
+}
+
+impl LegendPosition {
+    /// Reads the `legendPos` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "b" => Self::Bottom,
+            "l" => Self::Left,
+            "t" => Self::Top,
+            "tr" => Self::TopRight,
+            _ => Self::Right,
+        }
+    }
+
+    /// The value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Bottom => "b",
+            Self::Left => "l",
+            Self::Right => "r",
+            Self::Top => "t",
+            Self::TopRight => "tr",
+        }
+    }
+}
+
+/// What a chart says beyond the model, split where the model's elements sit.
+///
+/// Each slot is the markup between two elements the model does name, so a
+/// chart rendered from the model puts everything back in the order the schema
+/// demands.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ChartMarkup {
+    /// Before the chart: the 1904 flag, language, rounded corners, style.
+    pub before_chart: String,
+    /// Between the title and the plot area: 3-D view, floor and walls.
+    pub before_plot_area: String,
+    /// The layout of the plot area.
+    pub plot_area_layout: String,
+    /// After the axes, inside the plot area: data table, fill, extensions.
+    pub after_axes: String,
+    /// After the legend: visible cells only, blanks, extensions.
+    pub after_legend: String,
+    /// After the chart: chart area formatting, text, print settings.
+    pub after_chart: String,
+}
+
+/// A chart of the 2016 schema: waterfall, funnel, treemap and the rest.
+///
+/// Read, not written: the part travels whole, and this is a view of it.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChartEx {
+    /// The name the frame carries.
+    pub name: String,
+    /// Where the chart sits on the sheet.
+    pub anchor: Anchor,
+    /// The chart part inside the package.
+    pub part: String,
+    /// The title, when it has one of its own.
+    pub title: Option<ChartText>,
+    /// The series, each with the data it reads.
+    pub series: Vec<ExSeries>,
+}
+
+/// One series of a [`ChartEx`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExSeries {
+    /// How the series is drawn, which is what makes the chart a waterfall or a
+    /// funnel.
+    pub layout: SeriesLayout,
+    /// The name the legend shows.
+    pub name: Option<ChartText>,
+    /// Hidden from the chart.
+    pub hidden: bool,
+    /// The data it reads, one dimension per role.
+    pub dimensions: Vec<Dimension>,
+}
+
+/// What a [`ChartEx`] series draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeriesLayout {
+    /// Box and whisker.
+    BoxWhisker,
+    /// Histogram columns.
+    ClusteredColumn,
+    /// Funnel.
+    Funnel,
+    /// The cumulative line of a Pareto chart.
+    ParetoLine,
+    /// Filled map.
+    RegionMap,
+    /// Sunburst.
+    Sunburst,
+    /// Treemap.
+    Treemap,
+    /// Waterfall.
+    Waterfall,
+    /// A layout newer than this crate.
+    Unknown,
+}
+
+impl SeriesLayout {
+    /// Reads the `layoutId` attribute.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "boxWhisker" => Self::BoxWhisker,
+            "clusteredColumn" => Self::ClusteredColumn,
+            "funnel" => Self::Funnel,
+            "paretoLine" => Self::ParetoLine,
+            "regionMap" => Self::RegionMap,
+            "sunburst" => Self::Sunburst,
+            "treemap" => Self::Treemap,
+            "waterfall" => Self::Waterfall,
+            _ => Self::Unknown,
+        }
+    }
+}
+
+/// One dimension of the data a [`ChartEx`] series reads.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Dimension {
+    /// What the dimension is for.
+    pub role: DimensionRole,
+    /// Numbers rather than text.
+    pub numeric: bool,
+    /// The cells, as a formula. Excel writes a hidden defined name here —
+    /// `_xlchart.v1.0` — rather than the range: see [`Dimension::reference`].
+    pub formula: Option<String>,
+    /// The values when the file was saved: one list per level, each by point
+    /// index. A hierarchy — a treemap's region and city — has several.
+    pub levels: Vec<Vec<(u32, String)>>,
+}
+
+impl Dimension {
+    /// The range the dimension reads, looking through the hidden name Excel
+    /// puts in its place.
+    #[must_use]
+    pub fn reference<'a>(&'a self, names: &'a [DefinedName]) -> Option<&'a str> {
+        let formula = self.formula.as_deref()?;
+        Some(
+            names
+                .iter()
+                .find(|n| n.sheet.is_none() && n.name == formula)
+                .map_or(formula, |n| n.formula.as_str()),
+        )
+    }
+}
+
+/// What a dimension of chart data is for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DimensionRole {
+    /// Category labels.
+    Categories,
+    /// Values.
+    Values,
+    /// Sizes, as in a treemap.
+    Sizes,
+    /// X values.
+    X,
+    /// Y values.
+    Y,
+    /// Numbers a map colours by.
+    ColorValues,
+    /// Text a map colours by.
+    ColorStrings,
+    /// Map region ids.
+    EntityIds,
+}
+
+impl DimensionRole {
+    /// Reads the `type` attribute.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "cat" => Self::Categories,
+            "val" => Self::Values,
+            "size" => Self::Sizes,
+            "x" => Self::X,
+            "y" => Self::Y,
+            "colorVal" => Self::ColorValues,
+            "colorStr" => Self::ColorStrings,
+            "entityId" => Self::EntityIds,
+            _ => return None,
+        })
+    }
+}

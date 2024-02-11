@@ -1,6 +1,6 @@
 //! Readers for spreadsheet file formats.
 
-// pub(crate) mod chart;
+pub(crate) mod chart;
 pub mod csv;
 pub mod detect;
 pub mod gnumeric;

@@ -7,7 +7,7 @@
 //! for `Rc<RefCell<_>>`.
 
 pub mod autofilter;
-// pub mod chart;
+pub mod chart;
 pub mod pivot;
 pub mod protection;
 pub mod table;
