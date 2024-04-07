@@ -1,6 +1,6 @@
 //! Writers for spreadsheet file formats.
 
-// mod chart;
+mod chart;
 pub mod csv;
 pub mod html;
 pub mod ods;
