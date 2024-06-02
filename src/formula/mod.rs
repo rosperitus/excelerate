@@ -7,13 +7,13 @@
 //! eval    Expr + a workbook -> Value
 //! ```
 
-// pub mod custom;
+pub mod custom;
 pub mod eval;
 pub mod functions;
 pub mod parser;
 pub mod value;
 
-// pub use custom::CustomFunctions;
+pub use custom::CustomFunctions;
 pub use eval::{Engine, Origin};
 pub use parser::{BinaryOp, Expr, UnaryOp, parse};
 pub use value::Value;

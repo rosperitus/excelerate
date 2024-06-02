@@ -13,7 +13,7 @@ pub use coordinate::{CellRef, Col, Range, Row};
 pub use error::{CellError, Error, Result};
 
 pub mod model;
-// pub mod progress;
+pub mod progress;
 pub mod reader;
 pub mod shared;
 pub mod style;
