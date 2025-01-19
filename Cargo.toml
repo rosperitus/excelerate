@@ -27,6 +27,15 @@ quick-xml = "0.42.0"
 thiserror = "2.0.20"
 zip = "8.6.0"
 
+# The wasm bindings only; a native build never sees this.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+# `Date.now()`: wasm32-unknown-unknown has no clock of its own.
+js-sys = "0.3"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
 [lints.rust]
 unsafe_code = "forbid"
 missing_docs = "warn"

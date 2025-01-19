@@ -1,0 +1,20 @@
+{
+  "name": "excelerate-workspace",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "../tools/build-npm.sh",
+    "start": "node example.js",
+    "test": "node --test",
+    "bench": "node --max-old-space-size=12000 bench.js",
+    "typecheck": "tsc -p typescript/tsconfig.json",
+    "ts": "node typescript/basic.ts"
+  },
+  "dependencies": {
+    "excelerate": "file:./pkg"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "typescript": "^5.6"
+  }
+}

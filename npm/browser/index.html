@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>excelerate in the browser</title>
+<pre id="out">loading…</pre>
+<script type="module">
+  import init, { Book } from "../pkg-web/excelerate.js";
+
+  const lines = [];
+  const say = (...parts) => lines.push(parts.join(" "));
+
+  // The one difference from Node: the module has to be initialized first.
+  await init();
+
+  const book = new Book();
+  book.set(0, "A1", 2);
+  book.set(0, "A2", 3);
+  say("SUM:", book.evaluate(0, "A3", "=SUM(A1:A2)"));
+
+  book.registerFunction("МОЙИТОГ", (range) => {
+    let total = 0;
+    for (const row of range) for (const v of row) total += Number(v) || 0;
+    return total * 2;
+  });
+  say("custom function:", book.evaluate(0, "A3", "=МОЙИТОГ(A1:A2)"));
+
+  const parts = [];
+  const bytes = book.toXlsx((p) => parts.push(p.what));
+  say("bytes written:", bytes.length, "parts:", parts.length);
+
+  const read = [];
+  const back = Book.read(bytes, "b.xlsx", undefined, (p) => read.push(p.what));
+  say("sheets read:", back.sheetNames().length, "reports:", read.length);
+  say("A1 after the round trip:", back.get(0, "A1"));
+  say("A1 style:", JSON.stringify(back.cellStyle(0, "A1").font.name));
+
+  document.getElementById("out").textContent = lines.join("\n");
+  globalThis.__result = lines.join("\n");
+</script>

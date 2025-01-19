@@ -1,0 +1,4 @@
+{
+  "//": "ESM only: these examples use import, while the parent package is commonjs. Dependencies come from ../node_modules.",
+  "type": "module"
+}

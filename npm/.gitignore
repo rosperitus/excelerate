@@ -1,0 +1,12 @@
+pkg/
+node_modules/
+con.xlsx
+.~*
+files/
+# except the workbooks the tests stand on
+!files/gen.xlsx
+!files/grouped.xlsx
+files/out.*
+files/edited.*
+pkg-web/
+pkg-bundler/
