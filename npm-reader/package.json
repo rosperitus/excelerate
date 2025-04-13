@@ -1,0 +1,13 @@
+{
+  "name": "excelerate-reader-workspace",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "build": "../tools/build-npm-reader.sh",
+    "start": "node example.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "excelerate-reader": "file:./pkg"
+  }
+}
