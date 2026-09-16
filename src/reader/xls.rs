@@ -10,19 +10,22 @@
 //! string table (with its continuations), the whole cell format - number
 //! format, font, fill, borders, alignment and protection, with colours
 //! resolved through the file's palette - merges, column widths and row
-//! heights, and the workbook's base date.
+//! heights, the workbook's base date, formulas and defined names.
 //!
-//! What is not, and why:
+//! A formula is stored as tokens rather than text and comes back as text
+//! through [`super::xls_formula`], beside the result the file cached for it.
+//! Shared formulas (`SHRFMLA`) are expanded onto each cell, the way the xlsx
+//! reader expands them. A formula that does not decompile - a data table, an
+//! unknown token - keeps only its cached result.
 //!
-//! - **Formulas.** A formula is stored as a token stream, not as text, and
-//!   turning those back into `=SUM(A1:A3)` is a decompiler of its own
-//!   (some 900 lines of work). Until it exists a formula
-//!   cell reads as the result the file cached for it, which is what the value
-//!   was anyway.
+//! What is not read, and why:
+//!
 //! - **BIFF5 and older, and encrypted files.** Both are refused rather than
 //!   half-read.
 
-use crate::error::{CellError, Error, Result};
+use super::xls_formula::{self, Base, Book, BookKind, Context};
+use crate::error::{Error, Result};
+use crate::model::DefinedName;
 use crate::model::{CellValue, ColumnRun, Spreadsheet, Worksheet};
 use crate::shared::date::Epoch;
 use crate::shared::palette;
@@ -61,6 +64,13 @@ mod record {
     pub const BOOLERR: u16 = 0x0205;
     pub const FORMULA: u16 = 0x0006;
     pub const STRING: u16 = 0x0207;
+    pub const SHRFMLA: u16 = 0x04BC;
+    pub const ARRAY: u16 = 0x0221;
+    pub const TABLE: u16 = 0x0236;
+    pub const NAME: u16 = 0x0018;
+    pub const SUPBOOK: u16 = 0x01AE;
+    pub const EXTERNNAME: u16 = 0x0023;
+    pub const EXTERNSHEET: u16 = 0x0017;
 }
 
 /// Reads a workbook from a file.
@@ -157,7 +167,20 @@ struct Reader<'a> {
     style_ids: HashMap<u16, StyleId>,
     /// Name and stream position of each sheet, from `BOUNDSHEET`.
     sheets: Vec<(String, usize)>,
+    /// What formulas refer to: sheets, other books, names.
+    context: Context,
+    /// `NAME` records, kept whole until every name is known, since one name's
+    /// formula may use another.
+    name_records: Vec<Vec<u8>>,
+    /// The formulas of the sheet being read that other cells point at with an
+    /// `Exp` token, by their first cell: tokens, extra data, and whether the
+    /// tokens are relative to the cell reading them.
+    shared: HashMap<(u16, u16), Group>,
 }
+
+/// A shared or array formula: its tokens, their extra data, and whether the
+/// tokens are relative to the cell that reads them.
+type Group = (Vec<u8>, Vec<u8>, bool);
 
 impl<'a> Reader<'a> {
     fn new(stream: &'a [u8]) -> Self {
@@ -172,14 +195,20 @@ impl<'a> Reader<'a> {
             palette: palette::DEFAULT,
             style_ids: HashMap::new(),
             sheets: Vec::new(),
+            context: Context::default(),
+            name_records: Vec::new(),
+            shared: HashMap::new(),
         }
     }
 
     /// Reads the globals, then each sheet.
     fn read(mut self) -> Result<Spreadsheet> {
         self.globals()?;
+        self.context.sheets = self.sheets.iter().map(|(name, _)| name.clone()).collect();
+        self.defined_names();
         let sheets = std::mem::take(&mut self.sheets);
         for (name, at) in sheets {
+            self.shared.clear();
             let sheet = self.sheet(&name, at)?;
             self.book.add_sheet(sheet)?;
         }
@@ -242,6 +271,27 @@ impl<'a> Reader<'a> {
                             self.palette[slot] =
                                 (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
                         }
+                    }
+                }
+                record::NAME => self.name_records.push(record.data.to_vec()),
+                record::SUPBOOK => self.context.books.push(supbook(record.data)),
+                record::EXTERNNAME => {
+                    if let Some(book) = self.context.books.last_mut() {
+                        book.names.push(short_string(record.data, 6));
+                    }
+                }
+                record::EXTERNSHEET => {
+                    let count = usize::from(u16_at(record.data, 0));
+                    for i in 0..count {
+                        let at = 2 + i * 6;
+                        if record.data.len() < at + 6 {
+                            break;
+                        }
+                        self.context.externs.push((
+                            u16_at(record.data, at),
+                            u16_at(record.data, at + 2),
+                            u16_at(record.data, at + 4),
+                        ));
                     }
                 }
                 record::SST => {
@@ -402,18 +452,107 @@ impl<'a> Reader<'a> {
                 let value = data.get(6).copied().unwrap_or(0);
                 let is_error = data.get(7).copied().unwrap_or(0) == 1;
                 let value = if is_error {
-                    CellValue::Error(error_code(value))
+                    CellValue::Error(xls_formula::error(value))
                 } else {
                     CellValue::Bool(value != 0)
                 };
                 self.put(sheet, r, c, u16_at(data, 4), value);
             }
             record::FORMULA => {
-                // Only the cached result is kept; see the module note.
-                let value = self.formula_result(data, at);
+                let formula = self.formula(data, r, c, at);
+                let cached = self.formula_result(data, at);
+                let value = match formula {
+                    Some(formula) => CellValue::Formula {
+                        formula,
+                        cached: Some(Box::new(cached)),
+                    },
+                    None => cached,
+                };
                 self.put(sheet, r, c, u16_at(data, 4), value);
             }
             _ => {}
+        }
+    }
+
+    /// The text of a formula cell, if its tokens decompile.
+    ///
+    /// A cell that belongs to a shared or an array formula holds a single
+    /// `Exp` token naming the group's first cell. The group's own record
+    /// follows the first cell's `FORMULA`, so it is picked up here as the
+    /// reader passes it.
+    fn formula(&mut self, data: &[u8], row: u16, col: u16, at: &mut usize) -> Option<String> {
+        if let Some(next) = record_at(self.stream, *at) {
+            let group = match next.id {
+                record::SHRFMLA => Some((10, true)),
+                record::ARRAY => Some((14, false)),
+                record::TABLE => Some((0, false)),
+                _ => None,
+            };
+            if let Some((start, relative)) = group {
+                *at = next.next;
+                let first = (u16_at(next.data, 0), u16::from(next.data.get(4).copied()?));
+                if next.id != record::TABLE {
+                    let length = usize::from(u16_at(next.data, start - 2));
+                    let tokens = next.data.get(start..start + length)?.to_vec();
+                    let extra = next.data.get(start + length..).unwrap_or(&[]).to_vec();
+                    self.shared.insert(first, (tokens, extra, relative));
+                }
+            }
+        }
+
+        let length = usize::from(u16_at(data, 20));
+        let tokens = data.get(22..22 + length)?;
+        let extra = data.get(22 + length..).unwrap_or(&[]);
+        let base = Base { row, col };
+        if tokens.first() == Some(&0x01) {
+            let first = (u16_at(tokens, 1), u16_at(tokens, 3));
+            let (tokens, extra, relative) = self.shared.get(&first)?;
+            // An array formula lives on its first cell; the other cells of
+            // its range show their part of the result and nothing more.
+            if !relative && (row, col) != first {
+                return None;
+            }
+            return xls_formula::decompile(tokens, extra, base, &self.context);
+        }
+        xls_formula::decompile(tokens, extra, base, &self.context)
+    }
+
+    /// Turns the `NAME` records into defined names, now that every name is
+    /// known and one may refer to another.
+    fn defined_names(&mut self) {
+        // The names first, since formulas refer to them by position.
+        self.context.names = self
+            .name_records
+            .iter()
+            .map(|data| name_text(data))
+            .collect();
+        for (data, name) in self.name_records.iter().zip(&self.context.names) {
+            let flags = u16_at(data, 0);
+            let length = usize::from(u16_at(data, 4));
+            // A name that is a function (a macro, or a function newer than
+            // the format) is not a defined name.
+            if flags & 0x02 != 0 || name.starts_with("_xlfn.") || length == 0 {
+                continue;
+            }
+            let count = usize::from(data.get(3).copied().unwrap_or(0));
+            let wide = data.get(14).copied().unwrap_or(0) & 1 != 0;
+            let start = 15 + count * if wide { 2 } else { 1 };
+            let Some(tokens) = data.get(start..start + length) else {
+                continue;
+            };
+            let extra = data.get(start + length..).unwrap_or(&[]);
+            let Some(formula) =
+                xls_formula::decompile(tokens, extra, Base::default(), &self.context)
+            else {
+                continue;
+            };
+            let sheet = u16_at(data, 8);
+            self.book.defined_names.push(DefinedName {
+                name: name.clone(),
+                sheet: sheet.checked_sub(1).map(usize::from),
+                formula,
+                hidden: flags & 0x01 != 0,
+            });
         }
     }
 
@@ -437,7 +576,7 @@ impl<'a> Reader<'a> {
                 CellValue::text(text)
             }
             1 => CellValue::Bool(data.get(8).copied().unwrap_or(0) != 0),
-            2 => CellValue::Error(error_code(data.get(8).copied().unwrap_or(0))),
+            2 => CellValue::Error(xls_formula::error(data.get(8).copied().unwrap_or(0))),
             _ => CellValue::Empty,
         }
     }
@@ -785,17 +924,70 @@ fn column(value: u16) -> Result<Col> {
     Col::from_one_based(u64::from(value) + 1)
 }
 
-/// An error code as BIFF numbers them.
-fn error_code(value: u8) -> CellError {
-    match value {
-        0x00 => CellError::Null,
-        0x07 => CellError::Div0,
-        0x0F => CellError::Value,
-        0x17 => CellError::Ref,
-        0x1D => CellError::Name,
-        0x24 => CellError::Num,
-        _ => CellError::Na,
+/// The name a `NAME` record defines. A built-in name is stored as a single
+/// character code and spelled with the `_xlnm.` prefix xlsx gives it.
+fn name_text(data: &[u8]) -> String {
+    let count = usize::from(data.get(3).copied().unwrap_or(0));
+    let wide = data.get(14).copied().unwrap_or(0) & 1 != 0;
+    let (text, _) = read_chars(data, 15, count, wide);
+    if u16_at(data, 0) & 0x20 == 0 {
+        return text;
     }
+    let builtin = match text.chars().next().map_or(0xFF, u32::from) {
+        0x00 => "Consolidate_Area",
+        0x01 => "Auto_Open",
+        0x02 => "Auto_Close",
+        0x03 => "Extract",
+        0x04 => "Database",
+        0x05 => "Criteria",
+        0x06 => "Print_Area",
+        0x07 => "Print_Titles",
+        0x08 => "Recorder",
+        0x09 => "Data_Form",
+        0x0A => "Auto_Activate",
+        0x0B => "Auto_Deactivate",
+        0x0C => "Sheet_Title",
+        0x0D => "_FilterDatabase",
+        _ => return text,
+    };
+    format!("_xlnm.{builtin}")
+}
+
+/// A `SUPBOOK` record: this workbook, an add-in, or another file with the
+/// names of its sheets.
+fn supbook(data: &[u8]) -> Book {
+    let sheets = usize::from(u16_at(data, 0));
+    let kind = match u16_at(data, 2) {
+        0x0401 => BookKind::Internal,
+        0x3A01 => BookKind::AddIn,
+        _ => {
+            let (path, mut at) = unicode_string(data, 2);
+            let mut names = Vec::with_capacity(sheets.min(1024));
+            for _ in 0..sheets {
+                let (name, next) = unicode_string(data, at);
+                names.push(name);
+                at = next;
+            }
+            BookKind::External {
+                path: decode_path(&path),
+                sheets: names,
+            }
+        }
+    };
+    Book {
+        kind,
+        names: Vec::new(),
+    }
+}
+
+/// The file name inside an encoded external path. The path starts with a
+/// control character saying how it is rooted and separates folders with
+/// more control characters; a formula shows only the file.
+fn decode_path(path: &str) -> String {
+    path.rsplit(|c: char| c.is_control() || c == '\\' || c == '/')
+        .next()
+        .unwrap_or(path)
+        .to_owned()
 }
 
 /// An `RK` number: a float squeezed into four bytes, either as the top half of
@@ -974,10 +1166,90 @@ mod tests {
         assert_eq!(text, "абвx");
     }
 
+    fn push(out: &mut Vec<u8>, id: u16, data: &[u8]) {
+        out.extend_from_slice(&id.to_le_bytes());
+        out.extend_from_slice(&u16::try_from(data.len()).unwrap().to_le_bytes());
+        out.extend_from_slice(data);
+    }
+
+    fn formula(row: u8, col: u8, result: f64, tokens: &[u8]) -> Vec<u8> {
+        let mut data = vec![row, 0, col, 0, 0, 0];
+        data.extend_from_slice(&result.to_le_bytes());
+        data.extend_from_slice(&[0x08, 0, 0, 0, 0, 0]);
+        data.extend_from_slice(&u16::try_from(tokens.len()).unwrap().to_le_bytes());
+        data.extend_from_slice(tokens);
+        data
+    }
+
+    /// A shared formula, an array formula and a defined name, the three
+    /// things a formula cell or a name reaches outside its own record for.
+    #[test]
+    fn shared_and_array_formulas_and_names_read_back_as_text() {
+        let mut globals = Vec::new();
+        push(&mut globals, record::BOF, &[0x00, 0x06, 0x05, 0x00]);
+        push(&mut globals, record::SUPBOOK, &[1, 0, 0x01, 0x04]);
+        push(&mut globals, record::EXTERNSHEET, &[1, 0, 0, 0, 0, 0, 0, 0]);
+        // NAME "Rate" = Main!$A$1, through a Ref3d.
+        let mut name = vec![0, 0, 0, 4, 7, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        name.extend_from_slice(b"Rate");
+        name.extend_from_slice(&[0x3A, 0, 0, 0, 0, 0, 0]);
+        push(&mut globals, record::NAME, &name);
+        let boundsheet_at = globals.len() + 4;
+        push(
+            &mut globals,
+            record::BOUNDSHEET,
+            &[0, 0, 0, 0, 0, 0, 4, 0, b'M', b'a', b'i', b'n'],
+        );
+        push(&mut globals, record::EOF, &[]);
+        let start = u32::try_from(globals.len()).unwrap();
+        globals[boundsheet_at..boundsheet_at + 4].copy_from_slice(&start.to_le_bytes());
+
+        let mut sheet = Vec::new();
+        push(&mut sheet, record::BOF, &[0x00, 0x06, 0x10, 0x00]);
+        let exp = [0x01, 1, 0, 0, 0];
+        push(&mut sheet, record::FORMULA, &formula(1, 0, 2.0, &exp));
+        // A2:A3 share RefN(row -1, same column) * Int 2.
+        let mut shared = vec![1, 0, 2, 0, 0, 0, 0, 2, 9, 0];
+        shared.extend_from_slice(&[0x4C, 0xFF, 0xFF, 0x00, 0xC0, 0x1E, 2, 0, 0x05]);
+        push(&mut sheet, record::SHRFMLA, &shared);
+        push(&mut sheet, record::FORMULA, &formula(2, 0, 4.0, &exp));
+        // B1:B2 hold one array formula, `Rate`.
+        let array_exp = [0x01, 0, 0, 1, 0];
+        push(&mut sheet, record::FORMULA, &formula(0, 1, 1.0, &array_exp));
+        let mut array = vec![0, 0, 1, 0, 1, 1, 0, 0, 0, 0, 0, 0, 5, 0];
+        array.extend_from_slice(&[0x43, 1, 0, 0, 0]);
+        push(&mut sheet, record::ARRAY, &array);
+        push(&mut sheet, record::FORMULA, &formula(1, 1, 1.0, &array_exp));
+        push(&mut sheet, record::EOF, &[]);
+        globals.extend_from_slice(&sheet);
+
+        let book = Reader::new(&globals).read().unwrap();
+        let text = |at: &str| match &book.sheets()[0].get(CellRef::parse(at).unwrap())?.value {
+            CellValue::Formula { formula, .. } => Some(formula.clone()),
+            _ => None,
+        };
+        assert_eq!(text("A2").as_deref(), Some("A1*2"));
+        assert_eq!(text("A3").as_deref(), Some("A2*2"));
+        assert_eq!(text("B1").as_deref(), Some("Rate"));
+        assert_eq!(text("B2"), None, "the rest of an array keeps its value");
+        assert_eq!(
+            book.sheets()[0]
+                .get(CellRef::parse("B2").unwrap())
+                .map(|c| c.value.clone()),
+            Some(CellValue::Number(1.0))
+        );
+        let rate = &book.defined_names[0];
+        assert_eq!(
+            (rate.name.as_str(), rate.formula.as_str()),
+            ("Rate", "Main!$A$1")
+        );
+    }
+
     #[test]
     fn error_codes_are_the_ones_biff_numbers() {
-        assert_eq!(error_code(0x07), CellError::Div0);
-        assert_eq!(error_code(0x17), CellError::Ref);
-        assert_eq!(error_code(0x2A), CellError::Na);
+        use crate::CellError;
+        assert_eq!(xls_formula::error(0x07), CellError::Div0);
+        assert_eq!(xls_formula::error(0x17), CellError::Ref);
+        assert_eq!(xls_formula::error(0x2A), CellError::Na);
     }
 }

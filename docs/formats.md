@@ -66,10 +66,16 @@ file gets a `PALETTE` record), and beyond 56 distinct colours the rest are
 drawn with the nearest entry. Theme colours are resolved through the
 workbook's theme, tint included.
 
-The gap you will actually hit: **formulas come back as their cached result, not
-as text.** BIFF8 stores a formula as a token tree, and turning that back into
-`=SUM(A1:A3)` is a decompiler of its own. The writer is symmetric - a formula
-goes out as its value.
+Formulas come back as text beside their cached result. BIFF8 stores a formula
+as tokens, and the reader turns them back into `SUM(A1:A3)`: references
+relative and absolute, 3D references across sheets, other workbooks and
+add-in functions, array constants, shared formulas (expanded onto every cell,
+as xlsx reading does) and defined names. An array formula lives on its first
+cell; the rest of its range keeps the values. A formula the reader cannot turn
+back - a data table, a token it does not know - keeps only its cached value
+rather than a text that says something else.
+
+The writer is not symmetric yet: a formula goes out as its value.
 
 BIFF5 and older, and encrypted workbooks, are rejected rather than read halfway.
 

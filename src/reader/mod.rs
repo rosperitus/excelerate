@@ -9,6 +9,7 @@ pub mod ods;
 pub(crate) mod ole;
 pub mod slk;
 pub mod xls;
+mod xls_formula;
 pub mod xlsx;
 pub mod xml2003;
 pub(crate) mod zipxml;

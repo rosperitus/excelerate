@@ -154,3 +154,29 @@ fn a_theme_colour_is_written_as_the_colour_it_shows() {
     cell.style = id;
     assert_eq!(style(&rewrite(&book), "A1").font.color, rgb(0x44_72C4));
 }
+
+/// `fixtures/formulas.xls` is written by `xlwt`, whose formula compiler is
+/// independent of ours: column A holds the text it was given and column B
+/// the tokens it compiled from that text. Every one has to come back as the
+/// text it started from.
+#[test]
+fn formulas_decompile_to_the_text_they_were_compiled_from() {
+    let book = open("formulas.xls");
+    let sheet = &book.sheets()[0];
+    let mut checked = 0;
+    for row in 4..=31 {
+        let at = |col: &str| CellRef::parse(&format!("{col}{row}")).unwrap();
+        let source = match sheet.get(at("A")).map(|c| &c.value) {
+            Some(excelerate::model::CellValue::Text(text)) => text.clone(),
+            other => panic!("A{row} holds {other:?}"),
+        };
+        match sheet.get(at("B")).map(|c| &c.value) {
+            Some(excelerate::model::CellValue::Formula { formula, .. }) => {
+                assert_eq!(formula, &source, "B{row}");
+            }
+            other => panic!("B{row} holds {other:?}"),
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 28);
+}

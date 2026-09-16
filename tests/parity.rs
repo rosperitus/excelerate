@@ -605,9 +605,21 @@ fn xls_cells_match_what_excel_wrote() {
         value("D2"),
         Some(CellValue::Error(excelerate::error::CellError::Div0))
     );
-    // A formula comes back as the result the file cached for it.
-    assert_eq!(value("A4"), Some(CellValue::Number(2469.0)));
-    assert_eq!(value("B4"), Some(CellValue::text("привет!")));
+    // A formula comes back as its text, with the result the file cached.
+    assert_eq!(
+        value("A4"),
+        Some(CellValue::Formula {
+            formula: "A2*2".to_owned(),
+            cached: Some(Box::new(CellValue::Number(2469.0))),
+        })
+    );
+    assert_eq!(
+        value("B4"),
+        Some(CellValue::Formula {
+            formula: "B1&\"!\"".to_owned(),
+            cached: Some(Box::new(CellValue::text("привет!"))),
+        })
+    );
     assert_eq!(value("A5"), Some(CellValue::Number(0.125)));
 
     let format = |a: &str| {
