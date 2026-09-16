@@ -20,6 +20,12 @@ const MINI_CUTOFF: usize = 4096;
 const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
 /// A sector holding part of the allocation table.
 const FAT_SECTOR: u32 = 0xFFFF_FFFD;
+/// A sector holding part of the list of allocation table sectors.
+const DIFAT_SECTOR: u32 = 0xFFFF_FFFC;
+/// How many table sectors the header itself can list.
+const HEADER_FAT_SLOTS: usize = 109;
+/// How many table sectors one list sector names; its last slot links on.
+const DIFAT_SLOTS: usize = SECTOR / 4 - 1;
 /// A free sector, and the empty directory pointer.
 const FREE: u32 = 0xFFFF_FFFF;
 
@@ -35,18 +41,26 @@ pub fn container(name: &str, stream: &[u8]) -> Vec<u8> {
     let data_sectors = data.len() / SECTOR;
 
     // The directory is one sector: four entries of 128 bytes, of which two are
-    // used. The table has to describe itself, so its size is found by trying.
+    // used. The table has to describe itself, and past 109 sectors of it (a
+    // stream of about 7 MB) the header cannot list them all and list sectors
+    // follow, which the table describes too; the sizes are found by trying.
     let mut fat_sectors = 1;
+    let mut difat_sectors = 0;
     loop {
-        let total = data_sectors + 1 + fat_sectors;
+        let total = data_sectors + 1 + fat_sectors + difat_sectors;
         let needed = total.div_ceil(SECTOR / 4);
-        if needed <= fat_sectors {
+        let lists = needed
+            .saturating_sub(HEADER_FAT_SLOTS)
+            .div_ceil(DIFAT_SLOTS);
+        if needed <= fat_sectors && lists <= difat_sectors {
             break;
         }
-        fat_sectors = needed;
+        fat_sectors = fat_sectors.max(needed);
+        difat_sectors = difat_sectors.max(lists);
     }
     let directory_sector = data_sectors;
     let first_fat_sector = directory_sector + 1;
+    let first_difat_sector = first_fat_sector + fat_sectors;
 
     // The allocation table: the stream's chain, then the directory, then the
     // sectors the table itself sits in.
@@ -61,19 +75,54 @@ pub fn container(name: &str, stream: &[u8]) -> Vec<u8> {
     for i in 0..fat_sectors {
         fat[first_fat_sector + i] = FAT_SECTOR;
     }
+    for i in 0..difat_sectors {
+        fat[first_difat_sector + i] = DIFAT_SECTOR;
+    }
 
-    let mut out = Vec::with_capacity((1 + data_sectors + 1 + fat_sectors) * SECTOR);
-    out.extend_from_slice(&header(fat_sectors, first_fat_sector, directory_sector));
+    let total = 1 + data_sectors + 1 + fat_sectors + difat_sectors;
+    let mut out = Vec::with_capacity(total * SECTOR);
+    out.extend_from_slice(&header(
+        fat_sectors,
+        first_fat_sector,
+        directory_sector,
+        (difat_sectors, first_difat_sector),
+    ));
     out.extend_from_slice(&data);
     out.extend_from_slice(&directory(name, declared));
     for entry in fat {
         out.extend_from_slice(&entry.to_le_bytes());
     }
+    // The table sectors the header had no room for, 127 to a list sector,
+    // each list ending with the next one's number.
+    let overflow: Vec<usize> = (HEADER_FAT_SLOTS..fat_sectors)
+        .map(|i| first_fat_sector + i)
+        .collect();
+    for i in 0..difat_sectors {
+        let start = i * DIFAT_SLOTS;
+        let slots = overflow.get(start..).unwrap_or(&[]);
+        for slot in 0..DIFAT_SLOTS {
+            let value = slots
+                .get(slot)
+                .map_or(FREE, |&s| u32::try_from(s).unwrap_or(FREE));
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        let next = if i + 1 < difat_sectors {
+            u32::try_from(first_difat_sector + i + 1).unwrap_or(END_OF_CHAIN)
+        } else {
+            END_OF_CHAIN
+        };
+        out.extend_from_slice(&next.to_le_bytes());
+    }
     out
 }
 
 /// The 512-byte header, including the list of table sectors.
-fn header(fat_sectors: usize, first_fat_sector: usize, directory_sector: usize) -> [u8; SECTOR] {
+fn header(
+    fat_sectors: usize,
+    first_fat_sector: usize,
+    directory_sector: usize,
+    (difat_sectors, first_difat_sector): (usize, usize),
+) -> [u8; SECTOR] {
     let mut head = [0u8; SECTOR];
     head[..8].copy_from_slice(&SIGNATURE);
     // Minor and major version, and the little-endian byte order mark.
@@ -88,12 +137,18 @@ fn header(fat_sectors: usize, first_fat_sector: usize, directory_sector: usize) 
     let directory = u32::try_from(directory_sector).unwrap_or(0);
     head[0x30..0x34].copy_from_slice(&directory.to_le_bytes());
     head[0x38..0x3C].copy_from_slice(&u32::try_from(MINI_CUTOFF).unwrap_or(4096).to_le_bytes());
-    // No mini stream and no extra table sectors: everything fits in the header.
+    // No mini stream; the list sectors, if the table outgrew the header.
     head[0x3C..0x40].copy_from_slice(&END_OF_CHAIN.to_le_bytes());
     head[0x40..0x44].copy_from_slice(&0u32.to_le_bytes());
-    head[0x44..0x48].copy_from_slice(&END_OF_CHAIN.to_le_bytes());
-    head[0x48..0x4C].copy_from_slice(&0u32.to_le_bytes());
-    for i in 0..109 {
+    let first_difat = if difat_sectors == 0 {
+        END_OF_CHAIN
+    } else {
+        u32::try_from(first_difat_sector).unwrap_or(END_OF_CHAIN)
+    };
+    head[0x44..0x48].copy_from_slice(&first_difat.to_le_bytes());
+    let difat_count = u32::try_from(difat_sectors).unwrap_or(0);
+    head[0x48..0x4C].copy_from_slice(&difat_count.to_le_bytes());
+    for i in 0..HEADER_FAT_SLOTS {
         let at = 0x4C + i * 4;
         let value = if i < fat_sectors {
             u32::try_from(first_fat_sector + i).unwrap_or(FREE)
@@ -132,4 +187,30 @@ fn write_entry(entry: &mut [u8], name: &str, kind: u8, start: u32, size: usize, 
     entry[0x4C..0x50].copy_from_slice(&child.to_le_bytes());
     entry[0x74..0x78].copy_from_slice(&start.to_le_bytes());
     entry[0x78..0x80].copy_from_slice(&(size as u64).to_le_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::container;
+    use crate::reader::ole::Ole;
+
+    /// A stream too big for the header to list every table sector: past about
+    /// 7 MB the list continues in sectors of its own, and without them the
+    /// tail of the stream is unreachable.
+    #[test]
+    fn a_stream_past_the_header_list_reads_back_whole() {
+        let stream: Vec<u8> = (0..20_000_000u32).map(|i| (i % 251) as u8).collect();
+        let file = container("Workbook", &stream);
+        let ole = Ole::new(&file).expect("the container opens");
+        assert_eq!(ole.stream("Workbook").as_deref(), Some(stream.as_slice()));
+    }
+
+    #[test]
+    fn a_small_stream_reads_back_whole() {
+        let stream = b"records".repeat(1000);
+        let file = container("Workbook", &stream);
+        let ole = Ole::new(&file).expect("the container opens");
+        let back = ole.stream("Workbook").expect("the stream is there");
+        assert_eq!(&back[..stream.len()], stream.as_slice());
+    }
 }
