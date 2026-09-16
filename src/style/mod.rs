@@ -254,7 +254,7 @@ pub enum Pattern {
 }
 
 /// The hatch patterns xlsx names, other than `none` and `solid`.
-const NAMED_PATTERNS: [&str; 16] = [
+const NAMED_PATTERNS: [&str; 17] = [
     "darkDown",
     "darkGray",
     "darkGrid",
@@ -271,6 +271,7 @@ const NAMED_PATTERNS: [&str; 16] = [
     "lightTrellis",
     "lightUp",
     "lightVertical",
+    "mediumGray",
 ];
 
 impl Pattern {

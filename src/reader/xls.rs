@@ -7,8 +7,10 @@
 //! its `BOUNDSHEET` record says.
 //!
 //! What is read: sheets and their names, every cell value type, the shared
-//! string table (with its continuations), number formats, merges, column widths
-//! and row heights, and the workbook's base date.
+//! string table (with its continuations), the whole cell format - number
+//! format, font, fill, borders, alignment and protection, with colours
+//! resolved through the file's palette - merges, column widths and row
+//! heights, and the workbook's base date.
 //!
 //! What is not, and why:
 //!
@@ -17,15 +19,18 @@
 //!   (some 900 lines of work). Until it exists a formula
 //!   cell reads as the result the file cached for it, which is what the value
 //!   was anyway.
-//! - **Fonts, fills and borders.** They are bitfields inside `XF`, and worth a
-//!   pass of their own once the values are trusted.
 //! - **BIFF5 and older, and encrypted files.** Both are refused rather than
 //!   half-read.
 
 use crate::error::{CellError, Error, Result};
 use crate::model::{CellValue, ColumnRun, Spreadsheet, Worksheet};
 use crate::shared::date::Epoch;
-use crate::style::{NumberFormat, Style, StyleTable};
+use crate::shared::palette;
+use crate::style::{
+    Alignment, Border, BorderStyle, Borders, Color, DiagonalDirection, Fill, Font, HorizontalAlign,
+    NumberFormat, Pattern, Protection, ProtectionState, Script, Style, StyleId, StyleTable,
+    Underline, VerticalAlign,
+};
 use crate::{CellRef, Col, Range, Row};
 use std::collections::HashMap;
 
@@ -38,6 +43,8 @@ mod record {
     pub const SST: u16 = 0x00FC;
     pub const FORMAT: u16 = 0x041E;
     pub const XF: u16 = 0x00E0;
+    pub const FONT: u16 = 0x0031;
+    pub const PALETTE: u16 = 0x0092;
     pub const DATEMODE: u16 = 0x0022;
     pub const FILEPASS: u16 = 0x002F;
     pub const DIMENSION: u16 = 0x0200;
@@ -141,6 +148,13 @@ struct Reader<'a> {
     formats: HashMap<u16, String>,
     /// What each `XF` record says, in record order.
     cell_formats: Vec<Xf>,
+    /// The `FONT` records, in record order; colours are resolved once the
+    /// palette is known, which may be after them.
+    fonts: Vec<FontRecord>,
+    /// The palette colour indices resolve through.
+    palette: [u32; 56],
+    /// The style each `XF` became, filled as cells ask for them.
+    style_ids: HashMap<u16, StyleId>,
     /// Name and stream position of each sheet, from `BOUNDSHEET`.
     sheets: Vec<(String, usize)>,
 }
@@ -154,6 +168,9 @@ impl<'a> Reader<'a> {
             strings: Vec::new(),
             formats: HashMap::new(),
             cell_formats: Vec::new(),
+            fonts: Vec::new(),
+            palette: palette::DEFAULT,
+            style_ids: HashMap::new(),
             sheets: Vec::new(),
         }
     }
@@ -215,6 +232,18 @@ impl<'a> Reader<'a> {
                     self.formats.insert(index, code);
                 }
                 record::XF => self.cell_formats.push(Xf::parse(record.data)),
+                record::FONT => self.fonts.push(FontRecord::parse(record.data)),
+                record::PALETTE => {
+                    let count = usize::from(u16_at(record.data, 0)).min(56);
+                    for slot in 0..count {
+                        // Each entry is red, green, blue and an unused byte.
+                        let bytes = record.data.get(2 + slot * 4..5 + slot * 4);
+                        if let Some(&[r, g, b]) = bytes {
+                            self.palette[slot] =
+                                (u32::from(r) << 16) | (u32::from(g) << 8) | u32::from(b);
+                        }
+                    }
+                }
                 record::SST => {
                     let (strings, next) = self.shared_strings(&record, at);
                     self.strings = strings;
@@ -424,53 +453,321 @@ impl<'a> Reader<'a> {
         cell.style = style;
     }
 
-    /// The style one `XF` record stands for. Only its number format and indent
-    /// are read; the rest of it is bitfields worth a pass of their own.
-    fn style_of(&mut self, xf: u16) -> crate::style::StyleId {
-        let Some(&Xf {
-            format: index,
-            indent,
-        }) = self.cell_formats.get(xf as usize)
-        else {
-            return crate::style::StyleId::default();
+    /// The style one `XF` record stands for, interned once per record.
+    fn style_of(&mut self, xf: u16) -> StyleId {
+        if let Some(&id) = self.style_ids.get(&xf) {
+            return id;
+        }
+        let Some(record) = self.cell_formats.get(usize::from(xf)).copied() else {
+            return StyleId::default();
         };
-        let format = match self.formats.get(&index) {
+        let style = self.style(&record);
+        let id = self.styles.intern(style);
+        self.style_ids.insert(xf, id);
+        id
+    }
+
+    /// Builds the style an `XF` record describes.
+    fn style(&self, xf: &Xf) -> Style {
+        let number_format = match self.formats.get(&xf.format) {
             Some(code) if code == "General" => NumberFormat::General,
             Some(code) => NumberFormat::Custom(code.clone()),
-            None if index == 0 => NumberFormat::General,
-            None => NumberFormat::Builtin(index),
+            None if xf.format == 0 => NumberFormat::General,
+            None => NumberFormat::Builtin(xf.format),
         };
-        let mut style = Style {
-            number_format: format,
-            ..Style::default()
+        // Font 4 does not exist: the numbering skips it, so every index past
+        // it is one ahead of its record.
+        let font_record = match xf.font {
+            0..4 => self.fonts.get(usize::from(xf.font)),
+            4 => None,
+            _ => self.fonts.get(usize::from(xf.font) - 1),
         };
-        style.alignment.indent = indent;
-        self.styles.intern(style)
+        let font = font_record.map_or_else(Font::default, |f| f.font(&self.palette));
+        let color = |index| palette::resolve(&self.palette, index);
+        let border = |style, index| Border {
+            style: border_style(style),
+            color: if style == 0 {
+                Color::Auto
+            } else {
+                color(index)
+            },
+        };
+        let diagonal_direction = match (xf.diagonal_down, xf.diagonal_up) {
+            (false, false) => DiagonalDirection::None,
+            (true, false) => DiagonalDirection::Down,
+            (false, true) => DiagonalDirection::Up,
+            (true, true) => DiagonalDirection::Both,
+        };
+        let pattern = fill_pattern(xf.pattern);
+        Style {
+            number_format,
+            font,
+            fill: Fill {
+                pattern,
+                foreground: if pattern == Pattern::None {
+                    Color::Auto
+                } else {
+                    color(xf.pattern_foreground)
+                },
+                background: if pattern == Pattern::None {
+                    Color::Auto
+                } else {
+                    color(xf.pattern_background)
+                },
+            },
+            borders: Borders {
+                left: border(xf.left, xf.left_color),
+                right: border(xf.right, xf.right_color),
+                top: border(xf.top, xf.top_color),
+                bottom: border(xf.bottom, xf.bottom_color),
+                diagonal: if diagonal_direction == DiagonalDirection::None {
+                    Border::default()
+                } else {
+                    border(xf.diagonal, xf.diagonal_color)
+                },
+                diagonal_direction,
+            },
+            alignment: Alignment {
+                horizontal: match xf.horizontal {
+                    1 => HorizontalAlign::Left,
+                    2 => HorizontalAlign::Center,
+                    3 => HorizontalAlign::Right,
+                    4 => HorizontalAlign::Fill,
+                    5 => HorizontalAlign::Justify,
+                    6 => HorizontalAlign::CenterContinuous,
+                    7 => HorizontalAlign::Distributed,
+                    _ => HorizontalAlign::General,
+                },
+                vertical: match xf.vertical {
+                    0 => VerticalAlign::Top,
+                    1 => VerticalAlign::Center,
+                    3 => VerticalAlign::Justify,
+                    4 => VerticalAlign::Distributed,
+                    _ => VerticalAlign::Bottom,
+                },
+                wrap_text: xf.wrap,
+                shrink_to_fit: xf.shrink,
+                indent: xf.indent,
+                // BIFF8 counts rotation exactly the way xlsx does: 0 to 90
+                // up, 91 to 180 down, 255 stacked.
+                text_rotation: u32::from(xf.rotation),
+                reading_order: xf.reading_order,
+            },
+            protection: Protection {
+                // Locked is the default, so only its absence is worth saying.
+                locked: if xf.locked {
+                    ProtectionState::Inherit
+                } else {
+                    ProtectionState::Off
+                },
+                hidden: if xf.hidden {
+                    ProtectionState::On
+                } else {
+                    ProtectionState::Inherit
+                },
+            },
+        }
     }
 }
 
-/// The part of an `XF` record this reader uses.
+/// An `XF` record, unpacked.
 ///
-/// The record is twenty bytes of bitfields; fonts, fills and borders live in it
-/// too and are not read yet.
+/// The record is twenty bytes: the font and format indices, then protection,
+/// alignment and a flags byte, then two double words and a word of bitfields
+/// for the borders and the fill.
 #[derive(Debug, Clone, Copy, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "each bool is one bit of the record, named after it"
+)]
 struct Xf {
+    /// Index into the fonts, with 4 skipped.
+    font: u16,
     /// Index into the number formats, spelled out by `FORMAT` or built in.
     format: u16,
+    locked: bool,
+    hidden: bool,
+    horizontal: u8,
+    wrap: bool,
+    vertical: u8,
+    rotation: u8,
     /// Indent in character widths, the low nibble of the alignment byte.
     indent: u32,
+    shrink: bool,
+    reading_order: u32,
+    left: u8,
+    right: u8,
+    top: u8,
+    bottom: u8,
+    diagonal: u8,
+    left_color: u16,
+    right_color: u16,
+    top_color: u16,
+    bottom_color: u16,
+    diagonal_color: u16,
+    diagonal_down: bool,
+    diagonal_up: bool,
+    pattern: u8,
+    pattern_foreground: u16,
+    pattern_background: u16,
 }
 
 impl Xf {
-    /// Reads what is used from the record's data.
+    /// Unpacks the record's data.
     fn parse(data: &[u8]) -> Self {
+        let byte = |at: usize| data.get(at).copied().unwrap_or(0);
+        let protection = u16_at(data, 4);
+        let align = byte(6);
+        let options = byte(8);
+        let sides = u32_at(data, 10);
+        let more = u32_at(data, 14);
+        let colors = u16_at(data, 18);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "every field is masked to its width first"
+        )]
+        let bits = |value: u32, shift: u32, mask: u32| ((value >> shift) & mask) as u16;
+        let nibble = |value: u32, shift: u32| ((value >> shift) & 0x0F) as u8;
         Self {
+            font: u16_at(data, 0),
             format: u16_at(data, 2),
-            // Byte 8 packs the indent into its low four bits, and shrink-to-fit
-            // and the reading order into the rest.
-            indent: u32::from(data.get(8).copied().unwrap_or(0) & 0x0F),
+            locked: protection & 0x01 != 0,
+            hidden: protection & 0x02 != 0,
+            horizontal: align & 0x07,
+            wrap: align & 0x08 != 0,
+            vertical: (align >> 4) & 0x07,
+            rotation: byte(7),
+            // Byte 8 packs the indent into its low four bits, then
+            // shrink-to-fit, then the reading order in the top two.
+            indent: u32::from(options & 0x0F),
+            shrink: options & 0x10 != 0,
+            reading_order: u32::from(options >> 6),
+            left: nibble(sides, 0),
+            right: nibble(sides, 4),
+            top: nibble(sides, 8),
+            bottom: nibble(sides, 12),
+            left_color: bits(sides, 16, 0x7F),
+            right_color: bits(sides, 23, 0x7F),
+            diagonal_down: sides & (1 << 30) != 0,
+            diagonal_up: sides & (1 << 31) != 0,
+            top_color: bits(more, 0, 0x7F),
+            bottom_color: bits(more, 7, 0x7F),
+            diagonal_color: bits(more, 14, 0x7F),
+            diagonal: nibble(more, 21),
+            pattern: ((more >> 26) & 0x3F) as u8,
+            pattern_foreground: colors & 0x7F,
+            pattern_background: (colors >> 7) & 0x7F,
         }
     }
+}
+
+/// A `FONT` record, kept with its colour as a palette index.
+#[derive(Debug, Clone, Default)]
+struct FontRecord {
+    height: u16,
+    italic: bool,
+    strike: bool,
+    color: u16,
+    weight: u16,
+    escapement: u16,
+    underline: u8,
+    family: u8,
+    charset: u8,
+    name: String,
+}
+
+impl FontRecord {
+    fn parse(data: &[u8]) -> Self {
+        let flags = u16_at(data, 2);
+        Self {
+            height: u16_at(data, 0),
+            italic: flags & 0x02 != 0,
+            strike: flags & 0x08 != 0,
+            color: u16_at(data, 4),
+            weight: u16_at(data, 6),
+            escapement: u16_at(data, 8),
+            underline: data.get(10).copied().unwrap_or(0),
+            family: data.get(11).copied().unwrap_or(0),
+            charset: data.get(12).copied().unwrap_or(0),
+            name: short_string(data, 14),
+        }
+    }
+
+    /// The font, with its colour looked up in the palette.
+    fn font(&self, palette: &[u32; 56]) -> Font {
+        Font {
+            name: self.name.clone(),
+            // Twips are twentieths of a point; the model keeps hundredths.
+            size: u32::from(self.height) * 5,
+            // Excel writes 700 for bold and 400 for regular; anything from
+            // 600 up reads as bold the way it draws it.
+            bold: self.weight >= 600,
+            italic: self.italic,
+            underline: match self.underline {
+                0x01 => Underline::Single,
+                0x02 => Underline::Double,
+                0x21 => Underline::SingleAccounting,
+                0x22 => Underline::DoubleAccounting,
+                _ => Underline::None,
+            },
+            strike: self.strike,
+            color: palette::resolve(palette, self.color),
+            script: match self.escapement {
+                1 => Script::Superscript,
+                2 => Script::Subscript,
+                _ => Script::Baseline,
+            },
+            family: (self.family != 0).then_some(u32::from(self.family)),
+            charset: (self.charset != 0).then_some(u32::from(self.charset)),
+            scheme: None,
+        }
+    }
+}
+
+/// A BIFF line style as the model names it.
+fn border_style(value: u8) -> BorderStyle {
+    BorderStyle::parse(match value {
+        1 => "thin",
+        2 => "medium",
+        3 => "dashed",
+        4 => "dotted",
+        5 => "thick",
+        6 => "double",
+        7 => "hair",
+        8 => "mediumDashed",
+        9 => "dashDot",
+        // `slantDashDot` has no xlsx name of its own in the model; the medium
+        // dash-dot is the line that looks most like it.
+        10 | 13 => "mediumDashDot",
+        11 => "dashDotDot",
+        12 => "mediumDashDotDot",
+        _ => "none",
+    })
+}
+
+/// A BIFF fill pattern as the model names it.
+fn fill_pattern(value: u8) -> Pattern {
+    Pattern::parse(match value {
+        1 => "solid",
+        2 => "mediumGray",
+        3 => "darkGray",
+        4 => "lightGray",
+        5 => "darkHorizontal",
+        6 => "darkVertical",
+        7 => "darkDown",
+        8 => "darkUp",
+        9 => "darkGrid",
+        10 => "darkTrellis",
+        11 => "lightHorizontal",
+        12 => "lightVertical",
+        13 => "lightDown",
+        14 => "lightUp",
+        15 => "lightGrid",
+        16 => "lightTrellis",
+        17 => "gray125",
+        18 => "gray0625",
+        _ => "none",
+    })
 }
 
 /// The cell a row and a column number name.

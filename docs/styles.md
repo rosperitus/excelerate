@@ -116,6 +116,8 @@ never asked for.
   from the value, custom codes do not survive.
 - **HTML** and **ODS** lose theme and indexed palette colours - there is no
   equivalent concept.
-- **xls** writes values, fonts, number formats and alignment, but not fills or
-  borders: their colours are indexes into a 56-colour palette, and choosing the
-  nearest entry for arbitrary RGB is a decision worth making on purpose.
+- **xls** keeps the whole style, but only 56 colours fit its palette: past
+  that, a colour is drawn with the nearest one. Theme colours are written as
+  the RGB they show, so a later theme change no longer recolours them.
+  `slantDashDot` borders read as `mediumDashDot`, the closest line the model
+  names.

@@ -54,17 +54,22 @@ Two deliberate calls:
 ## xls - BIFF8
 
 Reads sheets, every value type, the shared string table (including
-continuation records), number formats and indent from `FORMAT`/`XF`, merges,
-column widths, row heights and the workbook epoch. Writes values, the string
-table split across `CONTINUE`, fonts, number formats, alignment, merges and
-sizing.
+continuation records), the whole cell format - number format, font, fill,
+borders, alignment and protection - merges, column widths, row heights and the
+workbook epoch. Writes the same back.
+
+Colours in BIFF8 are indexes into a 56-entry palette. Reading resolves them to
+RGB through the file's own palette, so a colour means the same thing once it
+leaves the file. Writing goes the other way: a colour the default palette has
+keeps its entry, one it lacks takes over an entry nothing else uses (and the
+file gets a `PALETTE` record), and beyond 56 distinct colours the rest are
+drawn with the nearest entry. Theme colours are resolved through the
+workbook's theme, tint included.
 
 The gap you will actually hit: **formulas come back as their cached result, not
 as text.** BIFF8 stores a formula as a token tree, and turning that back into
 `=SUM(A1:A3)` is a decompiler of its own. The writer is symmetric - a formula
-goes out as its value. Fills and borders are skipped too, because their colours
-are indexes into a 56-entry palette and picking the nearest one for arbitrary
-RGB deserves its own decision.
+goes out as its value.
 
 BIFF5 and older, and encrypted workbooks, are rejected rather than read halfway.
 
