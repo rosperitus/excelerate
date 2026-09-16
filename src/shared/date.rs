@@ -76,7 +76,7 @@ const fn to_julian(year: i32, month: u32, day: u32) -> i64 {
     146_097 * century / 4 + 1461 * decade / 4 + (153 * m + 2) / 5 + day as i64 + 1_721_119
 }
 
-/// Calendar date from a Julian day — the inverse of [`to_julian`].
+/// Calendar date from a Julian day - the inverse of [`to_julian`].
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -139,7 +139,7 @@ pub fn to_serial(dt: DateTime, epoch: Epoch) -> Result<f64> {
     let mut days = to_julian(dt.year, dt.month, dt.day) - epoch.julian_base();
     // Shift for the phantom 29 February 1900: from 1 March 1900 on, Excel's
     // serial is one greater than the true day count. Test cases
-    // `!(year == 1900 && month <= 2)`, which also catches pre-1900 dates — it
+    // `!(year == 1900 && month <= 2)`, which also catches pre-1900 dates - it
     // does not support those anyway.
     if epoch == Epoch::Windows1900 && (dt.year > 1900 || (dt.year == 1900 && dt.month > 2)) {
         days += 1;

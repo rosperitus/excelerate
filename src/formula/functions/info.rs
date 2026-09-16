@@ -31,12 +31,12 @@ pub fn islogical(args: &[Arg]) -> Value {
     test(args, |v| matches!(v, Value::Bool(_)))
 }
 
-/// `ISERROR(value)` — any error at all.
+/// `ISERROR(value)` - any error at all.
 pub fn iserror(args: &[Arg]) -> Value {
     test(args, |v| v.error().is_some())
 }
 
-/// `ISERR(value)` — any error except `#N/A`.
+/// `ISERR(value)` - any error except `#N/A`.
 pub fn iserr(args: &[Arg]) -> Value {
     test(args, |v| matches!(v.error(), Some(e) if e != CellError::Na))
 }
@@ -46,7 +46,7 @@ pub fn isna(args: &[Arg]) -> Value {
     test(args, |v| v.error() == Some(CellError::Na))
 }
 
-/// `NA()` — the "no value available" marker itself.
+/// `NA()` - the "no value available" marker itself.
 pub fn na(args: &[Arg]) -> Value {
     if args.is_empty() {
         Value::Error(CellError::Na)
@@ -55,7 +55,7 @@ pub fn na(args: &[Arg]) -> Value {
     }
 }
 
-/// `N(value)` — a number as itself, a boolean as 0 or 1, anything else as 0.
+/// `N(value)` - a number as itself, a boolean as 0 or 1, anything else as 0.
 pub fn n(args: &[Arg]) -> Value {
     let [a] = args else {
         return Value::Error(CellError::Value);
@@ -68,7 +68,7 @@ pub fn n(args: &[Arg]) -> Value {
     }
 }
 
-/// `TYPE(value)` — 1 number, 2 text, 4 logical, 16 error, 64 array.
+/// `TYPE(value)` - 1 number, 2 text, 4 logical, 16 error, 64 array.
 pub fn type_(args: &[Arg]) -> Value {
     let [a] = args else {
         return Value::Error(CellError::Value);
@@ -85,7 +85,7 @@ pub fn type_(args: &[Arg]) -> Value {
 }
 
 /// Shared body of the `IS...` family: one argument, a yes or no answer, and no
-/// error propagation — asking whether something is an error must not itself
+/// error propagation - asking whether something is an error must not itself
 /// fail.
 fn test(args: &[Arg], predicate: fn(&Value) -> bool) -> Value {
     match args {
@@ -94,7 +94,7 @@ fn test(args: &[Arg], predicate: fn(&Value) -> bool) -> Value {
     }
 }
 
-/// `ISEVEN(number)` — of the whole part, so `ISEVEN(2.9)` is true.
+/// `ISEVEN(number)` - of the whole part, so `ISEVEN(2.9)` is true.
 pub fn iseven(args: &[Arg]) -> Value {
     parity(args, false)
 }
@@ -123,7 +123,7 @@ fn parity(args: &[Arg], want_odd: bool) -> Value {
     })
 }
 
-/// `ERROR.TYPE(value)` — the number Excel gives each of its errors.
+/// `ERROR.TYPE(value)` - the number Excel gives each of its errors.
 pub fn error_type(args: &[Arg]) -> Value {
     let [arg] = args else {
         return Value::Error(CellError::Value);
@@ -144,7 +144,7 @@ pub fn error_type(args: &[Arg]) -> Value {
     Value::Number(code)
 }
 
-/// `ISREF(value)` — whether the argument is a reference at all.
+/// `ISREF(value)` - whether the argument is a reference at all.
 ///
 /// Lazy, because that is a question about the expression rather than about
 /// what it evaluates to.
@@ -161,7 +161,7 @@ pub fn isref(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     Value::Bool(false)
 }
 
-/// `ISFORMULA(reference)` — whether the cell it names holds one.
+/// `ISFORMULA(reference)` - whether the cell it names holds one.
 pub fn isformula(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     match formula_of(engine, origin, args) {
         Ok(text) => Value::Bool(text.is_some()),
@@ -169,7 +169,7 @@ pub fn isformula(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Valu
     }
 }
 
-/// `FORMULATEXT(reference)` — the formula a cell holds, with its leading `=`.
+/// `FORMULATEXT(reference)` - the formula a cell holds, with its leading `=`.
 pub fn formulatext(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     match formula_of(engine, origin, args) {
         Ok(Some(text)) => Value::Text(format!("={text}")),
@@ -210,7 +210,7 @@ fn formula_of(
     })
 }
 
-/// `SHEET([value])` — the tab number of a sheet, counting from one.
+/// `SHEET([value])` - the tab number of a sheet, counting from one.
 pub fn sheet(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     let index = match args {
         [] => Some(origin.sheet),
@@ -238,7 +238,7 @@ pub fn sheet(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     }
 }
 
-/// `SHEETS([reference])` — how many sheets the workbook has.
+/// `SHEETS([reference])` - how many sheets the workbook has.
 pub fn sheets(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     let _ = origin;
     if args.len() > 1 {
@@ -261,7 +261,7 @@ fn named_sheet(engine: &Engine<'_>, name: &str) -> Option<usize> {
         .position(|s| s.title().eq_ignore_ascii_case(name))
 }
 
-/// `CELL(kind, [reference])` — one fact about a cell.
+/// `CELL(kind, [reference])` - one fact about a cell.
 ///
 /// Only the kinds that do not need the screen are answered: where the cell is,
 /// what it holds, and how wide its column was set. `"format"` and `"color"`
@@ -327,7 +327,7 @@ pub fn cell_info(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Valu
     }
 }
 
-/// `ISOMITTED(value)` — whether an argument was left out.
+/// `ISOMITTED(value)` - whether an argument was left out.
 ///
 /// Lazy, since a missing argument is a hole in the call rather than a value
 /// that could be passed along.

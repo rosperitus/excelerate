@@ -3,7 +3,7 @@
 ## The style table
 
 Styles are interned once per workbook and referenced by id, the way the file
-does it — a million cells sharing one look cost one `Style`.
+does it - a million cells sharing one look cost one `Style`.
 
 ```rust
 use excelerate::CellRef;
@@ -54,7 +54,7 @@ let indexed = Color::Indexed(64);                    // the legacy palette
 # let _ = (explicit, themed, indexed);
 ```
 
-A theme colour is an *index*, not an RGB value — swapping the workbook's theme
+A theme colour is an *index*, not an RGB value - swapping the workbook's theme
 part repaints every cell using one. That is why the theme rides through
 unparsed rather than being replaced with a canned one.
 
@@ -75,7 +75,7 @@ assert_eq!(format(Value::Number(45000.0), "yyyy-mm-dd", Epoch::Windows1900), "20
 The engine covers sections (positive; negative; zero; text), thousands
 separators, percentages, scientific notation, dates and times, colour prefixes
 and conditions. Fractions (`# ?/?`) and locale prefixes (`[$-409]`) are ignored
-when rendering — but they survive a round trip, so nothing is lost from the
+when rendering - but they survive a round trip, so nothing is lost from the
 file.
 
 The epoch matters only for dates: a workbook saved on a Mac counts from 1904,
@@ -84,7 +84,7 @@ and lives on `Spreadsheet::epoch`.
 
 ## Rich text
 
-When formatting changes mid-string, the cell holds `RichText(Vec<TextRun>)` —
+When formatting changes mid-string, the cell holds `RichText(Vec<TextRun>)` -
 each run with its own partial font (`DiffFont`, where every field is optional,
 so a run overriding just the colour does not silently impose a font name).
 
@@ -105,7 +105,7 @@ assert_eq!(value.plain_text().as_deref(), Some("Total: 480"));
 
 ## Differential styles
 
-Conditional formatting uses `DifferentialStyle` — a *partial* style where each
+Conditional formatting uses `DifferentialStyle` - a *partial* style where each
 part is an `Option`. A `<dxf>` says what to change, not what the result should
 be, so filling in a whole `Font` would impose a name and size the original
 never asked for.
@@ -114,7 +114,7 @@ never asked for.
 
 - **ODS** has no per-cell format string; date and time formats are inferred
   from the value, custom codes do not survive.
-- **HTML** and **ODS** lose theme and indexed palette colours — there is no
+- **HTML** and **ODS** lose theme and indexed palette colours - there is no
   equivalent concept.
 - **xls** writes values, fonts, number formats and alignment, but not fills or
   borders: their colours are indexes into a 56-colour palette, and choosing the

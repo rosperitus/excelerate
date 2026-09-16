@@ -134,7 +134,7 @@ fn documented_deviations_from_other_engines() {
     let absolute = Range::parse("$B$4:$D$9").unwrap();
     assert_eq!(absolute, Range::parse("B4:D9").unwrap());
 
-    // Mapping serial 60 to 1900-02-28 — the same day as serial 59 — makes
+    // Mapping serial 60 to 1900-02-28 - the same day as serial 59 - makes
     // its conversion is not reversible there. Excel shows 1900-02-29, and the
     // read -> write -> read invariant needs a bijection, so we follow Excel.
     let phantom = from_serial(60.0, Epoch::Windows1900).unwrap();
@@ -149,8 +149,8 @@ fn documented_deviations_from_other_engines() {
     assert!(excelerate::CellRef::parse("A0").is_err());
     assert!(Row::from_one_based(0).is_err());
 
-    // An implementation that gives CSV a backslash escape — which no
-    // spreadsheet has — reads `"a\"b",c` as one field
+    // An implementation that gives CSV a backslash escape - which no
+    // spreadsheet has - reads `"a\"b",c` as one field
     // `a\"b`. Excel closes the quote at the quote, giving `a\b"`.
     let book = excelerate::reader::read_csv_str("\"a\\\"b\",c\n", &CsvOptions::with_delimiter(','));
     let sheet = &book.sheets()[0];
@@ -572,7 +572,7 @@ fn the_delimiter_is_inferred_the_way_excel_infers_it() {
 }
 
 /// The xls the writer produced reads back as the workbook that went
-/// into it. The reader is not the oracle here — the writer is: the
+/// into it. The reader is not the oracle here - the writer is: the
 /// fixture is written by and the values are what the script that
 /// built it put in.
 #[test]

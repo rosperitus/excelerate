@@ -6,7 +6,7 @@
 //! | Text | Read as |
 //! |---|---|
 //! | `2015-05-31`, `2015/5/3` | year first when the first number is four digits |
-//! | `12/25/2012`, `2-28-1900` | month, day, year — the American order |
+//! | `12/25/2012`, `2-28-1900` | month, day, year - the American order |
 //! | `31-May-2015`, `May 31, 2015` | a month name settles which number is which |
 //! | `1st May 2015` | the ordinal suffix is dropped |
 //! | `1/1/29`, `1/1/30` | 2029 and 1930: under 30 is this century |
@@ -42,7 +42,7 @@ impl Parsed {
 /// Reads a date, a time, or both out of text.
 ///
 /// Returns `None` for anything that is not one, including text with no digit
-/// in it at all — the cheap check makes first.
+/// in it at all - the cheap check makes first.
 #[must_use]
 pub fn parse(text: &str) -> Option<Parsed> {
     let text = text.trim().trim_matches('"');
@@ -180,7 +180,7 @@ fn parse_date(text: &str) -> Option<DateTime> {
         (Some(month), 2) => {
             let ((a, a_digits), (b, b_digits)) = (numbers[0], numbers[1]);
             // Whichever of the two looks like a year is one; when neither
-            // does, the written order settles it — `25-Jan-20` is the
+            // does, the written order settles it - `25-Jan-20` is the
             // twenty-fifth of January 2020, day before year.
             if a_digits >= 3 || a > 31 {
                 build(year_of(a, a_digits), month, b)

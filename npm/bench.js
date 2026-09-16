@@ -1,5 +1,5 @@
 // How fast our wasm build opens a document: parsing a buffer into memory and
-// nothing else — no recalculation, no writing.
+// nothing else - no recalculation, no writing.
 //
 //   node bench.js [runs]
 const fs = require("node:fs");
@@ -55,11 +55,11 @@ for (const name of fs.readdirSync(DIR).sort()) {
 console.log(`median of ${RUNS} runs (fewer for large files), parsing only\n`);
 console.table(
   rows.map((r) => ({
-    file: r.name.length > 40 ? `${r.name.slice(0, 37)}…` : r.name,
+    file: r.name.length > 40 ? `${r.name.slice(0, 37)}...` : r.name,
     KB: (r.size / 1024).toFixed(0),
-    cells: r.error ? "—" : r.cells,
+    cells: r.error ? "-" : r.cells,
     median: r.error ? "error" : `${r.median.toFixed(1)} ms`,
-    min: r.error ? "—" : `${r.min.toFixed(1)} ms`,
+    min: r.error ? "-" : `${r.min.toFixed(1)} ms`,
   })),
 );
 

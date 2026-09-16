@@ -34,7 +34,7 @@ pub fn if_(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     }
 }
 
-/// `IFERROR(value, fallback)` — the fallback is computed only if needed.
+/// `IFERROR(value, fallback)` - the fallback is computed only if needed.
 pub fn iferror(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     fallback_when(engine, origin, args, |v| v.error().is_some())
 }
@@ -61,17 +61,17 @@ fn fallback_when(
     v
 }
 
-/// `AND(logical1, ...)` — every argument must be true.
+/// `AND(logical1, ...)` - every argument must be true.
 pub fn and(args: &[Arg]) -> Value {
     fold(args, true, |a, b| a && b)
 }
 
-/// `OR(logical1, ...)` — any argument true is enough.
+/// `OR(logical1, ...)` - any argument true is enough.
 pub fn or(args: &[Arg]) -> Value {
     fold(args, false, |a, b| a || b)
 }
 
-/// `XOR(logical1, ...)` — true when an odd number of arguments are true.
+/// `XOR(logical1, ...)` - true when an odd number of arguments are true.
 pub fn xor(args: &[Arg]) -> Value {
     fold(args, false, |a, b| a != b)
 }
@@ -137,7 +137,7 @@ pub fn false_(args: &[Arg]) -> Value {
     }
 }
 
-/// `IFS(test1, value1, ...)` — the value beside the first test that passes.
+/// `IFS(test1, value1, ...)` - the value beside the first test that passes.
 ///
 /// Lazy: only the branch that is taken is computed, and the tests stop at the
 /// first one that holds.

@@ -9,15 +9,15 @@ does the same.
 
 ```
 formula "[1]Prices!A1"
-  └─ 1 → the first <externalReference> in workbook.xml   (position, not a name)
-        └─ its relationship → xl/externalLinks/externalLink1.xml
+  └─ 1 -> the first <externalReference> in workbook.xml   (position, not a name)
+        └─ its relationship -> xl/externalLinks/externalLink1.xml
               ├─ <sheetNames>   the linked book's sheets
               └─ <sheetDataSet> the cached values, cell by cell
-        └─ that part's own .rels → file:///C:/work/prices.xlsx  (where it came from)
+        └─ that part's own .rels -> file:///C:/work/prices.xlsx  (where it came from)
 ```
 
 The number in brackets is a *position*, not a filename. The filename lives one
-level deeper and is only there to tell you — and a future refresh — where the
+level deeper and is only there to tell you - and a future refresh - where the
 numbers came from.
 
 ## Reading the cache
@@ -28,7 +28,7 @@ numbers came from.
 for (i, linked) in book.external.iter().enumerate() {
     println!("[{}] {:?}", i + 1, linked.path);
     for sheet in &linked.sheets {
-        println!("  {} — {} cached cells", sheet.name, sheet.cells.len());
+        println!("  {} - {} cached cells", sheet.name, sheet.cells.len());
     }
 }
 # Ok::<(), excelerate::Error>(())
@@ -39,7 +39,7 @@ lists its references, so `[N]` is index `N - 1`.
 
 ## Recalculating against it
 
-Nothing extra to switch on — the engine reads links out of that cache:
+Nothing extra to switch on - the engine reads links out of that cache:
 
 ```rust
 use excelerate::formula::eval::recalculate;
@@ -56,9 +56,9 @@ Rules of the road:
 | Situation | Result |
 |---|---|
 | cell is in the cache | its value |
-| cell is not cached | blank — same as the app shows before a refresh |
+| cell is not cached | blank - same as the app shows before a refresh |
 | no such sheet, or no such link | `#REF!` |
-| link written by name (`[prices.xlsx]Sheet1!A1`) | `#REF!` — see below |
+| link written by name (`[prices.xlsx]Sheet1!A1`) | `#REF!` - see below |
 
 The cached parts also ride through a write untouched, so saving a book does not
 break its links.
@@ -116,7 +116,7 @@ recalculate(&mut report, None, &Options::default());
 Three things to keep in mind:
 
 - **Ordering is yours.** There is no cross-workbook dependency graph, on
-  purpose — a cycle `A → B → A` is resolved by iterating, not by topology, in
+  purpose - a cycle `A -> B -> A` is resolved by iterating, not by topology, in
   every spreadsheet app too.
 - **It is a copy.** Later edits to `prices` are invisible to `report` until you
   call `link` again.
@@ -125,12 +125,12 @@ Three things to keep in mind:
 
 ## Known limits
 
-- Only the `[N]` form resolves. A link spelled by filename —
-  `[prices.xlsx]Sheet1!A1` or `'C:\work\[prices.xlsx]Sheet1'!A1` — parses but
+- Only the `[N]` form resolves. A link spelled by filename -
+  `[prices.xlsx]Sheet1!A1` or `'C:\work\[prices.xlsx]Sheet1'!A1` - parses but
   yields `#REF!`. Files written by Excel always use the number; the named form
   shows up in hand-written formulas and files from other generators.
 - **xls does not do this at all.** In BIFF8 a formula is a token tree, and the
-  reader keeps only its cached result — there is no formula text to hold a
+  reader keeps only its cached result - there is no formula text to hold a
   `[1]`. Linked-book support there waits on a formula decompiler.
 - Refreshing the cache back into the file on save is not implemented: the parts
   are written exactly as they arrived.

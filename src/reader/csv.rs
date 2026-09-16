@@ -1,7 +1,7 @@
 //! Reading CSV.
 //!
 //! A CSV file says nothing about itself: no encoding, no delimiter, no types.
-//! Everything below is a guess made the way Excel makes it —
+//! Everything below is a guess made the way Excel makes it -
 //! the byte order mark decides the encoding, a leading `sep=;` line or the
 //! statistics of the first thousand lines decide the delimiter, and the shape
 //! of each field decides whether it is a number, a boolean, an error or text.
@@ -373,7 +373,7 @@ pub(crate) fn value_of(field: &str) -> CellValue {
     #[cfg(feature = "formulas")]
     let parses = |rest: &str| crate::formula::parse(rest).is_ok();
     // Without the engine, the cheap test of what Excel would accept: a formula
-    // starts with a value, a name, a sign or a bracket — never with another
+    // starts with a value, a name, a sign or a bracket - never with another
     // operator, which is what makes `==` text.
     #[cfg(not(feature = "formulas"))]
     let parses = |rest: &str| {

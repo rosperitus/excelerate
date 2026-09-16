@@ -3,7 +3,7 @@
 //! Every date in Excel is a number: the count of days since the workbook's base
 //! date, with the time of day in the fraction. So all of these functions are
 //! arithmetic on that number, and all of them need to know which base date the
-//! workbook counts from — hence the [`Epoch`] every one of them takes.
+//! workbook counts from - hence the [`Epoch`] every one of them takes.
 //!
 //! The calendar they walk is Excel's, not the real one: 1900 is a leap year in
 //! a `Windows1900` workbook. An implementation converting to a calendar type uses
@@ -53,7 +53,7 @@ pub fn date(epoch: Epoch, args: &[Arg]) -> Value {
     Value::Number(serial)
 }
 
-/// `TIME(hour, minute, second)` — the fraction of a day, wrapping past 24h.
+/// `TIME(hour, minute, second)` - the fraction of a day, wrapping past 24h.
 pub fn time(_: Epoch, args: &[Arg]) -> Value {
     let [h, m, s] = args else {
         return Value::Error(CellError::Value);
@@ -99,7 +99,7 @@ pub fn minute(epoch: Epoch, args: &[Arg]) -> Value {
     part(epoch, args, |dt| f64::from(dt.minute))
 }
 
-/// `SECOND(serial)` — whole seconds, rounded as Excel rounds them.
+/// `SECOND(serial)` - whole seconds, rounded as Excel rounds them.
 pub fn second(epoch: Epoch, args: &[Arg]) -> Value {
     part(epoch, args, |dt| dt.second.round())
 }
@@ -135,7 +135,7 @@ pub fn weekday(epoch: Epoch, args: &[Arg]) -> Value {
     Value::Number(f64::from(if kind == 3 { index } else { index + 1 }))
 }
 
-/// `WEEKNUM(serial, [type])` — the week holding 1 January is week 1.
+/// `WEEKNUM(serial, [type])` - the week holding 1 January is week 1.
 pub fn weeknum(epoch: Epoch, args: &[Arg]) -> Value {
     let (serial, kind) = match args {
         [s] => (s.serial(epoch), Ok(1.0)),
@@ -181,7 +181,7 @@ pub fn weeknum(epoch: Epoch, args: &[Arg]) -> Value {
     Value::Number(f64::from(elapsed / 7 + 1))
 }
 
-/// `ISOWEEKNUM(serial)` — the ISO 8601 week, whose first week is the one
+/// `ISOWEEKNUM(serial)` - the ISO 8601 week, whose first week is the one
 /// holding the first Thursday of the year.
 pub fn isoweeknum(epoch: Epoch, args: &[Arg]) -> Value {
     let [s] = args else {
@@ -193,12 +193,12 @@ pub fn isoweeknum(epoch: Epoch, args: &[Arg]) -> Value {
     }
 }
 
-/// `EDATE(serial, months)` — the same day of the month, that many months away.
+/// `EDATE(serial, months)` - the same day of the month, that many months away.
 pub fn edate(epoch: Epoch, args: &[Arg]) -> Value {
     shift_months(epoch, args, false)
 }
 
-/// `EOMONTH(serial, months)` — the last day of that month.
+/// `EOMONTH(serial, months)` - the last day of that month.
 pub fn eomonth(epoch: Epoch, args: &[Arg]) -> Value {
     shift_months(epoch, args, true)
 }
@@ -229,7 +229,7 @@ fn shift_months(epoch: Epoch, args: &[Arg], to_end: bool) -> Value {
     }
 }
 
-/// `DAYS(end, start)` — plain difference, which is subtraction in disguise.
+/// `DAYS(end, start)` - plain difference, which is subtraction in disguise.
 pub fn days(epoch: Epoch, args: &[Arg]) -> Value {
     let [end, start] = args else {
         return Value::Error(CellError::Value);
@@ -240,7 +240,7 @@ pub fn days(epoch: Epoch, args: &[Arg]) -> Value {
     }
 }
 
-/// `DAYS360(start, end, [european])` — every month counted as thirty days.
+/// `DAYS360(start, end, [european])` - every month counted as thirty days.
 pub fn days360(epoch: Epoch, args: &[Arg]) -> Value {
     let (start, end, european) = match args {
         [s, e] => (s.serial(epoch), e.serial(epoch), Ok(false)),
@@ -356,7 +356,7 @@ impl Weekend {
     /// The codes are Excel's own: 1..=7 are the seven two-day weekends
     /// starting with Saturday/Sunday, and 11..=17 the seven one-day ones
     /// starting with Sunday. A mask is seven characters of `0` and `1`
-    /// beginning on Monday; `"1111111"` — every day off — is `#VALUE!`,
+    /// beginning on Monday; `"1111111"` - every day off - is `#VALUE!`,
     /// because nothing would ever be a working day.
     fn parse(value: &Value) -> Result<Self, CellError> {
         if let Value::Text(mask) = value {
@@ -404,7 +404,7 @@ impl Weekend {
     }
 }
 
-/// `NETWORKDAYS(start, end, [holidays])` — working days in the span, both ends
+/// `NETWORKDAYS(start, end, [holidays])` - working days in the span, both ends
 /// included.
 pub fn networkdays(epoch: Epoch, args: &[Arg]) -> Value {
     let (start, end, rest) = match args.split_at_checked(2) {
@@ -417,7 +417,7 @@ pub fn networkdays(epoch: Epoch, args: &[Arg]) -> Value {
     net(epoch, start, end, Weekend::SATURDAY_SUNDAY, rest)
 }
 
-/// `NETWORKDAYS.INTL(start, end, [weekend], [holidays])` — the same, with the
+/// `NETWORKDAYS.INTL(start, end, [weekend], [holidays])` - the same, with the
 /// weekend named rather than assumed.
 pub fn networkdays_intl(epoch: Epoch, args: &[Arg]) -> Value {
     let (start, end, weekend, rest) = match args.split_at_checked(2) {
@@ -472,7 +472,7 @@ fn net(epoch: Epoch, start: f64, end: f64, weekend: Weekend, rest: &[Arg]) -> Va
     Value::Number(count * sign)
 }
 
-/// `WORKDAY(start, days, [holidays])` — the date that many working days away.
+/// `WORKDAY(start, days, [holidays])` - the date that many working days away.
 pub fn workday(epoch: Epoch, args: &[Arg]) -> Value {
     let (start, count, rest) = match args.split_at_checked(2) {
         Some(([s, d], rest)) => (s.serial(epoch), d.number(), rest),
@@ -484,7 +484,7 @@ pub fn workday(epoch: Epoch, args: &[Arg]) -> Value {
     work(epoch, start, count, Weekend::SATURDAY_SUNDAY, rest)
 }
 
-/// `WORKDAY.INTL(start, days, [weekend], [holidays])` — the same, with the
+/// `WORKDAY.INTL(start, days, [weekend], [holidays])` - the same, with the
 /// weekend named rather than assumed.
 pub fn workday_intl(epoch: Epoch, args: &[Arg]) -> Value {
     let (start, count, weekend, rest) = match args.split_at_checked(2) {
@@ -598,7 +598,7 @@ pub(crate) fn year_fraction(epoch: Epoch, start: f64, end: f64, basis: i32) -> O
     })
 }
 
-/// `TODAY()` — today's date, with no time of day.
+/// `TODAY()` - today's date, with no time of day.
 ///
 /// The clock is read in UTC: time zones are not modelled anywhere in the crate
 /// yet, and neither is the "recalculate on open" that makes this function
@@ -610,7 +610,7 @@ pub fn today(epoch: Epoch, args: &[Arg]) -> Value {
     }
 }
 
-/// `NOW()` — the date and time, in UTC. See [`today`].
+/// `NOW()` - the date and time, in UTC. See [`today`].
 pub fn now(epoch: Epoch, args: &[Arg]) -> Value {
     clock(epoch, args)
 }
@@ -626,7 +626,7 @@ fn clock(epoch: Epoch, args: &[Arg]) -> Value {
     Value::Number(unix + crate::shared::unix_seconds() / 86_400.0)
 }
 
-/// `DATEVALUE(text)` — the date a string spells, without its time.
+/// `DATEVALUE(text)` - the date a string spells, without its time.
 ///
 /// Text that holds only a time is not a date, so it is `#VALUE!` here even
 /// though `TIMEVALUE` reads the same string happily.
@@ -636,7 +636,7 @@ pub fn datevalue(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `TIMEVALUE(text)` — the time of day a string spells, as a fraction.
+/// `TIMEVALUE(text)` - the time of day a string spells, as a fraction.
 ///
 /// A string carrying both gives up its time alone, which is what makes
 /// `TIMEVALUE("2015-05-31 13:00")` half past noon rather than a date.
@@ -680,7 +680,7 @@ fn part(epoch: Epoch, args: &[Arg], body: fn(DateTime) -> f64) -> Value {
     let Ok(mut dt) = from_serial(serial, epoch) else {
         return Value::Error(CellError::Num);
     };
-    // Excel calls serial 0 "0 January 1900" — a day that is not on any
+    // Excel calls serial 0 "0 January 1900" - a day that is not on any
     // calendar, but one it still answers about: `YEAR(0)` is 1900 and `DAY(0)`
     // is 0. The arithmetic elsewhere keeps the honest 31 December 1899.
     if epoch == Epoch::Windows1900 && serial.floor() == 0.0 {

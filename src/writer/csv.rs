@@ -1,6 +1,6 @@
 //! Writing CSV.
 //!
-//! One sheet, no styling, no formulas — a CSV holds the values a reader would
+//! One sheet, no styling, no formulas - a CSV holds the values a reader would
 //! see on screen and nothing else. A formula is written as its result: its
 //! cached one when the file it came from had it, otherwise what the engine
 //! computes now.

@@ -81,25 +81,25 @@ pub enum Error {
 /// Result of a crate operation.
 pub type Result<T> = core::result::Result<T, Error>;
 
-/// An error code held *as a value* in a cell — not an operation failure.
+/// An error code held *as a value* in a cell - not an operation failure.
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CellError {
-    /// `#NULL!` — range intersection is empty.
+    /// `#NULL!` - range intersection is empty.
     Null,
-    /// `#DIV/0!` — division by zero.
+    /// `#DIV/0!` - division by zero.
     Div0,
-    /// `#VALUE!` — wrong argument type.
+    /// `#VALUE!` - wrong argument type.
     Value,
-    /// `#REF!` — reference to a cell that no longer exists.
+    /// `#REF!` - reference to a cell that no longer exists.
     Ref,
-    /// `#NAME?` — unknown name or function.
+    /// `#NAME?` - unknown name or function.
     Name,
-    /// `#NUM!` — invalid numeric value.
+    /// `#NUM!` - invalid numeric value.
     Num,
-    /// `#N/A` — value not available.
+    /// `#N/A` - value not available.
     Na,
-    /// `#CALC!` — array calculation error.
+    /// `#CALC!` - array calculation error.
     Calc,
 }
 

@@ -1,6 +1,6 @@
 // Build a workbook, calculate it, write it out, read it back.
 // Run from the npm/ folder:  node typescript/basic.ts
-// (Node 22.6+ strips the types itself — no build step, no local node_modules)
+// (Node 22.6+ strips the types itself - no build step, no local node_modules)
 import { Book, type CellValue } from "excelerate";
 import { readFileSync, writeFileSync } from "node:fs";
 

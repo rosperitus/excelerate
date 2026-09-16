@@ -1,7 +1,7 @@
 //! Reading xls (BIFF8).
 //!
-//! An xls is a stream of records — a two-byte number, a two-byte length, then
-//! that many bytes — kept in the `Workbook` stream of an OLE compound file (see
+//! An xls is a stream of records - a two-byte number, a two-byte length, then
+//! that many bytes - kept in the `Workbook` stream of an OLE compound file (see
 //! [`super::ole`]). The globals come first and hold the shared strings, the
 //! formats and the list of sheets; each sheet is a substream that starts where
 //! its `BOUNDSHEET` record says.

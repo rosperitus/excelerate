@@ -2,12 +2,12 @@
 //!
 //! A sheet becomes a `<table>`: one `<tr>` per row, one `<td>` per cell, merges
 //! as `colspan`/`rowspan`. The values go through the number-format engine, so
-//! what the page shows is what Excel shows — a date is a date, not a serial
+//! what the page shows is what Excel shows - a date is a date, not a serial
 //! number.
 //!
 //! Styles are written once as CSS classes (`td.style7`), one per entry of the
-//! workbook's style table, exactly as does. The alternative — an
-//! inline `style=` on every cell — repeats the same declarations for every one
+//! workbook's style table, exactly as does. The alternative - an
+//! inline `style=` on every cell - repeats the same declarations for every one
 //! of a quarter-million cells.
 
 use crate::error::{Error, Result};
@@ -547,7 +547,7 @@ fn trim(n: f64) -> String {
 ///
 /// A measured pixel width for fifteen fonts at every size would be exact;
 /// only the ratio for the default font matters here, so this uses the one for
-/// Calibri 11 — 9.140625 characters to 64 pixels — and extrapolates by size,
+/// Calibri 11 - 9.140625 characters to 64 pixels - and extrapolates by size,
 /// which is what itself does for every font it has no table for.
 fn column_points(width: f64, font: &Font) -> f64 {
     const CALIBRI_11_PIXELS_PER_CHARACTER: f64 = 64.0 / 9.140_625;

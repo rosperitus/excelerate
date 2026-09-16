@@ -18,7 +18,7 @@ pub const MAX_UNCOMPRESSED_SIZE: u64 = 512 * 1024 * 1024;
 /// A part is not more dangerous than the package holding it, and the package
 /// is checked before any part is read, so this is the same number: it caps how
 /// much one part may hold in memory at once, not how far a file may expand.
-/// A real workbook does reach it — a hundred-megabyte package can carry a
+/// A real workbook does reach it - a hundred-megabyte package can carry a
 /// third of a gigabyte of sheet XML.
 pub const MAX_PART_SIZE: u64 = MAX_UNCOMPRESSED_SIZE;
 

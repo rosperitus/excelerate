@@ -19,12 +19,12 @@ book.recalculate();
 console.log("sheets:", book.sheetNames(), "active:", book.activeSheet());
 console.log("used range:", book.usedRange(0));
 console.log("grid:", book.getRange(0, "A1:B4"));
-console.log("B4: formula", book.getFormula(0, "B4"), "→", book.getFormatted(0, "B4"));
+console.log("B4: formula", book.getFormula(0, "B4"), "->", book.getFormatted(0, "B4"));
 console.log(book.toCsv(0));
 
 // An edit and a targeted recalculation: only what depends on B2 is computed.
 book.set(0, "B2", 20);
-console.log("formulas recalculated:", book.recalculateFrom(0, "B2"), "→ total", book.get(0, "B4"));
+console.log("formulas recalculated:", book.recalculateFrom(0, "B2"), "-> total", book.get(0, "B4"));
 
 const dir = path.join(__dirname, "files");
 fs.writeFileSync(path.join(dir, "out.xlsx"), book.toXlsx());

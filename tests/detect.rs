@@ -116,7 +116,7 @@ fn bytes_are_identified_the_same_way() {
         "Отчёт"
     );
 
-    // Plain text says nothing, so the name decides — and CSV is the default.
+    // Plain text says nothing, so the name decides - and CSV is the default.
     assert_eq!(
         read_bytes(b"a,b\n1,2\n", None).unwrap().sheets()[0].len(),
         4

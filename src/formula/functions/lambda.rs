@@ -1,7 +1,7 @@
 //! Functions that make and use functions: `LAMBDA` and what iterates with it.
 //!
-//! These are not ordinary builtins. `LAMBDA` never computes its arguments — it
-//! keeps the last one as an expression and the rest as parameter names — and
+//! These are not ordinary builtins. `LAMBDA` never computes its arguments - it
+//! keeps the last one as an expression and the rest as parameter names - and
 //! `LET` binds names for the body that follows. Both need the engine's scope,
 //! so all of them are lazy, taking the unevaluated arguments.
 //!
@@ -13,7 +13,7 @@ use crate::formula::parser::Expr;
 use crate::formula::value::{Lambda, Value};
 use std::rc::Rc;
 
-/// `LAMBDA([param, ...], body)` — a function written in the formula language.
+/// `LAMBDA([param, ...], body)` - a function written in the formula language.
 ///
 /// The parameters are names, not values, so they are read from the expressions
 /// themselves rather than computed. Called directly, as
@@ -25,8 +25,8 @@ pub fn lambda(engine: &mut Engine<'_>, _origin: Origin, args: &[Expr]) -> Value 
     };
     let mut names = Vec::with_capacity(params.len());
     for param in params {
-        // A parameter is written as a bare name; anything else — a number, a
-        // reference, a call — is not something that can be bound.
+        // A parameter is written as a bare name; anything else - a number, a
+        // reference, a call - is not something that can be bound.
         match param {
             Expr::Name(name) => names.push(name.clone()),
             _ => return Value::Error(CellError::Value),
@@ -39,7 +39,7 @@ pub fn lambda(engine: &mut Engine<'_>, _origin: Origin, args: &[Expr]) -> Value 
     }))
 }
 
-/// `LET(name, value, [name, value, ...], body)` — names bound for one formula.
+/// `LET(name, value, [name, value, ...], body)` - names bound for one formula.
 ///
 /// The bindings take effect in order, so a later value may use an earlier
 /// name; the body sees them all. A name bound here shadows a defined name of
@@ -71,7 +71,7 @@ pub fn let_(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     engine.scoped(bound, |engine| engine.eval_expr(origin, body))
 }
 
-/// `MAP(array, [array, ...], lambda)` — the lambda applied to each element.
+/// `MAP(array, [array, ...], lambda)` - the lambda applied to each element.
 ///
 /// With several arrays the lambda is called with one element from each, so
 /// they have to be the same shape.
@@ -105,12 +105,12 @@ pub fn map(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     Value::Array(out)
 }
 
-/// `REDUCE(initial, array, lambda)` — the array folded into one value.
+/// `REDUCE(initial, array, lambda)` - the array folded into one value.
 pub fn reduce(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     fold(engine, origin, args, false)
 }
 
-/// `SCAN(initial, array, lambda)` — the same, keeping every step.
+/// `SCAN(initial, array, lambda)` - the same, keeping every step.
 pub fn scan(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     fold(engine, origin, args, true)
 }
@@ -146,13 +146,13 @@ fn fold(engine: &mut Engine<'_>, origin: Origin, args: &[Expr], keep_steps: bool
     }
 }
 
-/// `BYROW(array, lambda)` — the lambda applied to each row, which answers with
+/// `BYROW(array, lambda)` - the lambda applied to each row, which answers with
 /// one value per row.
 pub fn byrow(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     by_line(engine, origin, args, true)
 }
 
-/// `BYCOL(array, lambda)` — the same by column.
+/// `BYCOL(array, lambda)` - the same by column.
 pub fn bycol(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     by_line(engine, origin, args, false)
 }
@@ -193,7 +193,7 @@ fn by_line(engine: &mut Engine<'_>, origin: Origin, args: &[Expr], rows: bool) -
     }
 }
 
-/// `MAKEARRAY(rows, columns, lambda)` — an array built by calling the lambda
+/// `MAKEARRAY(rows, columns, lambda)` - an array built by calling the lambda
 /// with each row and column number, counted from one.
 pub fn makearray(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     let [rows, columns, function] = args else {

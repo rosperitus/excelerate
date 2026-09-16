@@ -70,7 +70,7 @@ pub fn read_xlsx_from<R: Read + Seek>(source: R) -> Result<Spreadsheet> {
 /// The same, with the cap on how far the package may expand given explicitly.
 ///
 /// The default [`MAX_UNCOMPRESSED_SIZE`] is what stops a zip bomb, and a real
-/// workbook rarely comes near it — but "rarely" is not "never", and a caller
+/// workbook rarely comes near it - but "rarely" is not "never", and a caller
 /// who knows where the file came from can raise it.
 ///
 /// # Errors
@@ -1682,7 +1682,7 @@ fn read_sheet<R: Read + Seek>(
 /// The sheet being built and everything the event loop threads through it.
 ///
 /// A sheet part is one flat stream of elements whose meaning depends on what is
-/// open around them — a `<color>` inside a colour scale is not a cell colour, a
+/// open around them - a `<color>` inside a colour scale is not a cell colour, a
 /// `<formula>` inside a `<cfRule>` is not a cell formula. The flags below are
 /// that context; keeping them in one place is what lets the handlers split by
 /// the group of elements they read rather than by which variable they touch.
@@ -1789,8 +1789,8 @@ impl SheetReader<'_> {
             }
             // A self-closing element has no End event to lower the flag again.
             // `<f t="shared" si="0"/>` is common, and leaving the flag up made
-            // every later run of text in the sheet — down to the formulas of
-            // its data validations — be swallowed as formula source.
+            // every later run of text in the sheet - down to the formulas of
+            // its data validations - be swallowed as formula source.
             "v" => self.in_value = !empty,
             "f" => {
                 self.in_formula = !empty;
@@ -2372,7 +2372,7 @@ fn read_defined_names<R: Read + Seek>(
 ///
 /// Excel recalculates a link from this cache while the other file is closed,
 /// and so does [`crate::formula`]. A part that links to something other than a
-/// workbook — DDE, OLE — has no `<externalBook>` and reads as an empty entry,
+/// workbook - DDE, OLE - has no `<externalBook>` and reads as an empty entry,
 /// which keeps `[N]` counting straight.
 fn read_external_link<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,

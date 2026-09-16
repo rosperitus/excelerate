@@ -40,7 +40,7 @@ test("the errors are readable", () => {
   assert.throws(() => book.set(0, "нея", 1));
 });
 
-test("a round trip with a real file: read → edit → write", () => {
+test("a round trip with a real file: read -> edit -> write", () => {
   const fs = require("node:fs");
   const os = require("node:os");
   const path = require("node:path");

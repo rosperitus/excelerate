@@ -1,7 +1,7 @@
 //! Tables: what a table part says about itself, that a rewrite keeps it, and
 //! that an edit to the grid moves it.
 //!
-//! The fixture is written by excelize, not by us — a file made by the code
+//! The fixture is written by excelize, not by us - a file made by the code
 //! under test would only prove it agrees with itself.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -171,7 +171,7 @@ fn a_formula_can_name_the_table_instead_of_its_cells() {
 
     let book = read_xlsx_from(Cursor::new(fixture())).unwrap();
     let mut engine = Engine::new(&book);
-    // A cell outside the table, so that `[@…]` has to fail there.
+    // A cell outside the table, so that `[@...]` has to fail there.
     let outside = Origin::new(0, CellRef::parse("F20").unwrap());
 
     let number =

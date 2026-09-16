@@ -1,4 +1,4 @@
-//! Charts: what a chart says about itself, and that a rewrite keeps it — as
+//! Charts: what a chart says about itself, and that a rewrite keeps it - as
 //! bytes when nothing changed, from the model when something did.
 //!
 //! `chart1.xlsx` is a dashboard saved by Excel: 130 classic charts over 14

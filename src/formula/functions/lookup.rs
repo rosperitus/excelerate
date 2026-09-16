@@ -8,14 +8,14 @@ use crate::formula::value::{Value, compare};
 use crate::{CellRef, Col, Range, Row};
 use std::cmp::Ordering;
 
-/// `ROW([reference])` — the row of the reference, or of the cell asking.
+/// `ROW([reference])` - the row of the reference, or of the cell asking.
 ///
 /// Over a range it is every row of it, as a vertical array.
 pub fn row(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     position(engine, origin, args, true)
 }
 
-/// `COLUMN([reference])` — likewise, but a horizontal array of columns.
+/// `COLUMN([reference])` - likewise, but a horizontal array of columns.
 pub fn column(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     position(engine, origin, args, false)
 }
@@ -57,7 +57,7 @@ fn position(engine: &mut Engine<'_>, origin: Origin, args: &[Expr], want_rows: b
     }
 }
 
-/// `ROWS(array)` — how many rows it covers.
+/// `ROWS(array)` - how many rows it covers.
 pub fn rows(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     size(engine, origin, args, true)
 }
@@ -68,7 +68,7 @@ pub fn columns(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value 
 }
 
 /// Shared body of `ROWS` and `COLUMNS`, which count the reference as written
-/// rather than the values behind it — `ROWS(A1:A100)` is 100 even when only
+/// rather than the values behind it - `ROWS(A1:A100)` is 100 even when only
 /// three of those cells hold anything.
 fn size(engine: &mut Engine<'_>, origin: Origin, args: &[Expr], want_rows: bool) -> Value {
     let [arg] = args else {
@@ -120,7 +120,7 @@ pub fn choose(args: &[Arg]) -> Value {
     }
 }
 
-/// `INDEX(array, row, [column])` — 1-based, and 0 means the whole row or
+/// `INDEX(array, row, [column])` - 1-based, and 0 means the whole row or
 /// column.
 pub fn index(args: &[Arg]) -> Value {
     // Only the position arguments are checked for errors: an error sitting in
@@ -260,7 +260,7 @@ pub fn hlookup(args: &[Arg]) -> Value {
 
 /// Shared body of `VLOOKUP` and `HLOOKUP`.
 ///
-/// With `approximate` on — Excel's default — the first column or row must be
+/// With `approximate` on - Excel's default - the first column or row must be
 /// sorted upwards, and the search stops at the last entry that is not greater
 /// than the value looked for.
 fn table_lookup(args: &[Arg], vertical: bool) -> Value {
@@ -346,7 +346,7 @@ fn count_value(n: usize) -> Value {
     Value::Number(n as f64)
 }
 
-/// `TRANSPOSE(array)` — rows become columns.
+/// `TRANSPOSE(array)` - rows become columns.
 pub fn transpose(args: &[Arg]) -> Value {
     let [arg] = args else {
         return Value::Error(CellError::Value);
@@ -359,7 +359,7 @@ pub fn transpose(args: &[Arg]) -> Value {
     Value::Array(flipped)
 }
 
-/// `AREAS(reference)` — how many separate rectangles a reference names.
+/// `AREAS(reference)` - how many separate rectangles a reference names.
 ///
 /// Lazy, because the answer is about the reference rather than its values:
 /// only the union operator makes more than one area.
@@ -388,13 +388,13 @@ fn count_areas(e: &Expr) -> usize {
     }
 }
 
-/// `ADDRESS(row, column, [kind], [a1], [sheet])` — a reference as text.
+/// `ADDRESS(row, column, [kind], [a1], [sheet])` - a reference as text.
 pub fn address(args: &[Arg]) -> Value {
     if let Some(e) = super::first_error(args) {
         return Value::Error(e);
     }
-    // Past the column comes the kind of reference, then the `a1` flag — which
-    // chooses R1C1 notation and is not honoured here — then a sheet name.
+    // Past the column comes the kind of reference, then the `a1` flag - which
+    // chooses R1C1 notation and is not honoured here - then a sheet name.
     let (row, column, rest) = match args {
         [row, column, rest @ ..] if rest.len() <= 3 => (row, column, rest),
         _ => return Value::Error(CellError::Value),
@@ -516,7 +516,7 @@ fn index_within(n: f64, len: usize) -> Option<usize> {
     (at <= len).then(|| at - 1)
 }
 
-/// `SORTBY(array, by1, [order1], ...)` — sorted by another array of the same
+/// `SORTBY(array, by1, [order1], ...)` - sorted by another array of the same
 /// height rather than by one of its own columns.
 pub fn sortby(args: &[Arg]) -> Value {
     let Some((array, rest)) = args.split_first() else {
@@ -579,7 +579,7 @@ pub fn unique(args: &[Arg]) -> Value {
     Value::Array(out)
 }
 
-/// `FILTER(array, include, [if_empty])` — the rows where the test holds.
+/// `FILTER(array, include, [if_empty])` - the rows where the test holds.
 pub fn filter(args: &[Arg]) -> Value {
     let (array, include, fallback) = match args {
         [a, i] => (a, i, None),
@@ -606,12 +606,12 @@ pub fn filter(args: &[Arg]) -> Value {
     Value::Array(kept)
 }
 
-/// `TAKE(array, rows, [columns])` — the first or last few of each.
+/// `TAKE(array, rows, [columns])` - the first or last few of each.
 pub fn take(args: &[Arg]) -> Value {
     slice_of(args, true)
 }
 
-/// `DROP(array, rows, [columns])` — everything but them.
+/// `DROP(array, rows, [columns])` - everything but them.
 pub fn drop(args: &[Arg]) -> Value {
     slice_of(args, false)
 }
@@ -673,7 +673,7 @@ fn slice_of(args: &[Arg], keep: bool) -> Value {
     )
 }
 
-/// `CHOOSEROWS(array, row1, ...)` — the rows named, in the order named.
+/// `CHOOSEROWS(array, row1, ...)` - the rows named, in the order named.
 pub fn chooserows(args: &[Arg]) -> Value {
     chosen(args, true)
 }
@@ -731,7 +731,7 @@ fn chosen(args: &[Arg], by_row: bool) -> Value {
     })
 }
 
-/// `VSTACK(array1, ...)` — the arrays one under another.
+/// `VSTACK(array1, ...)` - the arrays one under another.
 pub fn vstack(args: &[Arg]) -> Value {
     let grids: Vec<Vec<Vec<Value>>> = args.iter().map(|a| as_grid(&a.value)).collect();
     let width = grids
@@ -756,7 +756,7 @@ pub fn vstack(args: &[Arg]) -> Value {
     Value::Array(out)
 }
 
-/// `HSTACK(array1, ...)` — the arrays side by side.
+/// `HSTACK(array1, ...)` - the arrays side by side.
 pub fn hstack(args: &[Arg]) -> Value {
     let grids: Vec<Vec<Vec<Value>>> = args.iter().map(|a| as_grid(&a.value)).collect();
     let height = grids.iter().map(Vec::len).max().unwrap_or(0);
@@ -776,7 +776,7 @@ pub fn hstack(args: &[Arg]) -> Value {
     Value::Array(out)
 }
 
-/// `TOROW(array)` — everything in one row, read across.
+/// `TOROW(array)` - everything in one row, read across.
 pub fn torow(args: &[Arg]) -> Value {
     let flat = flatten_grid(args);
     flat.map_or(Value::Error(CellError::Value), |values| {
@@ -784,7 +784,7 @@ pub fn torow(args: &[Arg]) -> Value {
     })
 }
 
-/// `TOCOL(array)` — everything in one column.
+/// `TOCOL(array)` - everything in one column.
 pub fn tocol(args: &[Arg]) -> Value {
     let flat = flatten_grid(args);
     flat.map_or(Value::Error(CellError::Value), |values| {
@@ -800,7 +800,7 @@ fn flatten_grid(args: &[Arg]) -> Option<Vec<Value>> {
     (!values.is_empty()).then_some(values)
 }
 
-/// `HYPERLINK(target, [label])` — the label, since a formula has no link to
+/// `HYPERLINK(target, [label])` - the label, since a formula has no link to
 /// follow; the target is what the writer stores beside the cell.
 pub fn hyperlink(args: &[Arg]) -> Value {
     match args {
@@ -854,7 +854,7 @@ pub fn xlookup(args: &[Arg]) -> Value {
         .unwrap_or(Value::Error(CellError::Ref))
 }
 
-/// `XMATCH(value, lookup, [mode], [search])` — the position rather than the
+/// `XMATCH(value, lookup, [mode], [search])` - the position rather than the
 /// value, with the same rules.
 pub fn xmatch(args: &[Arg]) -> Value {
     let (needle, haystack, rest) = match args {
@@ -990,7 +990,7 @@ pub fn lookup_vector(args: &[Arg]) -> Value {
     }
 }
 
-/// `INDIRECT(text, [a1])` — the reference a string spells, read now.
+/// `INDIRECT(text, [a1])` - the reference a string spells, read now.
 ///
 /// The text is parsed as a formula and then checked to be a reference: that
 /// is what keeps `INDIRECT("1+1")` from quietly computing two, which Excel
@@ -1111,12 +1111,12 @@ pub fn offset(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     engine.range(origin, sheet.as_deref(), Range { start, end })
 }
 
-/// `WRAPROWS(vector, count, [pad])` — a line folded into rows of `count`.
+/// `WRAPROWS(vector, count, [pad])` - a line folded into rows of `count`.
 pub fn wraprows(args: &[Arg]) -> Value {
     wrapped(args, true)
 }
 
-/// `WRAPCOLS(vector, count, [pad])` — the same folded into columns.
+/// `WRAPCOLS(vector, count, [pad])` - the same folded into columns.
 pub fn wrapcols(args: &[Arg]) -> Value {
     wrapped(args, false)
 }
@@ -1168,7 +1168,7 @@ fn wrapped(args: &[Arg], by_row: bool) -> Value {
     })
 }
 
-/// `EXPAND(array, rows, [columns], [pad])` — grown to a given size.
+/// `EXPAND(array, rows, [columns], [pad])` - grown to a given size.
 pub fn expand(args: &[Arg]) -> Value {
     if let Some(e) = super::first_error(args) {
         return Value::Error(e);
@@ -1221,7 +1221,7 @@ pub fn expand(args: &[Arg]) -> Value {
     )
 }
 
-/// `SINGLE(reference)`, written `@reference` — the one value a reference
+/// `SINGLE(reference)`, written `@reference` - the one value a reference
 /// stands for where a single value is wanted.
 ///
 /// This is Excel's implicit intersection: a reference spanning one column
@@ -1264,13 +1264,13 @@ pub fn single(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     value.scalar().clone()
 }
 
-/// `ANCHORARRAY(reference)`, written `reference#` — the whole array a formula
+/// `ANCHORARRAY(reference)`, written `reference#` - the whole array a formula
 /// produced, rather than the one value its cell shows.
 ///
 /// Excel means by this the range a result spilled into. Nothing spills here:
 /// a formula answering with an array occupies one cell and shows its top-left
 /// value, and reading that cell already hands back the array whole. So this
-/// says explicitly what a plain reference does anyway — which is the useful
+/// says explicitly what a plain reference does anyway - which is the useful
 /// half of it, since a formula written with `#` still means something.
 pub fn anchorarray(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     let [reference] = args else {

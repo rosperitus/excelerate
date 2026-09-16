@@ -10,7 +10,7 @@ Spreadsheet
 │   ├── view, properties, margins, page setup
 │   ├── data_validations, conditional_formats
 │   ├── protection, protected_ranges, auto_filter
-│   └── attachments  (drawings, comments — carried, not modelled)
+│   └── attachments  (drawings, comments - carried, not modelled)
 ├── styles: StyleTable          shared by every sheet
 ├── defined_names               named ranges and Excel's own `_xlnm.*`
 ├── external: Vec<ExternalBook> cached values of linked workbooks
@@ -40,7 +40,7 @@ assert_eq!(range.to_string(), "B4:D9");
 # Ok::<(), excelerate::Error>(())
 ```
 
-`A0` is an error, not a shrug — row 0 does not exist, and letting it slide only
+`A0` is an error, not a shrug - row 0 does not exist, and letting it slide only
 moves the bug downstream.
 
 ## Cell values
@@ -51,7 +51,7 @@ pub enum CellValue {
     Number(f64),          // dates live here too; the format makes them dates
     Text(String),
     Bool(bool),
-    Error(CellError),     // #DIV/0!, #N/A, …
+    Error(CellError),     // #DIV/0!, #N/A, ...
     RichText(Vec<TextRun>),   // formatting that changes mid-string
     Formula { formula: String, cached: Option<Box<CellValue>> },
 }
@@ -62,7 +62,7 @@ Two things worth internalising:
 - **Dates are numbers.** `45000` is a date only because the cell's number
   format says so. Convert with `shared::date`.
 - **A formula carries its last result.** That is what lets you read a workbook
-  without evaluating a thing — and why [formulas.md](formulas.md) has a section
+  without evaluating a thing - and why [formulas.md](formulas.md) has a section
   on when that cache is worth trusting.
 
 Setting values is `impl Into<CellValue>`, so the common cases are short:
@@ -127,12 +127,12 @@ max="16384" width="9.5"/>`), not expanded into 16k entries:
 # use excelerate::{Col, Row};
 # use excelerate::model::Worksheet;
 # let sheet = Worksheet::new("S")?;
-let width = sheet.column_width(Col::from_one_based(3)?);   // None → sheet default
+let width = sheet.column_width(Col::from_one_based(3)?);   // None -> sheet default
 let height = sheet.row_height(Row::from_one_based(7)?);
 # Ok::<(), excelerate::Error>(())
 ```
 
-Later runs win over earlier ones covering the same column — that is how Excel
+Later runs win over earlier ones covering the same column - that is how Excel
 reads them, and reproducing it matters more than tidiness.
 
 ## Everything else on the sheet
@@ -140,7 +140,7 @@ reads them, and reproducing it matters more than tidiness.
 `merges`, `hyperlinks`, `data_validations`, `conditional_formats`,
 `protection`, `protected_ranges`, `auto_filter`, `view`, `margins`,
 `page_setup`, `header_footer`, `row_breaks`, `col_breaks` are all plain public fields. Read
-them, mutate them, write the book back — no builders, no setters that only
+them, mutate them, write the book back - no builders, no setters that only
 assign.
 
 ## Charts

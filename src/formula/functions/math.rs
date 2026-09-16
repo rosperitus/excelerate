@@ -44,7 +44,7 @@ pub fn sign(args: &[Arg]) -> Value {
     })
 }
 
-/// `INT(number)` — towards minus infinity, so `INT(-1.5)` is -2.
+/// `INT(number)` - towards minus infinity, so `INT(-1.5)` is -2.
 pub fn int(args: &[Arg]) -> Value {
     one(args, |n| Value::Number(n.floor()))
 }
@@ -96,7 +96,7 @@ pub fn pi(args: &[Arg]) -> Value {
     }
 }
 
-/// `LOG(number, [base])` — base 10 when the base is left out.
+/// `LOG(number, [base])` - base 10 when the base is left out.
 pub fn log(args: &[Arg]) -> Value {
     let (n, base) = match args {
         [n] => (n.number(), Ok(10.0)),
@@ -132,7 +132,7 @@ pub fn power(args: &[Arg]) -> Value {
 
 /// `MOD(number, divisor)`
 ///
-/// The result takes the sign of the divisor, so `MOD(-3,2)` is 1 — Rust's `%`
+/// The result takes the sign of the divisor, so `MOD(-3,2)` is 1 - Rust's `%`
 /// would answer -1.
 pub fn mod_(args: &[Arg]) -> Value {
     let [x, y] = args else {
@@ -171,7 +171,7 @@ pub fn round(args: &[Arg]) -> Value {
     two_numbers(args, |n, d| Value::Number(round_to(n, d)))
 }
 
-/// `ROUNDUP(number, digits)` — away from zero.
+/// `ROUNDUP(number, digits)` - away from zero.
 pub fn roundup(args: &[Arg]) -> Value {
     two_numbers(args, |n, d| {
         let f = 10f64.powf(d);
@@ -179,7 +179,7 @@ pub fn roundup(args: &[Arg]) -> Value {
     })
 }
 
-/// `ROUNDDOWN(number, digits)` — towards zero.
+/// `ROUNDDOWN(number, digits)` - towards zero.
 pub fn rounddown(args: &[Arg]) -> Value {
     two_numbers(args, |n, d| {
         let f = 10f64.powf(d);
@@ -199,12 +199,12 @@ pub fn trunc(args: &[Arg]) -> Value {
     }
 }
 
-/// `CEILING(number, significance)` — up to the next multiple.
+/// `CEILING(number, significance)` - up to the next multiple.
 pub fn ceiling(args: &[Arg]) -> Value {
     multiple_of(args, f64::ceil)
 }
 
-/// `FLOOR(number, significance)` — down to the previous multiple.
+/// `FLOOR(number, significance)` - down to the previous multiple.
 pub fn floor(args: &[Arg]) -> Value {
     multiple_of(args, f64::floor)
 }
@@ -212,8 +212,8 @@ pub fn floor(args: &[Arg]) -> Value {
 /// Shared body of `CEILING` and `FLOOR`.
 ///
 /// Only one combination of signs is refused: a positive number with a negative
-/// step. A negative number rounds to a positive step perfectly well —
-/// `FLOOR(-2.05, 2)` is -4 — and two negatives work too.
+/// step. A negative number rounds to a positive step perfectly well -
+/// `FLOOR(-2.05, 2)` is -4 - and two negatives work too.
 fn multiple_of(args: &[Arg], round: fn(f64) -> f64) -> Value {
     two_numbers(args, |n, step| {
         if step == 0.0 {
@@ -241,7 +241,7 @@ fn two_numbers(args: &[Arg], body: impl Fn(f64, f64) -> Value) -> Value {
     }
 }
 
-/// `SUMPRODUCT(array1, ...)` — the arrays multiplied element by element and
+/// `SUMPRODUCT(array1, ...)` - the arrays multiplied element by element and
 /// added up. Anything that is not a number counts as zero, as in Excel.
 pub fn sumproduct(args: &[Arg]) -> Value {
     let Some((first, rest)) = args.split_first() else {
@@ -276,7 +276,7 @@ fn numbers_of(arg: &Arg) -> Vec<f64> {
         .collect()
 }
 
-/// `SIN(number)` — the angle is in radians, as everywhere in this category.
+/// `SIN(number)` - the angle is in radians, as everywhere in this category.
 pub fn sin(args: &[Arg]) -> Value {
     one(args, |n| Value::Number(n.sin()))
 }
@@ -291,7 +291,7 @@ pub fn tan(args: &[Arg]) -> Value {
     one(args, |n| Value::Number(n.tan()))
 }
 
-/// `COT(number)` — the reciprocal of the tangent, undefined at zero.
+/// `COT(number)` - the reciprocal of the tangent, undefined at zero.
 pub fn cot(args: &[Arg]) -> Value {
     one(args, |n| {
         if n == 0.0 {
@@ -318,7 +318,7 @@ pub fn csc(args: &[Arg]) -> Value {
     })
 }
 
-/// `ASIN(number)` — outside `-1..=1` there is no angle.
+/// `ASIN(number)` - outside `-1..=1` there is no angle.
 pub fn asin(args: &[Arg]) -> Value {
     one(args, |n| bounded(n, f64::asin))
 }
@@ -333,7 +333,7 @@ pub fn atan(args: &[Arg]) -> Value {
     one(args, |n| Value::Number(n.atan()))
 }
 
-/// `ACOT(number)` — Excel's range is `0..pi`, not the `-pi/2..pi/2` that
+/// `ACOT(number)` - Excel's range is `0..pi`, not the `-pi/2..pi/2` that
 /// `atan` of the reciprocal would give for a negative argument.
 pub fn acot(args: &[Arg]) -> Value {
     one(args, |n| {
@@ -341,7 +341,7 @@ pub fn acot(args: &[Arg]) -> Value {
     })
 }
 
-/// `ATAN2(x, y)` — Excel takes x first, the reverse of every library's `atan2`.
+/// `ATAN2(x, y)` - Excel takes x first, the reverse of every library's `atan2`.
 pub fn atan2(args: &[Arg]) -> Value {
     two_numbers(args, |x, y| {
         if x == 0.0 && y == 0.0 {
@@ -398,7 +398,7 @@ pub fn asinh(args: &[Arg]) -> Value {
     one(args, |n| Value::Number(n.asinh()))
 }
 
-/// `ACOSH(number)` — defined from 1 upwards.
+/// `ACOSH(number)` - defined from 1 upwards.
 pub fn acosh(args: &[Arg]) -> Value {
     one(args, |n| {
         if n < 1.0 {
@@ -409,7 +409,7 @@ pub fn acosh(args: &[Arg]) -> Value {
     })
 }
 
-/// `ATANH(number)` — defined strictly inside `-1..1`.
+/// `ATANH(number)` - defined strictly inside `-1..1`.
 pub fn atanh(args: &[Arg]) -> Value {
     one(args, |n| {
         if n <= -1.0 || n >= 1.0 {
@@ -420,7 +420,7 @@ pub fn atanh(args: &[Arg]) -> Value {
     })
 }
 
-/// `ACOTH(number)` — defined strictly outside `-1..1`.
+/// `ACOTH(number)` - defined strictly outside `-1..1`.
 pub fn acoth(args: &[Arg]) -> Value {
     one(args, |n| {
         if n > -1.0 && n < 1.0 {
@@ -450,12 +450,12 @@ pub fn radians(args: &[Arg]) -> Value {
     one(args, |n| Value::Number(n.to_radians()))
 }
 
-/// `EVEN(number)` — away from zero to the next even integer.
+/// `EVEN(number)` - away from zero to the next even integer.
 pub fn even(args: &[Arg]) -> Value {
     one(args, |n| Value::Number(away_to_step(n, 2.0)))
 }
 
-/// `ODD(number)` — away from zero to the next odd integer.
+/// `ODD(number)` - away from zero to the next odd integer.
 pub fn odd(args: &[Arg]) -> Value {
     one(args, |n| {
         if n == 0.0 {
@@ -475,7 +475,7 @@ fn away_to_step(n: f64, step: f64) -> f64 {
     sign * (n.abs() / step).ceil() * step
 }
 
-/// `MROUND(number, multiple)` — to the nearest multiple, halves away from zero.
+/// `MROUND(number, multiple)` - to the nearest multiple, halves away from zero.
 pub fn mround(args: &[Arg]) -> Value {
     two_numbers(args, |n, step| {
         if step == 0.0 {
@@ -489,7 +489,7 @@ pub fn mround(args: &[Arg]) -> Value {
     })
 }
 
-/// `QUOTIENT(numerator, denominator)` — the integer part of the division.
+/// `QUOTIENT(numerator, denominator)` - the integer part of the division.
 pub fn quotient(args: &[Arg]) -> Value {
     two_numbers(args, |a, b| {
         if b == 0.0 {
@@ -500,7 +500,7 @@ pub fn quotient(args: &[Arg]) -> Value {
     })
 }
 
-/// `GCD(number1, ...)` — of the whole parts, as Excel takes them.
+/// `GCD(number1, ...)` - of the whole parts, as Excel takes them.
 pub fn gcd(args: &[Arg]) -> Value {
     whole_numbers(args, |ns| ns.into_iter().fold(0u64, binary_gcd))
 }
@@ -555,7 +555,7 @@ fn binary_gcd(a: u64, b: u64) -> u64 {
     a
 }
 
-/// `FACT(number)` — of the whole part, up to Excel's limit of 170.
+/// `FACT(number)` - of the whole part, up to Excel's limit of 170.
 pub fn fact(args: &[Arg]) -> Value {
     one(args, |n| {
         if n < 0.0 || n.trunc() > 170.0 {
@@ -571,7 +571,7 @@ pub fn fact(args: &[Arg]) -> Value {
     })
 }
 
-/// `FACTDOUBLE(number)` — every second factor: `7!!` is 7*5*3*1.
+/// `FACTDOUBLE(number)` - every second factor: `7!!` is 7*5*3*1.
 pub fn factdouble(args: &[Arg]) -> Value {
     one(args, |n| {
         if n < -1.0 {
@@ -592,7 +592,7 @@ pub fn factdouble(args: &[Arg]) -> Value {
     })
 }
 
-/// `COMBIN(n, k)` — how many ways to choose k of n, order not counting.
+/// `COMBIN(n, k)` - how many ways to choose k of n, order not counting.
 pub fn combin(args: &[Arg]) -> Value {
     two_numbers(args, |n, k| {
         let (n, k) = (n.trunc(), k.trunc());
@@ -603,7 +603,7 @@ pub fn combin(args: &[Arg]) -> Value {
     })
 }
 
-/// `COMBINA(n, k)` — the same with repetition allowed.
+/// `COMBINA(n, k)` - the same with repetition allowed.
 pub fn combina(args: &[Arg]) -> Value {
     two_numbers(args, |n, k| {
         let (n, k) = (n.trunc(), k.trunc());
@@ -617,7 +617,7 @@ pub fn combina(args: &[Arg]) -> Value {
     })
 }
 
-/// `PERMUT(n, k)` — the same as `COMBIN` with order counting.
+/// `PERMUT(n, k)` - the same as `COMBIN` with order counting.
 pub fn permut(args: &[Arg]) -> Value {
     two_numbers(args, |n, k| {
         let (n, k) = (n.trunc(), k.trunc());
@@ -655,7 +655,7 @@ pub fn sumsq(args: &[Arg]) -> Value {
     }
 }
 
-/// `SUMX2MY2(array_x, array_y)` — the sum of `x^2 - y^2` over the pairs.
+/// `SUMX2MY2(array_x, array_y)` - the sum of `x^2 - y^2` over the pairs.
 pub fn sumx2my2(args: &[Arg]) -> Value {
     paired(args, |x, y| x * x - y * y)
 }
@@ -665,7 +665,7 @@ pub fn sumx2py2(args: &[Arg]) -> Value {
     paired(args, |x, y| x * x + y * y)
 }
 
-/// `SUMXMY2(array_x, array_y)` — the sum of the squared differences.
+/// `SUMXMY2(array_x, array_y)` - the sum of the squared differences.
 pub fn sumxmy2(args: &[Arg]) -> Value {
     paired(args, |x, y| (x - y) * (x - y))
 }
@@ -694,7 +694,7 @@ fn paired(args: &[Arg], body: impl Fn(f64, f64) -> f64) -> Value {
     Value::Number(total)
 }
 
-/// `SERIESSUM(x, n, m, coefficients)` — the sum of `c * x^(n + i*m)`.
+/// `SERIESSUM(x, n, m, coefficients)` - the sum of `c * x^(n + i*m)`.
 pub fn seriessum(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -720,7 +720,7 @@ pub fn seriessum(args: &[Arg]) -> Value {
     Value::Number(total)
 }
 
-/// `SQRTPI(number)` — the square root of `number * pi`.
+/// `SQRTPI(number)` - the square root of `number * pi`.
 pub fn sqrtpi(args: &[Arg]) -> Value {
     one(args, |n| {
         if n < 0.0 {
@@ -731,7 +731,7 @@ pub fn sqrtpi(args: &[Arg]) -> Value {
     })
 }
 
-/// `MULTINOMIAL(number1, ...)` — `(sum)! / (a! * b! * ...)`.
+/// `MULTINOMIAL(number1, ...)` - `(sum)! / (a! * b! * ...)`.
 pub fn multinomial(args: &[Arg]) -> Value {
     let numbers = match aggregate_numbers(args) {
         Ok(ns) => ns,
@@ -752,7 +752,7 @@ pub fn multinomial(args: &[Arg]) -> Value {
     Value::Number(total)
 }
 
-/// `MUNIT(size)` — the identity matrix of that size.
+/// `MUNIT(size)` - the identity matrix of that size.
 pub fn munit(args: &[Arg]) -> Value {
     one(args, |n| {
         let n = n.trunc();
@@ -777,7 +777,7 @@ pub fn munit(args: &[Arg]) -> Value {
     })
 }
 
-/// `MMULT(a, b)` — matrix multiplication, so the width of one has to be the
+/// `MMULT(a, b)` - matrix multiplication, so the width of one has to be the
 /// height of the other.
 pub fn mmult(args: &[Arg]) -> Value {
     let [a, b] = args else {
@@ -805,7 +805,7 @@ pub fn mmult(args: &[Arg]) -> Value {
     Value::Array(product)
 }
 
-/// `MDETERM(array)` — the determinant, by the same elimination that inverts.
+/// `MDETERM(array)` - the determinant, by the same elimination that inverts.
 pub fn mdeterm(args: &[Arg]) -> Value {
     let [arg] = args else {
         return Value::Error(CellError::Value);
@@ -969,7 +969,7 @@ pub fn sequence(args: &[Arg]) -> Value {
     )
 }
 
-/// `ROMAN(number, [form])` — the classic form only, which is form 0.
+/// `ROMAN(number, [form])` - the classic form only, which is form 0.
 pub fn roman(args: &[Arg]) -> Value {
     const NUMERALS: [(u32, &str); 13] = [
         (1000, "M"),
@@ -1014,7 +1014,7 @@ pub fn roman(args: &[Arg]) -> Value {
     Value::Text(out)
 }
 
-/// `ARABIC(text)` — the number a Roman numeral spells.
+/// `ARABIC(text)` - the number a Roman numeral spells.
 pub fn arabic(args: &[Arg]) -> Value {
     let [arg] = args else {
         return Value::Error(CellError::Value);
@@ -1097,7 +1097,7 @@ pub fn base(args: &[Arg]) -> Value {
     Value::Text(format!("{text:0>width$}"))
 }
 
-/// `DECIMAL(text, radix)` — the inverse of `BASE`.
+/// `DECIMAL(text, radix)` - the inverse of `BASE`.
 pub fn decimal(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -1211,7 +1211,7 @@ fn toward_infinity(args: &[Arg], up: bool) -> Value {
     Value::Number(rounded * step)
 }
 
-/// `SUBTOTAL(function, ref1, ...)` — one of eleven aggregates by number.
+/// `SUBTOTAL(function, ref1, ...)` - one of eleven aggregates by number.
 ///
 /// A code above 100 skips rows the user hid, which this cannot see from the
 /// values alone, so both halves behave the same here. What it does honour is
@@ -1229,7 +1229,7 @@ pub fn subtotal(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value
     aggregate_by_code(engine, origin, code, rest, 0.0)
 }
 
-/// `AGGREGATE(function, options, ref1, ...)` — the same list, plus options
+/// `AGGREGATE(function, options, ref1, ...)` - the same list, plus options
 /// saying what to leave out.
 pub fn aggregate(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     let [code, options, rest @ ..] = args else {
@@ -1325,7 +1325,7 @@ fn without_errors(value: Value) -> Value {
     }
 }
 
-/// `RAND()` — a number in `0..1`.
+/// `RAND()` - a number in `0..1`.
 ///
 /// The generator is a small permutation of a counter seeded from the clock:
 /// good enough for a spreadsheet, and nothing here is cryptography. Excel's
@@ -1337,7 +1337,7 @@ pub fn rand(args: &[Arg]) -> Value {
     Value::Number(next_random())
 }
 
-/// `RANDBETWEEN(low, high)` — a whole number in the range, both ends included.
+/// `RANDBETWEEN(low, high)` - a whole number in the range, both ends included.
 pub fn randbetween(args: &[Arg]) -> Value {
     let [low, high] = args else {
         return Value::Error(CellError::Value);

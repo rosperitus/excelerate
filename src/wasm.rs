@@ -1,6 +1,6 @@
 //! `WebAssembly` bindings: a thin JS-facing wrapper over [`Spreadsheet`].
 //!
-//! Only what a browser or Node caller needs — read a workbook from bytes, look
+//! Only what a browser or Node caller needs - read a workbook from bytes, look
 //! at and set cells, evaluate a formula, write bytes back. Everything else stays
 //! in the Rust API; adding a binding is cheaper than maintaining a mirror of it.
 
@@ -56,7 +56,7 @@ export interface SheetRow {
 /**
  * A colour as the file states it: `null` when the file leaves it to the
  * reader, `#AARRGGBB` when it names one outright, and `indexed:N` or
- * `theme:N` when it points into the legacy palette or the workbook theme —
+ * `theme:N` when it points into the legacy palette or the workbook theme -
  * a theme colour carries its tint as `theme:4@-0.25`.
  */
 export type StyleColor = string | null;
@@ -316,8 +316,8 @@ impl Book {
     /// Registers a function of your own, callable from any formula in the
     /// workbook by that name.
     ///
-    /// The function is handed the arguments already computed — a range arrives
-    /// as an array of arrays — and whatever it returns becomes the value. A
+    /// The function is handed the arguments already computed - a range arrives
+    /// as an array of arrays - and whatever it returns becomes the value. A
     /// name a built-in claims stays the built-in's: a workbook where `SUM`
     /// means something else is a workbook nobody else can read.
     ///
@@ -384,7 +384,7 @@ impl Book {
     /// file was saved with. Returns how many formulas were computed.
     ///
     /// With no argument the whole workbook is recomputed; with a sheet index,
-    /// only that sheet's formulas are — though they still read the whole
+    /// only that sheet's formulas are - though they still read the whole
     /// workbook, as a cross-sheet reference must.
     pub fn recalculate(
         &mut self,
@@ -434,7 +434,7 @@ impl Book {
     }
 
     #[cfg(feature = "formulas")]
-    /// Recomputes only what depends on one cell that changed — the formulas
+    /// Recomputes only what depends on one cell that changed - the formulas
     /// reading it, the formulas reading those, and so on. Returns how many were
     /// computed. This is the pass to run after `set`.
     ///
@@ -601,7 +601,7 @@ impl Book {
     /// The indent of a cell, in Excel's indent steps (0 when it has none).
     ///
     /// Indent lives on the cell's style, and a spreadsheet only honours it for
-    /// left, right and distributed alignment — but the number is returned as
+    /// left, right and distributed alignment - but the number is returned as
     /// the file states it, whatever the alignment.
     #[wasm_bindgen(js_name = cellIndent)]
     pub fn cell_indent(&self, sheet: usize, address: &str) -> Result<u32, JsError> {
@@ -702,7 +702,7 @@ impl Book {
     /// so a row of ten cells costs one call rather than forty.
     ///
     /// `formatted` is what the number format makes of each value, and building
-    /// it allocates a string per cell — which a caller reading values does not
+    /// it allocates a string per cell - which a caller reading values does not
     /// want to pay half a sheet over. Pass `false` and the field comes back
     /// `null`; `getFormattedAt` still answers for the cells that need it.
     #[wasm_bindgen(js_name = getRowAt, unchecked_return_type = "SheetRow")]
@@ -1107,8 +1107,8 @@ fn js_to_cell(value: &JsValue) -> Result<CellValue, JsError> {
 /// What a registered function answered, as the engine sees it.
 ///
 /// The mirror of [`value_to_js`]: numbers, text and booleans come back as
-/// themselves, an array of arrays as an array value, and anything else — a
-/// promise, an object, `undefined` — as blank, because a formula has to end
+/// themselves, an array of arrays as an array value, and anything else - a
+/// promise, an object, `undefined` - as blank, because a formula has to end
 /// with a value and there is nothing else to make of it. An error is spelled
 /// the way a cell spells it, so returning `"#N/A"` gives `#N/A` rather than
 /// the text.

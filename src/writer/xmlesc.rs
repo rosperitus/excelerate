@@ -3,7 +3,7 @@
 /// Escapes text for XML content and attribute values.
 ///
 /// Excel refuses control characters outright, so they are dropped rather than
-/// escaped — a file carrying them would not open at all.
+/// escaped - a file carrying them would not open at all.
 pub fn escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {

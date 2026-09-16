@@ -9,7 +9,7 @@ drops on the floor, and where the sharp edges are.
 
 | Signature | Format |
 |---|---|
-| `PK…` | xlsx, or ods when the uncompressed `mimetype` says so |
+| `PK...` | xlsx, or ods when the uncompressed `mimetype` says so |
 | `D0 CF 11 E0` | xls (compound file) |
 | `1f 8b` | Gnumeric (gzip) |
 | `ID;P` | SYLK |
@@ -17,7 +17,7 @@ drops on the floor, and where the sharp edges are.
 
 Only when the bytes stay quiet does the extension get a say, and text with an
 unknown extension is read as CSV. An extension that lies loses to the
-signature — which is what you want when a browser saved `report.xls` that is
+signature - which is what you want when a browser saved `report.xls` that is
 really HTML.
 
 ```rust
@@ -27,7 +27,7 @@ assert_eq!(format_of("tests/test1.xlsx")?, Format::Xlsx);
 # Ok::<(), excelerate::Error>(())
 ```
 
-## xlsx — the full-fat one
+## xlsx - the full-fat one
 
 Read *and* written: values, types, formulas (shared ones are expanded), shared
 strings, merges, styles, row/column sizing, sheet views and freeze panes, data
@@ -51,7 +51,7 @@ Two deliberate calls:
 - `<fileVersion>` is not written. It names the application that last saved the
   file, and that is not us.
 
-## xls — BIFF8
+## xls - BIFF8
 
 Reads sheets, every value type, the shared string table (including
 continuation records), number formats and indent from `FORMAT`/`XF`, merges,
@@ -61,14 +61,14 @@ sizing.
 
 The gap you will actually hit: **formulas come back as their cached result, not
 as text.** BIFF8 stores a formula as a token tree, and turning that back into
-`=SUM(A1:A3)` is a decompiler of its own. The writer is symmetric — a formula
+`=SUM(A1:A3)` is a decompiler of its own. The writer is symmetric - a formula
 goes out as its value. Fills and borders are skipped too, because their colours
 are indexes into a 56-entry palette and picking the nearest one for arbitrary
 RGB deserves its own decision.
 
 BIFF5 and older, and encrypted workbooks, are rejected rather than read halfway.
 
-## ods — OpenDocument
+## ods - OpenDocument
 
 Both directions: sheets, value types (float, percentage, currency, boolean,
 date, time, string), repeated rows and columns, merges, formulas, hyperlinks,
@@ -84,7 +84,7 @@ Three things behave differently by nature of the format:
   does not survive the loop.
 - Theme and indexed palette colours have no equivalent and are lost.
 
-Formula syntax is translated both ways (`A1` ↔ `[.A1]`, argument separators,
+Formula syntax is translated both ways (`A1` <-> `[.A1]`, argument separators,
 `COM.MICROSOFT.` prefixes), so a formula written here still parses there.
 
 ## CSV
@@ -107,7 +107,7 @@ let book = read_csv_with("export.csv", &opts)?;
 ```
 
 Writing takes one sheet, resolves formulas (cache first, otherwise it
-evaluates), quotes only where needed, and prints 15 significant digits — the
+evaluates), quotes only where needed, and prints 15 significant digits - the
 same precision Excel shows.
 
 ## HTML
@@ -130,7 +130,7 @@ write_html_to(&book, &mut out, &HtmlOptions {
 ```
 
 Reading uses a hand-rolled tag scanner rather than a DOM: attributes, entities,
-implied end tags (`<tr>` closes `<td>`). A page becomes one sheet — tables give
+implied end tags (`<tr>` closes `<td>`). A page becomes one sheet - tables give
 the grid, `colspan`/`rowspan` become merges, text outside a table (`<p>`,
 `<h1>`) gets a cell per block. Inline `style` and the old `bgcolor`/`align`/
 `width`/`height` attributes are honoured, as are the `data-*` hints our own
@@ -145,16 +145,16 @@ units (`em`, `%`) and `direction` are ignored.
 
 Read-only, all three.
 
-- **SYLK** — `C`/`F`/`P` records, R1C1 formulas converted to A1, shared
+- **SYLK** - `C`/`F`/`P` records, R1C1 formulas converted to A1, shared
   formulas, number formats, fonts, borders, column widths.
-- **Gnumeric** — gzipped XML: sheets, value types, shared formulas by
+- **Gnumeric** - gzipped XML: sheets, value types, shared formulas by
   `ExprID`, per-cell formats, merges, sizing.
-- **SpreadsheetML 2003** — named styles, `ss:Index` instead of addresses,
+- **SpreadsheetML 2003** - named styles, `ss:Index` instead of addresses,
   R1C1 formulas, `MergeAcross`/`MergeDown`, widths and heights.
 
 ## Round-trip guarantee
 
-`read → write → read` is covered by tests for xlsx and the other writable
+`read -> write -> read` is covered by tests for xlsx and the other writable
 formats. What that means in practice: if a feature is listed as modelled above,
 it comes back identical; if it is listed as carried, the bytes come back
 identical; anything else is a bug worth reporting.

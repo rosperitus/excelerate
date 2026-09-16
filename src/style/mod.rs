@@ -2,7 +2,7 @@
 //!
 //!
 //! A cell could be handed its own `Style` object, kept in
-//! sync through a supervisor object — a workaround for languages with no cheap
+//! sync through a supervisor object - a workaround for languages with no cheap
 //! shared ownership. Here a cell stores a [`StyleId`] and the styles live in a
 //! [`StyleTable`]. That mirrors how `cellXfs` works in OOXML itself, which
 //! makes reading and writing very nearly an identity mapping.
@@ -733,7 +733,7 @@ impl StyleTable {
         self.styles.get(id.index() as usize)
     }
 
-    /// Every style in index order — the order `cellXfs` is written in.
+    /// Every style in index order - the order `cellXfs` is written in.
     #[must_use]
     pub fn all(&self) -> &[Style] {
         &self.styles

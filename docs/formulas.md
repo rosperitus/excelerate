@@ -1,6 +1,6 @@
 # Formulas
 
-The engine parses, evaluates and caches — 443 Excel functions across math,
+The engine parses, evaluates and caches - 443 Excel functions across math,
 statistics, distributions, regression, text, dates, financial, lookup, logic,
 information, database, engineering and web categories.
 
@@ -24,7 +24,7 @@ the workbook calls; `&Options::default()` when you want neither. See
 callback that reports formula by formula.
 
 Results land in each formula cell's `cached` field, which is exactly where a
-file's own saved results live — so writing the book back gives every other
+file's own saved results live - so writing the book back gives every other
 reader the numbers too.
 
 ## Recalculating after an edit
@@ -45,8 +45,8 @@ let touched = recalculate_from(&mut book, &[(0, a1)]);
 # Ok::<(), excelerate::Error>(())
 ```
 
-To recompute a single formula instead — the cell itself, not the cells reading
-it — use `recalculate_cell`:
+To recompute a single formula instead - the cell itself, not the cells reading
+it - use `recalculate_cell`:
 
 ```rust
 use excelerate::CellRef;
@@ -63,7 +63,7 @@ let was_a_formula = recalculate_cell(&mut book, 0, b4);
 Whatever that formula reads is computed on the way, but only inside the
 engine's own cache: no other cell of the workbook is written.
 
-Dependencies come out of the formulas themselves — every reference they parse —
+Dependencies come out of the formulas themselves - every reference they parse -
 and the wave runs to a fixed point. An edit anywhere inside a range counts as
 reading that range.
 
@@ -93,7 +93,7 @@ deps.note(&book, 0, b1);
 ```
 
 Numbers from a real book with 19,811 formulas: full recalc 635 ms, building the
-index 16 ms, 50 edits in one batch → 184 formulas in 13 ms. The same 50 edits
+index 16 ms, 50 edits in one batch -> 184 formulas in 13 ms. The same 50 edits
 one at a time: 263 ms. Batch your edits; the pass is per call, not per cell.
 
 ## Evaluating an expression yourself
@@ -112,7 +112,7 @@ assert_eq!(answer, Value::Number(0.6667));
 # Ok::<(), excelerate::Error>(())
 ```
 
-`Origin` says which cell the formula is speaking from — relative references and
+`Origin` says which cell the formula is speaking from - relative references and
 `ROW()`/`COLUMN()` need it. `Engine` caches within its lifetime, so evaluating
 a thousand expressions against the same book reuses everything it already
 computed.
@@ -131,7 +131,7 @@ match expr {
 ```
 
 The parser handles literals, references, ranges, calls, array constants and all
-three reference operators — intersection (a space), union (`,`) and the span
+three reference operators - intersection (a space), union (`,`) and the span
 operator (`:` between areas, so `A1:A2:B1` is `A1:B2`). Useful for linting
 formulas, finding every cell a sheet reads, or rewriting references.
 
@@ -150,7 +150,7 @@ pub enum Value {
 
 Excel's own coercion rules apply throughout, including the comparison order
 that trips people up: numbers < text < `FALSE` < `TRUE`. A formula that returns
-an array shows its top-left value in a cell — there is no spill range here, and
+an array shows its top-left value in a cell - there is no spill range here, and
 one cell is one cell.
 
 ## About that cached result
@@ -166,8 +166,8 @@ So: trust it for display, recalculate before you rely on it.
 ## Named ranges
 
 Defined names resolve during evaluation. A sheet-scoped name beats a
-workbook-scoped one of the same name — that is how two sheets can give one name
-two meanings — and a name that refers to itself yields `#REF!` instead of
+workbook-scoped one of the same name - that is how two sheets can give one name
+two meanings - and a name that refers to itself yields `#REF!` instead of
 looping.
 
 ## Errors
@@ -177,5 +177,5 @@ Errors propagate the way they do in Excel: anything touching `#DIV/0!` becomes
 what Excel shows for a function it does not know.
 
 There is no panic path here. A formula 200 levels deep, a circular reference, a
-range covering a million cells — each has a defined answer (`#REF!` for a
+range covering a million cells - each has a defined answer (`#REF!` for a
 cycle, `#VALUE!` for an oversized range) rather than a stack overflow.

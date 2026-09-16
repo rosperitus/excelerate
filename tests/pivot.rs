@@ -1,6 +1,6 @@
 //! Pivot tables: what a report says about itself, and that a rewrite keeps it.
 //!
-//! The fixture is written by excelize, not by us — a file made by the code
+//! The fixture is written by excelize, not by us - a file made by the code
 //! under test would only prove it agrees with itself.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -39,7 +39,7 @@ fn a_report_is_read_with_its_cache() {
     assert_eq!(table.cache_id, cache.id, "the report points at that cache");
     assert_eq!(table.location.unwrap().to_string(), "F1:J10");
     // Region and product down the side, year across the top, sales in the
-    // middle — as indexes into the cache's fields.
+    // middle - as indexes into the cache's fields.
     assert_eq!(table.row_fields, [0, 1]);
     assert_eq!(table.column_fields, [2]);
     assert!(table.page_fields.is_empty());
@@ -72,7 +72,7 @@ fn a_rewrite_keeps_the_report_whole() {
     );
 }
 
-/// A workbook saved by Excel with three reports over two caches — several
+/// A workbook saved by Excel with three reports over two caches - several
 /// value fields with different functions, and the values field itself placed
 /// on an axis, which the format spells `-2`.
 #[test]
@@ -147,7 +147,7 @@ fn a_rewrite_keeps_every_report_of_a_real_workbook() {
 ///
 /// The pivots are not read: in BIFF8 they are `SX*` records, an entirely
 /// different mechanism from the XML ones above, and the xls writer rebuilds a
-/// file from values rather than carrying what it did not parse — so they are
+/// file from values rather than carrying what it did not parse - so they are
 /// lost on the way out. That is phase F in `docs/REFACTOR.md`. What this
 /// pins down is that the data underneath them reads correctly.
 #[test]

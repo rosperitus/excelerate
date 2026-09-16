@@ -54,7 +54,7 @@ pub fn median(args: &[Arg]) -> Value {
     }
 }
 
-/// `COUNT(value1, ...)` — how many of them are numbers.
+/// `COUNT(value1, ...)` - how many of them are numbers.
 pub fn count(args: &[Arg]) -> Value {
     let mut n = 0usize;
     for arg in args {
@@ -74,7 +74,7 @@ pub fn count(args: &[Arg]) -> Value {
     count_value(n)
 }
 
-/// `COUNTA(value1, ...)` — how many are not empty.
+/// `COUNTA(value1, ...)` - how many are not empty.
 pub fn counta(args: &[Arg]) -> Value {
     let mut n = 0usize;
     for arg in args {
@@ -85,7 +85,7 @@ pub fn counta(args: &[Arg]) -> Value {
     count_value(n)
 }
 
-/// `COUNTBLANK(range)` — how many are empty.
+/// `COUNTBLANK(range)` - how many are empty.
 ///
 /// The count only covers the part of the sheet that holds anything: a whole
 /// column is clipped to its used rows before it reaches here, so
@@ -153,7 +153,7 @@ pub fn averageifs(args: &[Arg]) -> Value {
     many_conditions(args, mean)
 }
 
-/// `MEDIANIF(range, criteria, [median_range])` — the median of the values a
+/// `MEDIANIF(range, criteria, [median_range])` - the median of the values a
 /// criterion keeps.
 ///
 /// Undocumented by Microsoft and a stub (`Functions::DUMMY`), so
@@ -163,7 +163,7 @@ pub fn medianif(args: &[Arg]) -> Value {
     one_condition(args, middle)
 }
 
-/// The median of the numbers that were kept, or `#NUM!` when none were —
+/// The median of the numbers that were kept, or `#NUM!` when none were -
 /// which is what `MEDIAN` itself answers for nothing.
 fn middle(ns: &[f64]) -> Value {
     if ns.is_empty() {
@@ -256,12 +256,12 @@ fn numbers_at(positions: &[usize], values: &[&Value]) -> Vec<f64> {
         .collect()
 }
 
-/// `LARGE(array, k)` — the k-th largest number.
+/// `LARGE(array, k)` - the k-th largest number.
 pub fn large(args: &[Arg]) -> Value {
     nth(args, true)
 }
 
-/// `SMALL(array, k)` — the k-th smallest.
+/// `SMALL(array, k)` - the k-th smallest.
 pub fn small(args: &[Arg]) -> Value {
     nth(args, false)
 }
@@ -296,7 +296,7 @@ fn nth(args: &[Arg], from_top: bool) -> Value {
         .map_or(Value::Error(CellError::Num), |n| Value::Number(*n))
 }
 
-/// `RANK(number, range, [order])` — 0 or omitted ranks downwards.
+/// `RANK(number, range, [order])` - 0 or omitted ranks downwards.
 pub fn rank(args: &[Arg]) -> Value {
     let (number, range, ascending) = match args {
         [n, r] => (n.number(), r, Ok(0.0)),
@@ -325,22 +325,22 @@ pub fn rank(args: &[Arg]) -> Value {
     count_value(ahead + 1)
 }
 
-/// `STDEV(number1, ...)` — over a sample.
+/// `STDEV(number1, ...)` - over a sample.
 pub fn stdev(args: &[Arg]) -> Value {
     spread(args, true, true)
 }
 
-/// `STDEVP(number1, ...)` — over the whole population.
+/// `STDEVP(number1, ...)` - over the whole population.
 pub fn stdevp(args: &[Arg]) -> Value {
     spread(args, false, true)
 }
 
-/// `VAR(number1, ...)` — over a sample.
+/// `VAR(number1, ...)` - over a sample.
 pub fn var(args: &[Arg]) -> Value {
     spread(args, true, false)
 }
 
-/// `VARP(number1, ...)` — over the whole population.
+/// `VARP(number1, ...)` - over the whole population.
 pub fn varp(args: &[Arg]) -> Value {
     spread(args, false, false)
 }
@@ -368,14 +368,14 @@ fn spread(args: &[Arg], sample: bool, root: bool) -> Value {
     Value::Number(if root { variance.sqrt() } else { variance })
 }
 
-/// `AVEDEV(number1, ...)` — the mean distance from the mean.
+/// `AVEDEV(number1, ...)` - the mean distance from the mean.
 pub fn avedev(args: &[Arg]) -> Value {
     around_mean(args, |ns, mean, count| {
         ns.iter().map(|n| (n - mean).abs()).sum::<f64>() / count
     })
 }
 
-/// `DEVSQ(number1, ...)` — the sum of the squared distances from the mean.
+/// `DEVSQ(number1, ...)` - the sum of the squared distances from the mean.
 pub fn devsq(args: &[Arg]) -> Value {
     around_mean(args, |ns, mean, _| {
         ns.iter().map(|n| (n - mean) * (n - mean)).sum()
@@ -396,7 +396,7 @@ fn around_mean(args: &[Arg], body: impl Fn(&[f64], f64, f64) -> f64) -> Value {
     Value::Number(body(&ns, mean, count))
 }
 
-/// `GEOMEAN(number1, ...)` — the n-th root of the product, which needs every
+/// `GEOMEAN(number1, ...)` - the n-th root of the product, which needs every
 /// number to be positive.
 pub fn geomean(args: &[Arg]) -> Value {
     let ns = match aggregate_numbers(args) {
@@ -412,7 +412,7 @@ pub fn geomean(args: &[Arg]) -> Value {
     Value::Number((logs / count_of(&ns)).exp())
 }
 
-/// `HARMEAN(number1, ...)` — the reciprocal of the mean of the reciprocals.
+/// `HARMEAN(number1, ...)` - the reciprocal of the mean of the reciprocals.
 pub fn harmean(args: &[Arg]) -> Value {
     let ns = match aggregate_numbers(args) {
         Ok(ns) => ns,
@@ -425,7 +425,7 @@ pub fn harmean(args: &[Arg]) -> Value {
     Value::Number(count_of(&ns) / sum)
 }
 
-/// `SKEW(number1, ...)` — how lopsided the distribution is, from a sample.
+/// `SKEW(number1, ...)` - how lopsided the distribution is, from a sample.
 pub fn skew(args: &[Arg]) -> Value {
     let ns = match aggregate_numbers(args) {
         Ok(ns) => ns,
@@ -444,7 +444,7 @@ pub fn skew(args: &[Arg]) -> Value {
     Value::Number(sum * count / ((count - 1.0) * (count - 2.0)))
 }
 
-/// `SKEW.P(number1, ...)` — the same for a whole population.
+/// `SKEW.P(number1, ...)` - the same for a whole population.
 pub fn skewp(args: &[Arg]) -> Value {
     let ns = match aggregate_numbers(args) {
         Ok(ns) => ns,
@@ -464,7 +464,7 @@ pub fn skewp(args: &[Arg]) -> Value {
     Value::Number(sum / count)
 }
 
-/// `KURT(number1, ...)` — how heavy the tails are, against a normal curve.
+/// `KURT(number1, ...)` - how heavy the tails are, against a normal curve.
 pub fn kurt(args: &[Arg]) -> Value {
     let ns = match aggregate_numbers(args) {
         Ok(ns) => ns,
@@ -514,7 +514,7 @@ pub fn mode(args: &[Arg]) -> Value {
     best.map_or(Value::Error(CellError::Na), |(n, _)| Value::Number(n))
 }
 
-/// `TRIMMEAN(array, percent)` — the mean after the extremes are dropped.
+/// `TRIMMEAN(array, percent)` - the mean after the extremes are dropped.
 pub fn trimmean(args: &[Arg]) -> Value {
     let Some((percent, rest)) = args.split_last() else {
         return Value::Error(CellError::Value);
@@ -547,7 +547,7 @@ pub fn trimmean(args: &[Arg]) -> Value {
     mean(&ns[discard..ns.len() - discard])
 }
 
-/// `STANDARDIZE(value, mean, deviation)` — how many deviations from the mean.
+/// `STANDARDIZE(value, mean, deviation)` - how many deviations from the mean.
 pub fn standardize(args: &[Arg]) -> Value {
     let [x, mean, deviation] = args else {
         return Value::Error(CellError::Value);
@@ -561,7 +561,7 @@ pub fn standardize(args: &[Arg]) -> Value {
     Value::Number((x - mean) / deviation)
 }
 
-/// `PERMUTATIONA(n, k)` — arrangements of k from n with repeats allowed.
+/// `PERMUTATIONA(n, k)` - arrangements of k from n with repeats allowed.
 pub fn permutationa(args: &[Arg]) -> Value {
     let [n, k] = args else {
         return Value::Error(CellError::Value);
@@ -596,7 +596,7 @@ pub fn percentile(args: &[Arg]) -> Value {
     Value::Number(at_position(&sorted, k * (count_of(&sorted) - 1.0)))
 }
 
-/// `PERCENTILE.EXC(array, k)` — the exclusive form, where `k` may not reach
+/// `PERCENTILE.EXC(array, k)` - the exclusive form, where `k` may not reach
 /// either end: with n values it runs strictly between `1/(n+1)` and `n/(n+1)`.
 pub fn percentile_exc(args: &[Arg]) -> Value {
     let Some((k, rest)) = args.split_last() else {
@@ -715,7 +715,7 @@ pub fn correl(args: &[Arg]) -> Value {
     })
 }
 
-/// `RSQ(y, x)` — the square of the correlation.
+/// `RSQ(y, x)` - the square of the correlation.
 pub fn rsq(args: &[Arg]) -> Value {
     paired_stat(args, |xs, ys| {
         let (sxx, syy, sxy) = moments(xs, ys);
@@ -732,7 +732,7 @@ pub fn covar(args: &[Arg]) -> Value {
     })
 }
 
-/// `COVARIANCE.S(y, x)` — the same from a sample, so divided by one less.
+/// `COVARIANCE.S(y, x)` - the same from a sample, so divided by one less.
 pub fn covariance_s(args: &[Arg]) -> Value {
     paired_stat(args, |xs, ys| {
         let (_, _, sxy) = moments(xs, ys);
@@ -741,7 +741,7 @@ pub fn covariance_s(args: &[Arg]) -> Value {
     })
 }
 
-/// `SLOPE(y, x)` — the gradient of the line of best fit.
+/// `SLOPE(y, x)` - the gradient of the line of best fit.
 pub fn slope(args: &[Arg]) -> Value {
     paired_stat(args, |xs, ys| {
         let (sxx, _, sxy) = moments(xs, ys);
@@ -749,7 +749,7 @@ pub fn slope(args: &[Arg]) -> Value {
     })
 }
 
-/// `INTERCEPT(y, x)` — where that line crosses the axis.
+/// `INTERCEPT(y, x)` - where that line crosses the axis.
 pub fn intercept(args: &[Arg]) -> Value {
     paired_stat(args, |xs, ys| {
         let (sxx, _, sxy) = moments(xs, ys);
@@ -765,7 +765,7 @@ pub fn intercept(args: &[Arg]) -> Value {
     })
 }
 
-/// `STEYX(y, x)` — the standard error of the predicted y.
+/// `STEYX(y, x)` - the standard error of the predicted y.
 pub fn steyx(args: &[Arg]) -> Value {
     paired_stat(args, |xs, ys| {
         let count = count_of(xs);
@@ -804,7 +804,7 @@ pub fn forecast(args: &[Arg]) -> Value {
     })
 }
 
-/// `FISHER(x)` — the transformation that makes a correlation normal.
+/// `FISHER(x)` - the transformation that makes a correlation normal.
 pub fn fisher(args: &[Arg]) -> Value {
     super::one(args, |x| {
         if x <= -1.0 || x >= 1.0 {
@@ -814,7 +814,7 @@ pub fn fisher(args: &[Arg]) -> Value {
     })
 }
 
-/// `FISHERINV(y)` — its inverse.
+/// `FISHERINV(y)` - its inverse.
 pub fn fisherinv(args: &[Arg]) -> Value {
     super::one(args, |y| {
         let e = (2.0 * y).exp();
@@ -822,7 +822,7 @@ pub fn fisherinv(args: &[Arg]) -> Value {
     })
 }
 
-/// `PHI(x)` — the height of the standard normal curve at x.
+/// `PHI(x)` - the height of the standard normal curve at x.
 pub fn phi(args: &[Arg]) -> Value {
     super::one(args, |x| {
         Value::Number((-x * x / 2.0).exp() / (2.0 * core::f64::consts::PI).sqrt())
@@ -908,7 +908,7 @@ fn count_of<T>(items: &[T]) -> f64 {
     items.len() as f64
 }
 
-/// `AVERAGEA(value1, ...)` — the mean counting text as zero.
+/// `AVERAGEA(value1, ...)` - the mean counting text as zero.
 pub fn averagea(args: &[Arg]) -> Value {
     with_text_as_zero(args, mean)
 }
@@ -1013,7 +1013,7 @@ fn extreme_ifs(args: &[Arg], pick: fn(f64, f64) -> f64) -> Value {
     })
 }
 
-/// `RANK.AVG(number, ref, [order])` — like `RANK`, but ties share the average
+/// `RANK.AVG(number, ref, [order])` - like `RANK`, but ties share the average
 /// of the places they take up rather than all taking the first of them.
 pub fn rank_avg(args: &[Arg]) -> Value {
     let (needle, list, ascending) = match args {
@@ -1054,7 +1054,7 @@ pub fn rank_avg(args: &[Arg]) -> Value {
     Value::Number(first + (count_of(&ns[..tied]) - 1.0) / 2.0)
 }
 
-/// `MODE.MULT(number1, ...)` — every value tied for most common, as a column.
+/// `MODE.MULT(number1, ...)` - every value tied for most common, as a column.
 pub fn mode_mult(args: &[Arg]) -> Value {
     let ns = match aggregate_numbers(args) {
         Ok(ns) => ns,
@@ -1082,7 +1082,7 @@ pub fn mode_mult(args: &[Arg]) -> Value {
     Value::Array(out)
 }
 
-/// `FREQUENCY(data, bins)` — how many of the data fall in each bin, as a
+/// `FREQUENCY(data, bins)` - how many of the data fall in each bin, as a
 /// column one longer than the bins: the last row is everything above them.
 pub fn frequency(args: &[Arg]) -> Value {
     let [data, bins] = args else {
@@ -1112,7 +1112,7 @@ pub fn frequency(args: &[Arg]) -> Value {
     Value::Array(counts.into_iter().map(|n| vec![Value::Number(n)]).collect())
 }
 
-/// `PROB(values, probabilities, low, [high])` — the chance of landing in a
+/// `PROB(values, probabilities, low, [high])` - the chance of landing in a
 /// range, given the chance of each value.
 pub fn prob(args: &[Arg]) -> Value {
     if let Some(e) = super::first_error(args) {

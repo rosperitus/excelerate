@@ -87,7 +87,7 @@ pub fn nper(args: &[Arg]) -> Value {
 
 /// `RATE(nper, pmt, pv, [fv], [type], [guess])`
 ///
-/// Newton's method from the guess, as has it — taken there from numpy.
+/// Newton's method from the guess, as has it - taken there from numpy.
 pub fn rate(args: &[Arg]) -> Value {
     let Some([nper, pmt, pv, fv, timing, guess]) =
         with_defaults(args, 3, [0.0, 0.0, 0.0, 0.0, 0.0, 0.1])
@@ -133,12 +133,12 @@ fn rate_step(
     (denominator != 0.0).then(|| numerator / denominator)
 }
 
-/// `IPMT(rate, per, nper, pv, [fv], [type])` — the interest part of one payment.
+/// `IPMT(rate, per, nper, pv, [fv], [type])` - the interest part of one payment.
 pub fn ipmt(args: &[Arg]) -> Value {
     split_payment(args, true)
 }
 
-/// `PPMT(rate, per, nper, pv, [fv], [type])` — the principal part of it.
+/// `PPMT(rate, per, nper, pv, [fv], [type])` - the principal part of it.
 pub fn ppmt(args: &[Arg]) -> Value {
     split_payment(args, false)
 }
@@ -186,12 +186,12 @@ fn walk_schedule(
     (interest, principal)
 }
 
-/// `CUMIPMT(rate, nper, pv, start, end, type)` — interest paid over a stretch.
+/// `CUMIPMT(rate, nper, pv, start, end, type)` - interest paid over a stretch.
 pub fn cumipmt(args: &[Arg]) -> Value {
     cumulative(args, true)
 }
 
-/// `CUMPRINC(rate, nper, pv, start, end, type)` — principal repaid over one.
+/// `CUMPRINC(rate, nper, pv, start, end, type)` - principal repaid over one.
 pub fn cumprinc(args: &[Arg]) -> Value {
     cumulative(args, false)
 }
@@ -227,7 +227,7 @@ fn cumulative(args: &[Arg], want_interest: bool) -> Value {
     Value::Number(total)
 }
 
-/// `ISPMT(rate, per, nper, pv)` — the interest of a straight-line repayment,
+/// `ISPMT(rate, per, nper, pv)` - the interest of a straight-line repayment,
 /// where every period pays back the same slice of the principal.
 pub fn ispmt(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
@@ -255,7 +255,7 @@ pub fn ispmt(args: &[Arg]) -> Value {
     Value::Number(-rate * pv * (1.0 - period / nper))
 }
 
-/// `NPV(rate, value1, ...)` — the values discounted back, the first of them one
+/// `NPV(rate, value1, ...)` - the values discounted back, the first of them one
 /// period away rather than at once, which is what tells `NPV` from `XNPV`.
 pub fn npv(args: &[Arg]) -> Value {
     let Some((rate, rest)) = args.split_first() else {
@@ -279,7 +279,7 @@ pub fn npv(args: &[Arg]) -> Value {
     Value::Number(total)
 }
 
-/// `IRR(values, [guess])` — the rate at which `NPV` is zero.
+/// `IRR(values, [guess])` - the rate at which `NPV` is zero.
 pub fn irr(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -296,7 +296,7 @@ pub fn irr(args: &[Arg]) -> Value {
     solve(guess, |rate| npv_at(rate, &values))
 }
 
-/// `XIRR(values, dates, [guess])` — the same for cash flows on given days.
+/// `XIRR(values, dates, [guess])` - the same for cash flows on given days.
 pub fn xirr(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -378,7 +378,7 @@ pub fn mirr(args: &[Arg]) -> Value {
     }
 }
 
-/// `FVSCHEDULE(principal, schedule)` — compounded through a series of rates.
+/// `FVSCHEDULE(principal, schedule)` - compounded through a series of rates.
 pub fn fvschedule(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -395,7 +395,7 @@ pub fn fvschedule(args: &[Arg]) -> Value {
     Value::Number(total)
 }
 
-/// `SLN(cost, salvage, life)` — the same amount written off every period.
+/// `SLN(cost, salvage, life)` - the same amount written off every period.
 pub fn sln(args: &[Arg]) -> Value {
     let Some([cost, salvage, life]) = numbers(args) else {
         return Value::Error(CellError::Value);
@@ -406,7 +406,7 @@ pub fn sln(args: &[Arg]) -> Value {
     Value::Number((cost - salvage) / life)
 }
 
-/// `SYD(cost, salvage, life, period)` — the sum-of-years'-digits method.
+/// `SYD(cost, salvage, life, period)` - the sum-of-years'-digits method.
 pub fn syd(args: &[Arg]) -> Value {
     let Some([cost, salvage, life, period]) = numbers(args) else {
         return Value::Error(CellError::Value);
@@ -420,7 +420,7 @@ pub fn syd(args: &[Arg]) -> Value {
     Value::Number(((cost - salvage) * (life - period + 1.0) * 2.0) / (life * (life + 1.0)))
 }
 
-/// `DB(cost, salvage, life, period, [month])` — fixed-declining balance.
+/// `DB(cost, salvage, life, period, [month])` - fixed-declining balance.
 pub fn db(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -458,7 +458,7 @@ pub fn db(args: &[Arg]) -> Value {
     Value::Number(depreciation)
 }
 
-/// `DDB(cost, salvage, life, period, [factor])` — double-declining balance.
+/// `DDB(cost, salvage, life, period, [factor])` - double-declining balance.
 pub fn ddb(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -484,12 +484,12 @@ pub fn ddb(args: &[Arg]) -> Value {
     Value::Number(depreciation)
 }
 
-/// `VDB(cost, salvage, life, start, end, [factor], [no_switch])` — declining
+/// `VDB(cost, salvage, life, start, end, [factor], [no_switch])` - declining
 /// balance over any span of periods, switching to straight line when that
 /// writes off more.
 ///
 /// A partial period is depreciated pro rata, which is what makes
-/// `VDB(…, 0.5, 1.5, …)` meaningful. `no_switch` keeps the declining balance
+/// `VDB(..., 0.5, 1.5, ...)` meaningful. `no_switch` keeps the declining balance
 /// even where straight line would be faster; Excel's default is to switch.
 pub fn vdb(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
@@ -556,7 +556,7 @@ fn amortization_coefficient(rate: f64) -> f64 {
 }
 
 /// `AMORDEGRC(cost, purchased, first_period, salvage, period, rate, [basis])`
-/// — French declining depreciation, coefficient and all.
+/// - French declining depreciation, coefficient and all.
 ///
 /// Each period's write-off is rounded to whole currency, which is the French
 /// accounting rule and not a shortcut: the rounding is part of the answer.
@@ -597,7 +597,7 @@ pub fn amordegrc(epoch: Epoch, args: &[Arg]) -> Value {
     Value::Number(write_off)
 }
 
-/// `AMORLINC(cost, purchased, first_period, salvage, period, rate, [basis])` —
+/// `AMORLINC(cost, purchased, first_period, salvage, period, rate, [basis])` -
 /// French straight-line depreciation with the first period prorated.
 pub fn amorlinc(epoch: Epoch, args: &[Arg]) -> Value {
     let Some((cost, purchased, first, salvage, period, rate, basis)) =
@@ -674,7 +674,7 @@ fn amortization_args(epoch: Epoch, args: &[Arg]) -> Option<Amortization> {
     Some((cost, purchased, first, salvage, period, rate, basis))
 }
 
-/// `EFFECT(nominal_rate, npery)` — the yearly rate compounding actually earns.
+/// `EFFECT(nominal_rate, npery)` - the yearly rate compounding actually earns.
 pub fn effect(args: &[Arg]) -> Value {
     let Some([nominal, periods]) = numbers(args) else {
         return Value::Error(CellError::Value);
@@ -686,7 +686,7 @@ pub fn effect(args: &[Arg]) -> Value {
     Value::Number((1.0 + nominal / periods).powf(periods) - 1.0)
 }
 
-/// `NOMINAL(effect_rate, npery)` — the inverse of `EFFECT`.
+/// `NOMINAL(effect_rate, npery)` - the inverse of `EFFECT`.
 pub fn nominal(args: &[Arg]) -> Value {
     let Some([effective, periods]) = numbers(args) else {
         return Value::Error(CellError::Value);
@@ -698,7 +698,7 @@ pub fn nominal(args: &[Arg]) -> Value {
     Value::Number(periods * ((effective + 1.0).powf(1.0 / periods) - 1.0))
 }
 
-/// `RRI(nper, pv, fv)` — the rate that grows `pv` into `fv` over `nper`.
+/// `RRI(nper, pv, fv)` - the rate that grows `pv` into `fv` over `nper`.
 pub fn rri(args: &[Arg]) -> Value {
     let Some([periods, present, future]) = numbers(args) else {
         return Value::Error(CellError::Value);
@@ -709,7 +709,7 @@ pub fn rri(args: &[Arg]) -> Value {
     Value::Number((future / present).powf(1.0 / periods) - 1.0)
 }
 
-/// `PDURATION(rate, pv, fv)` — how many periods that growth takes.
+/// `PDURATION(rate, pv, fv)` - how many periods that growth takes.
 pub fn pduration(args: &[Arg]) -> Value {
     let Some([rate, present, future]) = numbers(args) else {
         return Value::Error(CellError::Value);
@@ -720,13 +720,13 @@ pub fn pduration(args: &[Arg]) -> Value {
     Value::Number((future.ln() - present.ln()) / (1.0 + rate).ln())
 }
 
-/// `DOLLARDE(fractional_dollar, fraction)` — `1.02` at a fraction of 16 is
+/// `DOLLARDE(fractional_dollar, fraction)` - `1.02` at a fraction of 16 is
 /// one dollar and two sixteenths, which in decimal is 1.125.
 pub fn dollarde(args: &[Arg]) -> Value {
     dollar_convert(args, true)
 }
 
-/// `DOLLARFR(decimal_dollar, fraction)` — the inverse.
+/// `DOLLARFR(decimal_dollar, fraction)` - the inverse.
 pub fn dollarfr(args: &[Arg]) -> Value {
     dollar_convert(args, false)
 }
@@ -763,7 +763,7 @@ fn dollar_convert(args: &[Arg], to_decimal: bool) -> Value {
 /// The arguments of a function whose trailing ones may be left out.
 ///
 /// `defaults` gives both the arity and what a missing argument stands for; an
-/// argument skipped in the middle — `PMT(r,n,pv,,1)` — takes its default too.
+/// argument skipped in the middle - `PMT(r,n,pv,,1)` - takes its default too.
 fn with_defaults<const N: usize>(
     args: &[Arg],
     required: usize,

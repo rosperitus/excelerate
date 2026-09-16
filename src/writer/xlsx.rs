@@ -1,14 +1,14 @@
 //! Writing xlsx workbooks.
 //!
 //!
-//! The parts written are the minimum a reader — ours, Excel, or `LibreOffice` —
+//! The parts written are the minimum a reader - ours, Excel, or `LibreOffice` -
 //! needs to open the file: content types, package and workbook relationships,
 //! the workbook, one part per sheet, the shared string pool and the style
 //! table. Every path here is fixed, since we are the ones laying out the
 //! package; the reader stays general because other writers are not.
 //!
 //! XML is written by hand rather than through a serializer: the documents are
-//! small, their shape is fixed, and escaping is the only subtlety — which
+//! small, their shape is fixed, and escaping is the only subtlety - which
 //! [`escape`] handles in one place.
 
 use crate::error::{Error, Result};
@@ -609,8 +609,8 @@ fn workbook_rels(book: &Spreadsheet) -> String {
 /// `/xl/pivotTables/pivotTable1.xml` from `xl/worksheets` is
 /// `../pivotTables/pivotTable1.xml`. An absolute target is legal in the
 /// package format and Excel reads it, but plenty of readers resolve targets by
-/// hand and only handle the relative form — excelize walks off a null pointer
-/// on one — so what goes out is what Excel itself writes.
+/// hand and only handle the relative form - excelize walks off a null pointer
+/// on one - so what goes out is what Excel itself writes.
 pub(super) fn relative_target(base: &str, target: &str) -> String {
     let target = target.trim_start_matches('/');
     let base: Vec<&str> = base.split('/').filter(|p| !p.is_empty()).collect();
@@ -1281,7 +1281,7 @@ fn attached_parts_xml(sheet: &crate::model::Worksheet) -> String {
     }
     // `<tableParts>` is last but for `<extLst>`. Without the element the part
     // is still in the package and still related, and Excel shows the cells as
-    // an ordinary range — the table is gone.
+    // an ordinary range - the table is gone.
     if !sheet.tables.is_empty() {
         let start = table_rel_base(sheet);
         let _ = write!(s, r#"<tableParts count="{}">"#, sheet.tables.len());
@@ -1675,8 +1675,8 @@ fn hyperlink_xml(link: &crate::model::Hyperlink, outside: &[&crate::model::Hyper
     s
 }
 
-/// Renders what guards the sheet — its protection, the ranges exempted from
-/// it, and its filter — in the order the schema fixes them.
+/// Renders what guards the sheet - its protection, the ranges exempted from
+/// it, and its filter - in the order the schema fixes them.
 fn guards_xml(sheet: &crate::model::Worksheet) -> String {
     let mut s = sheet_protection_xml(&sheet.protection);
     if !sheet.protected_ranges.is_empty() {

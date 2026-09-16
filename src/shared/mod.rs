@@ -8,8 +8,8 @@ pub mod special;
 /// Seconds since the Unix epoch, as the clock of whatever platform this runs
 /// on reports them.
 ///
-/// `SystemTime::now` panics on `wasm32-unknown-unknown` — that target has no
-/// clock of its own — so there the host's `Date.now()` answers instead. Every
+/// `SystemTime::now` panics on `wasm32-unknown-unknown` - that target has no
+/// clock of its own - so there the host's `Date.now()` answers instead. Every
 /// caller (`TODAY`, `NOW`, `RAND`, a date written without a year) only needs
 /// the wall clock, not monotonicity.
 #[must_use]

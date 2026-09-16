@@ -89,7 +89,7 @@ fn compare(before: &Spreadsheet, after: &Spreadsheet) {
         || before.doc_props != after.doc_props
     {
         println!(
-            "MISMATCH: carried parts — {} against {}",
+            "MISMATCH: carried parts - {} against {}",
             before.parts.len(),
             after.parts.len()
         );
@@ -178,7 +178,7 @@ fn compare(before: &Spreadsheet, after: &Spreadsheet) {
         }
         if a.len() != b.len() {
             println!(
-                "MISMATCH: {:?} — {} cells against {}",
+                "MISMATCH: {:?} - {} cells against {}",
                 a.title(),
                 a.len(),
                 b.len()

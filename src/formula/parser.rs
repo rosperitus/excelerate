@@ -617,7 +617,7 @@ const INTERSECT_BP: u8 = 80;
 /// How deeply expressions may nest before the parser gives up.
 ///
 /// The parser is a recursive descent, so nesting costs stack: a workbook is
-/// untrusted input and `((((…1…))))` a hundred thousand deep would overflow it.
+/// untrusted input and `((((...1...))))` a hundred thousand deep would overflow it.
 /// Excel itself refuses more than 64 levels, so this is not a limit a formula
 /// written by anyone can reach.
 const MAX_DEPTH: u32 = 256;
@@ -836,7 +836,7 @@ impl Parser {
     /// defined name.
     fn ident(&mut self, sheet: Option<String>, text: String) -> Result<Expr> {
         // A name followed directly by `(` is a call, whatever else it looks
-        // like — that is what keeps `LOG10(2)` from being read as a cell.
+        // like - that is what keeps `LOG10(2)` from being read as a cell.
         if *self.peek() == Tok::Op(Op::LParen) && !self.spaced() {
             self.at += 1;
             let name = text.to_uppercase();

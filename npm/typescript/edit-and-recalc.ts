@@ -14,14 +14,14 @@ for (const [address, value] of edits) {
   book.set(0, address, value);
 }
 
-// One pass for the whole batch — not one per cell.
+// One pass for the whole batch - not one per cell.
 const recomputed = book.recalculateFromMany(0, edits.map(([address]) => address));
 console.log(`${recomputed} formulas recomputed`);
 
 // Evaluating something without storing it: handy for validation or previews.
 console.log("preview:", book.evaluate(0, "Z1", "=SUM(B2:B4)"));
 
-// Same workbook, four formats — pick what the caller asked for.
+// Same workbook, four formats - pick what the caller asked for.
 writeFileSync("files/edited.xlsx", book.toXlsx());
 writeFileSync("files/edited.ods", book.toOds());
 writeFileSync("files/edited.html", book.toHtml(0, /* fragment */ false));

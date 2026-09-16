@@ -3,7 +3,7 @@
 //! Each one is a thin shell over [`crate::shared::special`]: the normal is the
 //! error function, the chi-squared and the Poisson are the incomplete gamma,
 //! and the t, the F and the binomial are the incomplete beta. What is left here
-//! is Excel's own part — which argument order it uses, where it wants the
+//! is Excel's own part - which argument order it uses, where it wants the
 //! density rather than the cumulative total, and which combinations it refuses.
 //!
 //! Every function has a `cumulative` flag or a fixed choice, and the `.RT`
@@ -75,7 +75,7 @@ pub fn norm_s_inv(args: &[Arg]) -> Value {
     })
 }
 
-/// `GAUSS(z)` — the area between the mean and z, so half a normal less.
+/// `GAUSS(z)` - the area between the mean and z, so half a normal less.
 pub fn gauss(args: &[Arg]) -> Value {
     super::one(args, |z| Value::Number(normal_cdf(z) - 0.5))
 }
@@ -123,7 +123,7 @@ pub fn lognorm_inv(args: &[Arg]) -> Value {
     Value::Number((mean + deviation * standard_inverse(p)).exp())
 }
 
-/// `GAMMA(x)` — the gamma function itself, which Excel exposes on its own.
+/// `GAMMA(x)` - the gamma function itself, which Excel exposes on its own.
 pub fn gamma_fn(args: &[Arg]) -> Value {
     super::one(args, |x| {
         // The poles: gamma is undefined at zero and the negative whole numbers.
@@ -175,7 +175,7 @@ pub fn gamma_inv(args: &[Arg]) -> Value {
     Value::Number(beta * invert(p, 0.0, SEARCH_LIMIT, |x| gamma_p(alpha, x)))
 }
 
-/// `CHISQ.DIST(x, degrees, cumulative)` — the left tail.
+/// `CHISQ.DIST(x, degrees, cumulative)` - the left tail.
 pub fn chisq_dist(args: &[Arg]) -> Value {
     let Some([x, degrees, cumulative]) = three(args) else {
         return Value::Error(CellError::Value);
@@ -192,7 +192,7 @@ pub fn chisq_dist(args: &[Arg]) -> Value {
     })
 }
 
-/// `CHISQ.DIST.RT(x, degrees)`, and `CHIDIST` — the right tail, which is the
+/// `CHISQ.DIST.RT(x, degrees)`, and `CHIDIST` - the right tail, which is the
 /// one the older name always meant.
 pub fn chisq_dist_rt(args: &[Arg]) -> Value {
     let [x, degrees] = args else {
@@ -208,7 +208,7 @@ pub fn chisq_dist_rt(args: &[Arg]) -> Value {
     Value::Number(gamma_q(degrees / 2.0, x / 2.0))
 }
 
-/// `CHISQ.INV(probability, degrees)` — the left tail inverted.
+/// `CHISQ.INV(probability, degrees)` - the left tail inverted.
 pub fn chisq_inv(args: &[Arg]) -> Value {
     chisq_inverse(args, false)
 }
@@ -234,7 +234,7 @@ fn chisq_inverse(args: &[Arg], right_tail: bool) -> Value {
     Value::Number(2.0 * invert(wanted, 0.0, SEARCH_LIMIT, |x| gamma_p(degrees / 2.0, x)))
 }
 
-/// `T.DIST(x, degrees, cumulative)` — the left tail.
+/// `T.DIST(x, degrees, cumulative)` - the left tail.
 pub fn t_dist(args: &[Arg]) -> Value {
     let Some([x, degrees, cumulative]) = three(args) else {
         return Value::Error(CellError::Value);
@@ -252,17 +252,17 @@ pub fn t_dist(args: &[Arg]) -> Value {
     })
 }
 
-/// `T.DIST.RT(x, degrees)` — the right tail.
+/// `T.DIST.RT(x, degrees)` - the right tail.
 pub fn t_dist_rt(args: &[Arg]) -> Value {
     student_tail(args, 1.0)
 }
 
-/// `T.DIST.2T(x, degrees)` — both ends together.
+/// `T.DIST.2T(x, degrees)` - both ends together.
 pub fn t_dist_2t(args: &[Arg]) -> Value {
     student_tail(args, 2.0)
 }
 
-/// `TDIST(x, degrees, tails)` — the older name, which asks for the number of
+/// `TDIST(x, degrees, tails)` - the older name, which asks for the number of
 /// tails rather than having it in the name.
 pub fn tdist(args: &[Arg]) -> Value {
     let Some([x, degrees, tails]) = three(args) else {
@@ -301,7 +301,7 @@ fn student_tail(args: &[Arg], tails: f64) -> Value {
     Value::Number(tails * (1.0 - student_cdf(x, degrees)))
 }
 
-/// `T.INV(probability, degrees)` — the left tail inverted.
+/// `T.INV(probability, degrees)` - the left tail inverted.
 pub fn t_inv(args: &[Arg]) -> Value {
     t_inverse(args, false)
 }
@@ -335,7 +335,7 @@ fn t_inverse(args: &[Arg], two_tailed: bool) -> Value {
     }))
 }
 
-/// `F.DIST(x, d1, d2, cumulative)` — the left tail.
+/// `F.DIST(x, d1, d2, cumulative)` - the left tail.
 pub fn f_dist(args: &[Arg]) -> Value {
     let Some([x, d1, d2, cumulative]) = four(args) else {
         return Value::Error(CellError::Value);
@@ -352,7 +352,7 @@ pub fn f_dist(args: &[Arg]) -> Value {
     })
 }
 
-/// `F.DIST.RT(x, d1, d2)`, and `FDIST` — the right tail.
+/// `F.DIST.RT(x, d1, d2)`, and `FDIST` - the right tail.
 pub fn f_dist_rt(args: &[Arg]) -> Value {
     let Some([x, d1, d2]) = three(args) else {
         return Value::Error(CellError::Value);
@@ -364,7 +364,7 @@ pub fn f_dist_rt(args: &[Arg]) -> Value {
     Value::Number(1.0 - fisher_cdf(x, d1, d2))
 }
 
-/// `F.INV(probability, d1, d2)` — the left tail inverted.
+/// `F.INV(probability, d1, d2)` - the left tail inverted.
 pub fn f_inv(args: &[Arg]) -> Value {
     f_inverse(args, false)
 }
@@ -392,7 +392,7 @@ pub fn beta_dist(args: &[Arg]) -> Value {
     beta_shape(args, true)
 }
 
-/// `BETADIST(x, alpha, beta, [low], [high])` — the older name, which is always
+/// `BETADIST(x, alpha, beta, [low], [high])` - the older name, which is always
 /// cumulative and so has the bounds where the newer one has its flag.
 pub fn betadist(args: &[Arg]) -> Value {
     beta_shape(args, false)
@@ -722,7 +722,7 @@ fn read_error(args: &[Arg]) -> Value {
     first_error(args).map_or(Value::Error(CellError::Value), Value::Error)
 }
 
-/// `CHISQ.TEST(observed, expected)`, and `CHITEST` — how unlikely the observed
+/// `CHISQ.TEST(observed, expected)`, and `CHITEST` - how unlikely the observed
 /// counts are if the expected ones are the truth.
 pub fn chisq_test(args: &[Arg]) -> Value {
     let [observed, expected] = args else {
@@ -766,7 +766,7 @@ pub fn chisq_test(args: &[Arg]) -> Value {
     Value::Number(gamma_q(degrees / 2.0, statistic / 2.0))
 }
 
-/// `F.TEST(array1, array2)`, and `FTEST` — whether two samples have the same
+/// `F.TEST(array1, array2)`, and `FTEST` - whether two samples have the same
 /// spread, as a two-tailed probability.
 pub fn f_test(args: &[Arg]) -> Value {
     let [first, second] = args else {
@@ -792,7 +792,7 @@ pub fn f_test(args: &[Arg]) -> Value {
 /// `T.TEST(array1, array2, tails, type)`, and `TTEST`.
 ///
 /// Type 1 pairs the samples, 2 assumes they have the same spread, and 3 does
-/// not — the Welch form, whose degrees of freedom are not a whole number.
+/// not - the Welch form, whose degrees of freedom are not a whole number.
 pub fn t_test(args: &[Arg]) -> Value {
     let [first, second, tails, kind] = args else {
         return Value::Error(CellError::Value);
@@ -856,7 +856,7 @@ pub fn t_test(args: &[Arg]) -> Value {
     Value::Number(tails * tail)
 }
 
-/// `Z.TEST(array, x, [deviation])`, and `ZTEST` — the one-tailed probability
+/// `Z.TEST(array, x, [deviation])`, and `ZTEST` - the one-tailed probability
 /// that the sample mean is as far above `x` as it is.
 pub fn z_test(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
@@ -930,7 +930,7 @@ fn count_of<T>(items: &[T]) -> f64 {
     items.len() as f64
 }
 
-/// `CONFIDENCE.T(alpha, deviation, size)` — the same interval as
+/// `CONFIDENCE.T(alpha, deviation, size)` - the same interval as
 /// `CONFIDENCE.NORM`, but from the t distribution, which is what a small
 /// sample needs.
 pub fn confidence_t(args: &[Arg]) -> Value {
@@ -952,7 +952,7 @@ pub fn confidence_t(args: &[Arg]) -> Value {
     Value::Number(t * deviation / size.sqrt())
 }
 
-/// `BINOM.DIST.RANGE(trials, probability, low, [high])` — the chance of a
+/// `BINOM.DIST.RANGE(trials, probability, low, [high])` - the chance of a
 /// number of successes anywhere in a range.
 pub fn binom_dist_range(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {

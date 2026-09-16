@@ -3,7 +3,7 @@
 //!
 //! A format string is up to four sections separated by `;`, applied by the
 //! value's sign: positive, negative, zero, text. With fewer sections Excel
-//! falls back in a specific way — see [`Sections::pick`], which is where most
+//! falls back in a specific way - see [`Sections::pick`], which is where most
 //! of the subtlety of this module lives.
 //!
 //! Within a section, the characters that matter are the digit placeholders
@@ -992,7 +992,7 @@ mod tests {
     #[test]
     fn a_separator_outside_the_number_stays_a_character() {
         // A format typed in a language Excel does not know is mostly literal.
-        // The first run of placeholders — here a lone `.` — is where the
+        // The first run of placeholders - here a lone `.` - is where the
         // number goes; the dots after it are just dots.
         assert_eq!(
             format(Value::Number(693_597.0), "ДД.ММ.ГГГГ", Epoch::Windows1900),

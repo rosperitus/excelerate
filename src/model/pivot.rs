@@ -6,7 +6,7 @@
 //! written back: a pivot is bound to its cache, its records and the versions
 //! that wrote them, and rebuilding one from a summary would be a worse file
 //! than the one that arrived. What this buys is the ability to *see* the
-//! report — its source, its fields and how they are laid out — without
+//! report - its source, its fields and how they are laid out - without
 //! parsing XML by hand.
 
 use crate::coordinate::Range;

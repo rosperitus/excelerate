@@ -87,19 +87,19 @@ fn coupon_date(security: &Security, next: bool, epoch: Epoch) -> Option<f64> {
     Some(current)
 }
 
-/// `COUPPCD(settlement, maturity, frequency, [basis])` — the coupon date
+/// `COUPPCD(settlement, maturity, frequency, [basis])` - the coupon date
 /// before the settlement.
 pub fn couppcd(epoch: Epoch, args: &[Arg]) -> Value {
     coupon(epoch, args, |s, epoch| coupon_date(s, false, epoch))
 }
 
-/// `COUPNCD(settlement, maturity, frequency, [basis])` — the coupon date after
+/// `COUPNCD(settlement, maturity, frequency, [basis])` - the coupon date after
 /// the settlement.
 pub fn coupncd(epoch: Epoch, args: &[Arg]) -> Value {
     coupon(epoch, args, |s, epoch| coupon_date(s, true, epoch))
 }
 
-/// `COUPNUM(settlement, maturity, frequency, [basis])` — how many coupons are
+/// `COUPNUM(settlement, maturity, frequency, [basis])` - how many coupons are
 /// still to be paid.
 pub fn coupnum(epoch: Epoch, args: &[Arg]) -> Value {
     coupon(epoch, args, coupons_left)
@@ -118,7 +118,7 @@ fn coupons_left(security: &Security, epoch: Epoch) -> Option<f64> {
     Some(f64::from(months / per_period + 1))
 }
 
-/// `COUPDAYBS(settlement, maturity, frequency, [basis])` — days from the start
+/// `COUPDAYBS(settlement, maturity, frequency, [basis])` - days from the start
 /// of the current coupon period to the settlement.
 pub fn coupdaybs(epoch: Epoch, args: &[Arg]) -> Value {
     coupon(epoch, args, days_since_previous)
@@ -136,7 +136,7 @@ fn days_since_previous(security: &Security, epoch: Epoch) -> Option<f64> {
     Some(fraction * days_per_year(year, security.basis)?)
 }
 
-/// `COUPDAYS(settlement, maturity, frequency, [basis])` — the length of the
+/// `COUPDAYS(settlement, maturity, frequency, [basis])` - the length of the
 /// coupon period the settlement falls in.
 pub fn coupdays(epoch: Epoch, args: &[Arg]) -> Value {
     coupon(epoch, args, period_length)
@@ -160,7 +160,7 @@ fn period_length(security: &Security, epoch: Epoch) -> Option<f64> {
     }
 }
 
-/// `COUPDAYSNC(settlement, maturity, frequency, [basis])` — days from the
+/// `COUPDAYSNC(settlement, maturity, frequency, [basis])` - days from the
 /// settlement to the next coupon.
 pub fn coupdaysnc(epoch: Epoch, args: &[Arg]) -> Value {
     coupon(epoch, args, days_to_next)
@@ -308,7 +308,7 @@ fn span(epoch: Epoch, from: f64, to: f64, basis: i32) -> Result<f64, CellError> 
 }
 
 /// `PRICE(settlement, maturity, rate, yield, redemption, frequency, [basis])`
-/// — what 100 of face value is worth.
+/// - what 100 of face value is worth.
 ///
 /// The redemption is discounted over the whole remaining term and every coupon
 /// over its own, and the interest the seller has already earned in the current
@@ -380,7 +380,7 @@ fn coupon_measure(epoch: Epoch, security: &Security) -> Result<(f64, f64, f64, f
     ))
 }
 
-/// `PRICEDISC(settlement, maturity, discount, redemption, [basis])` — the
+/// `PRICEDISC(settlement, maturity, discount, redemption, [basis])` - the
 /// price of a security sold at a discount and paying no coupon.
 pub fn pricedisc(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -394,7 +394,7 @@ pub fn pricedisc(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `PRICEMAT(settlement, maturity, issue, rate, yield, [basis])` — the price
+/// `PRICEMAT(settlement, maturity, issue, rate, yield, [basis])` - the price
 /// of a security that pays its interest in one go at maturity.
 pub fn pricemat(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -418,7 +418,7 @@ pub fn pricemat(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `DISC(settlement, maturity, price, redemption, [basis])` — the discount
+/// `DISC(settlement, maturity, price, redemption, [basis])` - the discount
 /// rate a price implies.
 pub fn disc(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -432,7 +432,7 @@ pub fn disc(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `INTRATE(settlement, maturity, investment, redemption, [basis])` — the rate
+/// `INTRATE(settlement, maturity, investment, redemption, [basis])` - the rate
 /// a fully invested security returns.
 pub fn intrate(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -446,7 +446,7 @@ pub fn intrate(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `RECEIVED(settlement, maturity, investment, discount, [basis])` — what a
+/// `RECEIVED(settlement, maturity, investment, discount, [basis])` - what a
 /// fully invested security pays at maturity.
 pub fn received(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -460,7 +460,7 @@ pub fn received(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `ACCRINTM(issue, settlement, rate, [par], [basis])` — interest earned by a
+/// `ACCRINTM(issue, settlement, rate, [par], [basis])` - interest earned by a
 /// security that pays at maturity.
 pub fn accrintm(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -479,7 +479,7 @@ pub fn accrintm(epoch: Epoch, args: &[Arg]) -> Value {
 }
 
 /// `ACCRINT(issue, first_interest, settlement, rate, [par], [frequency],
-/// [basis], [method])` — interest earned by a security paying periodically.
+/// [basis], [method])` - interest earned by a security paying periodically.
 ///
 /// The interest is measured from the issue to the settlement, which is what
 /// does; `first_interest` and `method` are read and checked but do
@@ -505,7 +505,7 @@ pub fn accrint(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `YIELDDISC(settlement, maturity, price, redemption, [basis])` — the yield
+/// `YIELDDISC(settlement, maturity, price, redemption, [basis])` - the yield
 /// of a security sold at a discount.
 pub fn yielddisc(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -524,7 +524,7 @@ pub fn yielddisc(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `YIELDMAT(settlement, maturity, issue, rate, price, [basis])` — the yield
+/// `YIELDMAT(settlement, maturity, issue, rate, price, [basis])` - the yield
 /// of a security that pays its interest at maturity.
 pub fn yieldmat(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -565,7 +565,7 @@ fn bill_days(epoch: Epoch, args: &[Arg]) -> Result<f64, CellError> {
     Ok(days)
 }
 
-/// `TBILLEQ(settlement, maturity, discount)` — the bond-equivalent yield of a
+/// `TBILLEQ(settlement, maturity, discount)` - the bond-equivalent yield of a
 /// treasury bill.
 pub fn tbilleq(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -578,7 +578,7 @@ pub fn tbilleq(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `TBILLPRICE(settlement, maturity, discount)` — the price per 100 of face
+/// `TBILLPRICE(settlement, maturity, discount)` - the price per 100 of face
 /// value.
 pub fn tbillprice(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -595,7 +595,7 @@ pub fn tbillprice(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `TBILLYIELD(settlement, maturity, price)` — the yield a price implies.
+/// `TBILLYIELD(settlement, maturity, price)` - the yield a price implies.
 pub fn tbillyield(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
         let days = bill_days(epoch, args)?;
@@ -608,7 +608,7 @@ pub fn tbillyield(epoch: Epoch, args: &[Arg]) -> Value {
 }
 
 /// `YIELD(settlement, maturity, rate, price, redemption, frequency, [basis])`
-/// — the yield a price implies.
+/// - the yield a price implies.
 ///
 /// [`price`] has no closed-form inverse, so the yield is searched for: the
 /// price falls as the yield rises, which makes a bisection safe where Newton's
@@ -651,14 +651,14 @@ pub fn yield_(epoch: Epoch, args: &[Arg]) -> Value {
     })
 }
 
-/// `DURATION(settlement, maturity, coupon, yield, frequency, [basis])` — the
+/// `DURATION(settlement, maturity, coupon, yield, frequency, [basis])` - the
 /// Macaulay duration: the average time to a payment, each weighted by what it
 /// is worth today.
 pub fn duration(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || macaulay(epoch, args).map(|(duration, _)| duration))
 }
 
-/// `MDURATION(settlement, maturity, coupon, yield, frequency, [basis])` — the
+/// `MDURATION(settlement, maturity, coupon, yield, frequency, [basis])` - the
 /// modified duration, which is the Macaulay duration discounted by one period.
 pub fn mduration(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -757,7 +757,7 @@ fn quasi_forward(from: f64, until: f64, frequency: u32, epoch: Epoch) -> Option<
 }
 
 /// `ODDLPRICE(settlement, maturity, last_interest, rate, yield, redemption,
-/// frequency, [basis])` — the price of a bond whose last period is odd.
+/// frequency, [basis])` - the price of a bond whose last period is odd.
 pub fn oddlprice(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
         let odd = OddLast::read(epoch, args)?;
@@ -766,7 +766,7 @@ pub fn oddlprice(epoch: Epoch, args: &[Arg]) -> Value {
 }
 
 /// `ODDLYIELD(settlement, maturity, last_interest, rate, price, redemption,
-/// frequency, [basis])` — the yield of a bond whose last period is odd.
+/// frequency, [basis])` - the yield of a bond whose last period is odd.
 ///
 /// The inverse of [`oddlprice`], and found the same way [`yield_`] is: the
 /// price falls as the yield rises, so a bisection cannot miss it.
@@ -992,7 +992,7 @@ impl OddFirst {
 }
 
 /// `ODDFPRICE(settlement, maturity, issue, first_coupon, rate, yield,
-/// redemption, frequency, [basis])` — the price of a bond whose first period
+/// redemption, frequency, [basis])` - the price of a bond whose first period
 /// is odd.
 pub fn oddfprice(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
@@ -1002,7 +1002,7 @@ pub fn oddfprice(epoch: Epoch, args: &[Arg]) -> Value {
 }
 
 /// `ODDFYIELD(settlement, maturity, issue, first_coupon, rate, price,
-/// redemption, frequency, [basis])` — the inverse of [`oddfprice`], bisected
+/// redemption, frequency, [basis])` - the inverse of [`oddfprice`], bisected
 /// the same way the other yields are.
 pub fn oddfyield(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {

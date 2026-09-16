@@ -3,7 +3,7 @@
 //! The records are the ones [`crate::reader::xls`] reads: the globals carry the
 //! fonts, the number formats, the cell formats and the shared strings, and each
 //! sheet is a substream of its own whose position the `BOUNDSHEET` record
-//! names — which is why the sheets are laid out first and their positions
+//! names - which is why the sheets are laid out first and their positions
 //! patched in afterwards.
 //!
 //! What is written: values of every type, shared strings (split over
@@ -641,7 +641,7 @@ fn push_units(out: &mut Vec<u8>, units: &[u16], wide: bool) {
 /// current one is full.
 ///
 /// A record that runs out mid-string is continued by a `CONTINUE` whose first
-/// byte says the width of what follows — the same rule the reader takes apart.
+/// byte says the width of what follows - the same rule the reader takes apart.
 fn write_sst_string(chunks: &mut Vec<Vec<u8>>, text: &str) {
     let units: Vec<u16> = text.encode_utf16().take(0xFFFF).collect();
     let wide = units.iter().any(|&u| u > 0xFF);

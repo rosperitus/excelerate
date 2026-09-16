@@ -3,7 +3,7 @@
 //! One gzipped XML document: `<Workbook><Sheets><Sheet>`, each sheet holding
 //! `<Cells><Cell Row="0" Col="0" ValueType="60">text</Cell></Cells>`. Rows and
 //! columns are zero-based, and the value's type is a number rather than a name
-//! — `60` is a string, `40` a float.
+//! - `60` is a string, `40` a float.
 //!
 //! A formula is written in the cell's own text, and a formula shared by a run
 //! of cells is written once with an `ExprID`; every other cell of the run

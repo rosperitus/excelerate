@@ -45,7 +45,7 @@ const MAX_RANGE_CELLS: usize = 4_000_000;
 
 /// How long a chain of formulas reading formulas may be.
 ///
-/// A cell is computed when something reads it, so `A1=A2+1, A2=A3+1, …` down
+/// A cell is computed when something reads it, so `A1=A2+1, A2=A3+1, ...` down
 /// a whole column recurses once per link. A few thousand links overflow the
 /// stack of a normal thread, and a workbook is untrusted input. Excel does not
 /// document a limit of its own here; a chain this long is a generated
@@ -244,7 +244,7 @@ impl<'a> Engine<'a> {
     /// Calls a value that should be a lambda, with arguments already computed.
     ///
     /// A lambda called with the wrong number of arguments is `#VALUE!`, and a
-    /// value that is not a lambda at all is `#CALC!` — the error Excel shows
+    /// value that is not a lambda at all is `#CALC!` - the error Excel shows
     /// when something is asked to be a function and is not.
     pub fn apply(&mut self, origin: Origin, callee: &Value, args: Vec<Value>) -> Value {
         // An error where the function should be is that error, not a
@@ -460,7 +460,7 @@ impl<'a> Engine<'a> {
     ///
     /// `SUM(A:A)` must not build a million values; the end of the reference is
     /// pulled back to the last used row and column, while its start stays put
-    /// so that offsets counted from it — `INDEX`, `VLOOKUP` — still land where
+    /// so that offsets counted from it - `INDEX`, `VLOOKUP` - still land where
     /// the formula meant them to.
     fn clip(&mut self, sheet: usize, range: Range) -> Option<Range> {
         let used = if let Some(used) = self.dims.get(sheet).copied().flatten() {
@@ -705,7 +705,7 @@ fn shape(v: &Value) -> (usize, usize) {
 }
 
 /// The element at a position, repeating the only row or column when the value
-/// is narrower than the shape being filled — Excel stretches a single row or
+/// is narrower than the shape being filled - Excel stretches a single row or
 /// column across the whole result and pads the rest with `#N/A`.
 fn at(v: &Value, row: usize, col: usize) -> Value {
     match v {
@@ -723,7 +723,7 @@ fn at(v: &Value, row: usize, col: usize) -> Value {
 
 /// The reference an expression names, following chains of `:`.
 ///
-/// `E5:H7:B1` is one reference — the rectangle covering all of them — and it
+/// `E5:H7:B1` is one reference - the rectangle covering all of them - and it
 /// is the reference `ROWS` and `COLUMNS` measure, not the values behind it.
 #[must_use]
 pub fn spanned(expr: &Expr) -> Option<(Option<String>, Range)> {
@@ -748,8 +748,8 @@ pub fn spanned(expr: &Expr) -> Option<(Option<String>, Range)> {
 /// result as that cell's cached value. Returns how many formulas were computed.
 ///
 /// The cache beside a formula is whatever application saved the file last, so
-/// this is what makes it ours: after it, a reader that trusts the cache — CSV,
-/// HTML, or anything reading the value rather than the formula — sees this
+/// this is what makes it ours: after it, a reader that trusts the cache - CSV,
+/// HTML, or anything reading the value rather than the formula - sees this
 /// engine's answers.
 ///
 /// Reading and writing cannot overlap (the engine borrows the workbook), so the
@@ -828,7 +828,7 @@ pub fn recalculate(book: &mut Spreadsheet, sheet: Option<usize>, options: &Optio
 ///
 /// This is not [`recalculate_from`]: that one answers "I changed this cell",
 /// and recomputes the formulas *reading* `at` while leaving `at` alone. This
-/// one recomputes `at` itself and nothing else — what a cell holding
+/// one recomputes `at` itself and nothing else - what a cell holding
 /// `=NOW()` or a formula whose function the caller just registered needs.
 ///
 /// Whatever the formula reads is computed on the way, but only in the engine's
@@ -911,7 +911,7 @@ const VOLATILE: [&str; 8] = [
 ];
 
 /// What every formula of a workbook reads, so that a cell edit can be answered
-/// without evaluating — or even parsing — the whole book again.
+/// without evaluating - or even parsing - the whole book again.
 ///
 /// Building it parses every formula once, which on a large workbook is most of
 /// what a recalculation costs. Keep one across a run of edits; the free

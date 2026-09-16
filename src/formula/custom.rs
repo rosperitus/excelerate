@@ -2,8 +2,8 @@
 //!
 //! Excel calls these user-defined functions and keeps them in VBA; here one is
 //! any Rust closure that takes the computed arguments and answers with a
-//! value. A workbook cannot carry them — a file holds the *name* of a function
-//! and nothing more — so a book that uses one shows `#NAME?` until the caller
+//! value. A workbook cannot carry them - a file holds the *name* of a function
+//! and nothing more - so a book that uses one shows `#NAME?` until the caller
 //! registers it, which is what Excel does with macros disabled.
 //!
 //! A built-in of the same name wins. Excel refuses to let a user-defined

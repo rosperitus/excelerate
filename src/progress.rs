@@ -58,7 +58,7 @@ impl Progress<'_> {
 ///
 /// The callback is `Fn`, not `FnMut`, so that one `Options` can be shared with
 /// an engine that is borrowing it at the same time. A callback that has to
-/// accumulate — count what it saw, remember the last stage — does it through a
+/// accumulate - count what it saw, remember the last stage - does it through a
 /// `Cell` or an `AtomicUsize` it captures, which is the usual shape for a
 /// progress callback anyway.
 ///

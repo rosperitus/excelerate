@@ -129,7 +129,7 @@ fn part_from_a1(part: &str, names: &[String]) -> String {
                 None => {
                     if let Some((end, word)) = read_word(&chars, i) {
                         // A name the workbook defines is marked; a function
-                        // call — a word followed by `(` — never is.
+                        // call - a word followed by `(` - never is.
                         let called = chars.get(end) == Some(&'(');
                         if !called && names.iter().any(|n| n.eq_ignore_ascii_case(&word)) {
                             out.push_str("$$");
@@ -366,7 +366,7 @@ fn read_cell(chars: &[char], i: usize) -> Option<(usize, String)> {
     Some((j, out))
 }
 
-/// A bare word — a function or a name — starting at `i`.
+/// A bare word - a function or a name - starting at `i`.
 fn read_word(chars: &[char], i: usize) -> Option<(usize, String)> {
     if !chars[i].is_alphabetic() && chars[i] != '_' {
         return None;

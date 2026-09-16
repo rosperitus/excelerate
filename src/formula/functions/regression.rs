@@ -7,12 +7,12 @@
 //!
 //! The fit is by the normal equations: `(X'X) c = X'y`, solved by
 //! Gauss-Jordan with partial pivoting. That is the textbook method rather than
-//! a QR decomposition, and it is what the reference implementations use — a
+//! a QR decomposition, and it is what the reference implementations use - a
 //! spreadsheet regression has a handful of columns, where the difference in
 //! conditioning does not show.
 //!
-//! `LINEST` returns its coefficients backwards — the last predictor first and
-//! the intercept last — because that is the order Excel lays them out in.
+//! `LINEST` returns its coefficients backwards - the last predictor first and
+//! the intercept last - because that is the order Excel lays them out in.
 
 use super::{Arg, cells, first_error};
 use crate::error::CellError;
@@ -23,7 +23,7 @@ pub fn linest(args: &[Arg]) -> Value {
     fitted(args, false)
 }
 
-/// `LOGEST(y, [x], [const], [stats])` — the same over `ln(y)`.
+/// `LOGEST(y, [x], [const], [stats])` - the same over `ln(y)`.
 pub fn logest(args: &[Arg]) -> Value {
     fitted(args, true)
 }
@@ -88,7 +88,7 @@ pub fn trend(args: &[Arg]) -> Value {
     predicted(args, false)
 }
 
-/// `GROWTH(y, [x], [new_x], [const])` — the same over `ln(y)`.
+/// `GROWTH(y, [x], [new_x], [const])` - the same over `ln(y)`.
 pub fn growth(args: &[Arg]) -> Value {
     predicted(args, true)
 }
@@ -150,7 +150,7 @@ impl Request {
         if y.is_empty() {
             return None;
         }
-        // Left out, the predictors are 1, 2, 3, ... — the position in the list.
+        // Left out, the predictors are 1, 2, 3, ... - the position in the list.
         let x = match args.get(1).filter(|a| !a.missing()) {
             Some(arg) => grid(arg, y.len())?,
             None => (1..=y.len())
@@ -239,7 +239,7 @@ fn least_squares(y: &[f64], x: &[Vec<f64>], intercept: bool) -> Option<Fit> {
         return None;
     }
     // A column of ones makes the intercept just another coefficient. Pinned
-    // through the origin, that column is simply absent — zeroing it instead
+    // through the origin, that column is simply absent - zeroing it instead
     // would leave a singular matrix rather than a smaller one.
     let width = predictors + usize::from(intercept);
     let design: Vec<Vec<f64>> = x

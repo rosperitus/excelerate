@@ -1,15 +1,15 @@
 //! Charts: what a chart draws, what it reads, and where it sits.
 //!
 //!
-//! A chart is two parts. The drawing of a sheet holds a frame — the anchor,
-//! the name — pointing at `xl/charts/chartN.xml`, and that part holds the
+//! A chart is two parts. The drawing of a sheet holds a frame - the anchor,
+//! the name - pointing at `xl/charts/chartN.xml`, and that part holds the
 //! chart itself: plots, their series, the axes, the title, the legend. Both
 //! halves land in one [`Chart`] on [`crate::model::Worksheet::charts`].
 //!
 //! **What is modelled and what is carried.** A chart part is mostly about
 //! looks: fills, line widths, fonts, label positions, effects, each in its own
-//! corner of `DrawingML`. The model names what a program asks of a chart —
-//! kind, series and the cells they read, axes and their scale, title, legend —
+//! corner of `DrawingML`. The model names what a program asks of a chart -
+//! kind, series and the cells they read, axes and their scale, title, legend -
 //! and keeps everything else as the markup it was written in, in slots that
 //! say where it stood. A series edited through the model keeps its colour.
 //!
@@ -20,8 +20,8 @@
 //! comparing the chart with what was read, so there is no dirty flag to
 //! forget.
 //!
-//! **`chartEx`** — waterfall, funnel, treemap, sunburst, histogram, box and
-//! whisker, region map — is a different schema from Office 2016 and is read
+//! **`chartEx`** - waterfall, funnel, treemap, sunburst, histogram, box and
+//! whisker, region map - is a different schema from Office 2016 and is read
 //! into [`ChartEx`] on [`crate::model::Worksheet::extended_charts`], but not
 //! written from it: its parts travel whole.
 
@@ -44,8 +44,8 @@ pub struct Chart {
     /// Whether the automatic title was switched off. A chart of one series
     /// with no title of its own shows that series' name unless this is set.
     pub auto_title_deleted: bool,
-    /// The plots, in drawing order. A combination chart — columns with a line
-    /// over them — has more than one.
+    /// The plots, in drawing order. A combination chart - columns with a line
+    /// over them - has more than one.
     pub plots: Vec<Plot>,
     /// The axes the plots refer to by id.
     pub axes: Vec<ChartAxis>,
@@ -69,9 +69,9 @@ impl Chart {
 
     /// Takes the chart as it stands for what was read.
     ///
-    /// For edits that change the carried bytes and the model the same way —
+    /// For edits that change the carried bytes and the model the same way -
     /// a row inserted above the data moves both the series in the part and
-    /// the series here — so the chart still counts as untouched.
+    /// the series here - so the chart still counts as untouched.
     pub(crate) fn settle(&mut self) {
         if let Some(mut origin) = self.origin.take() {
             origin.read = Box::new(self.clone());
@@ -370,7 +370,7 @@ impl ChartText {
 /// A title over the chart or beside an axis.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Title {
-    /// What it says; `None` when Excel makes the text up — a series name over
+    /// What it says; `None` when Excel makes the text up - a series name over
     /// the chart, nothing beside an axis.
     pub text: Option<ChartText>,
     /// Position, overlay and formatting, carried as written.
@@ -389,8 +389,8 @@ pub struct Plot {
     /// Ids of the axes this plot is drawn against, from [`Chart::axes`].
     /// Two for a flat chart, three for a 3-D one; none for a pie.
     pub axis_ids: Vec<u32>,
-    /// What follows the series — labels, gap width, overlap, hole size, drop
-    /// lines — carried as written.
+    /// What follows the series - labels, gap width, overlap, hole size, drop
+    /// lines - carried as written.
     pub markup: String,
 }
 
@@ -630,9 +630,9 @@ pub struct Series {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SeriesMarkup {
     /// Fill and line, markers, per-point formatting, labels, trend lines,
-    /// error bars — everything between the name and the data.
+    /// error bars - everything between the name and the data.
     pub before_data: String,
-    /// Smoothing, bar shape, extensions — everything after the data.
+    /// Smoothing, bar shape, extensions - everything after the data.
     pub after_data: String,
 }
 
@@ -660,7 +660,7 @@ pub enum DataSource {
         /// The labels when the file was saved, by point index.
         points: Vec<(u32, String)>,
     },
-    /// Categories in several levels — region, then city — carried whole
+    /// Categories in several levels - region, then city - carried whole
     /// besides the formula.
     Levels {
         /// The cells, as a formula.
@@ -1003,11 +1003,11 @@ pub struct Dimension {
     pub role: DimensionRole,
     /// Numbers rather than text.
     pub numeric: bool,
-    /// The cells, as a formula. Excel writes a hidden defined name here —
-    /// `_xlchart.v1.0` — rather than the range: see [`Dimension::reference`].
+    /// The cells, as a formula. Excel writes a hidden defined name here -
+    /// `_xlchart.v1.0` - rather than the range: see [`Dimension::reference`].
     pub formula: Option<String>,
     /// The values when the file was saved: one list per level, each by point
-    /// index. A hierarchy — a treemap's region and city — has several.
+    /// index. A hierarchy - a treemap's region and city - has several.
     pub levels: Vec<Vec<(u32, String)>>,
 }
 

@@ -8,13 +8,13 @@
 
 use crate::coordinate::Range;
 
-/// A password as a file stores it — a hash, never the text that was typed.
+/// A password as a file stores it - a hash, never the text that was typed.
 ///
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PasswordHash {
     /// `password="CC1A"`: the 16-bit verifier of the old method, in hex.
     ///
-    /// Two different passwords collide in it routinely — it never was a
+    /// Two different passwords collide in it routinely - it never was a
     /// security measure.
     Legacy(String),
     /// The ISO method: a named hash iterated `spin_count` times over a salt.

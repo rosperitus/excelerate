@@ -2,16 +2,16 @@
 //!
 //! A page becomes one sheet: a `<table>` is a block of cells, `<tr>` a row,
 //! `<td>` a cell, `colspan`/`rowspan` a merge. Outside a table the text still
-//! lands on the sheet — a `<p>` or an `<h1>` fills one cell and moves the
-//! cursor down a row — which is what a reader has to do and what makes a plain
+//! lands on the sheet - a `<p>` or an `<h1>` fills one cell and moves the
+//! cursor down a row - which is what a reader has to do and what makes a plain
 //! article readable as a column of text.
 //!
 //! A full HTML parser would do, but that is a dependency we do
 //! not have. The scanner below is the small part of one that a spreadsheet
 //! needs: tags, attributes, entities, and the implied end tags (`<tr>` closes
 //! an open `<td>`) without which real-world tables collapse into one cell.
-//! Everything a browser needs and a sheet does not — the element categories,
-//! foster parenting, character encoding declared halfway through the file — is
+//! Everything a browser needs and a sheet does not - the element categories,
+//! foster parenting, character encoding declared halfway through the file - is
 //! left out.
 //!
 //! Not ported: images (the model has no drawings yet), comments, document

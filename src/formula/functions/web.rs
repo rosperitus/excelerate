@@ -10,7 +10,7 @@ use crate::error::CellError;
 use crate::formula::value::Value;
 use std::fmt::Write as _;
 
-/// `ENCODEURL(text)` — percent-encoding, as a URL wants it.
+/// `ENCODEURL(text)` - percent-encoding, as a URL wants it.
 pub fn encodeurl(args: &[Arg]) -> Value {
     let [arg] = args else {
         return Value::Error(CellError::Value);

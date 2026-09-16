@@ -2,13 +2,13 @@
 import { Book, type CellGrid } from "excelerate";
 import { readFileSync } from "node:fs";
 
-/** The first `limit` rows of a sheet, read in one call — no addresses built. */
+/** The first `limit` rows of a sheet, read in one call - no addresses built. */
 function head(book: Book, sheet: number, limit = 5): CellGrid {
   const used = book.usedRange(sheet);
   if (used === undefined) {
     return [];
   }
-  // "A1:D97" → how many rows and columns it spans.
+  // "A1:D97" -> how many rows and columns it spans.
   const end = used.split(":")[1];
   const rows = Math.min(Number(end.replace(/[A-Z]/g, "")), limit);
   const columns = end.replace(/[0-9]/g, "").length === 1

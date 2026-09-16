@@ -21,12 +21,12 @@ use excelerate::reader;
 let book = reader::read("budget.xlsx")?;
 
 for sheet in book.sheets() {
-    println!("{} — {} cells", sheet.title(), sheet.len());
+    println!("{} - {} cells", sheet.title(), sheet.len());
 }
 # Ok::<(), excelerate::Error>(())
 ```
 
-Got bytes instead of a path — an upload, an S3 object, a blob from JS?
+Got bytes instead of a path - an upload, an S3 object, a blob from JS?
 
 ```rust
 use excelerate::reader::read_bytes;
@@ -36,7 +36,7 @@ let book = read_bytes(&bytes, Some("upload.xlsx"))?;
 # Ok::<(), excelerate::Error>(())
 ```
 
-The name is optional — it is only consulted when the signature is ambiguous
+The name is optional - it is only consulted when the signature is ambiguous
 (and it gives a SYLK file its sheet name).
 
 If you know exactly what you have, call the format directly and skip the
@@ -59,7 +59,7 @@ match &sheet.get(CellRef::parse("B4")?).map(|c| &c.value) {
     // A formula keeps the result the file was saved with, so you can read a
     // workbook without recalculating anything.
     Some(CellValue::Formula { formula, cached }) => {
-        println!("={formula} → {cached:?}");
+        println!("={formula} -> {cached:?}");
     }
     _ => println!("empty"),
 }
@@ -127,13 +127,13 @@ cargo run --release --example convert -- input.xlsx output.ods
 ## Errors
 
 Everything fallible returns `excelerate::Result<T>`, and the error is a
-plain `thiserror` enum — one variant per format plus the shared ones
-(`InvalidCellRef`, `InvalidSheetName`, …). No panics on malformed input: a
+plain `thiserror` enum - one variant per format plus the shared ones
+(`InvalidCellRef`, `InvalidSheetName`, ...). No panics on malformed input: a
 truncated zip, a bogus address or a BIFF5 file all come back as `Err`.
 
 Heads up on one deliberate limit: zip expansion is capped at 512 MB to keep a
-zip bomb from eating the process. Real workbooks do blow past it — a 100 MB
-package can expand to 560 MB — so raise it explicitly when you need to:
+zip bomb from eating the process. Real workbooks do blow past it - a 100 MB
+package can expand to 560 MB - so raise it explicitly when you need to:
 
 ```rust
 use excelerate::reader::read_bytes_limited;
@@ -145,6 +145,6 @@ let book = read_bytes_limited(&bytes, Some("big.xlsx"), 4 << 30)?;
 
 ## Where to next
 
-- [Workbook model](model.md) — how sheets, cells and addresses fit together
-- [Formulas](formulas.md) — making the numbers update
-- [File formats](formats.md) — what survives which format
+- [Workbook model](model.md) - how sheets, cells and addresses fit together
+- [Formulas](formulas.md) - making the numbers update
+- [File formats](formats.md) - what survives which format

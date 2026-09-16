@@ -61,13 +61,13 @@ pub fn dmin(args: &[Arg]) -> Value {
     selected_numbers(args, |ns| extreme(ns, f64::min))
 }
 
-/// `DCOUNT(database, [field], criteria)` — how many of the selected rows hold
+/// `DCOUNT(database, [field], criteria)` - how many of the selected rows hold
 /// a number in that field.
 pub fn dcount(args: &[Arg]) -> Value {
     selected_numbers(args, |ns| count_value(ns.len()))
 }
 
-/// `DCOUNTA(database, [field], criteria)` — how many hold anything at all.
+/// `DCOUNTA(database, [field], criteria)` - how many hold anything at all.
 pub fn dcounta(args: &[Arg]) -> Value {
     let Some(picked) = select(args) else {
         return Value::Error(CellError::Value);
@@ -95,7 +95,7 @@ pub fn dvarp(args: &[Arg]) -> Value {
     selected_numbers(args, |ns| spread(ns, false, false))
 }
 
-/// `DGET(database, field, criteria)` — the one value selected, and an error
+/// `DGET(database, field, criteria)` - the one value selected, and an error
 /// when the criteria pick none or several.
 pub fn dget(args: &[Arg]) -> Value {
     let Some(picked) = select(args) else {

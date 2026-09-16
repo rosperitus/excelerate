@@ -2,7 +2,7 @@
 //!
 //! Pictures, shapes, charts and the boxes behind comments are anchored to a
 //! cell: a drawing part says "row 12, column 3", and Excel puts the object
-//! there. None of that is modelled here — the parts travel byte for byte — so
+//! there. None of that is modelled here - the parts travel byte for byte - so
 //! a row inserted above an object used to move the data and leave the object
 //! on the row it named, which is the worst kind of error, the kind only a
 //! person looking at the sheet can see.
@@ -199,7 +199,7 @@ mod tests {
     }
 
     /// With `editAs="oneCell"` the object keeps its size, so the far corner
-    /// moves by whatever the near one did — here, nothing.
+    /// moves by whatever the near one did - here, nothing.
     #[test]
     fn an_object_that_keeps_its_size_does_not_stretch() {
         let pinned = DRAWING.replace(

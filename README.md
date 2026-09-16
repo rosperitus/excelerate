@@ -5,7 +5,7 @@ Read, write and recalculate spreadsheets in pure Rust.
 Opens `.xlsx`, `.xls`, `.ods`, `.csv`, `.html`, `.slk`, `.gnumeric` and
 SpreadsheetML 2003, hands you the workbook as a plain Rust struct, evaluates
 formulas (443 Excel functions and counting) and writes the whole thing back.
-No Excel, no LibreOffice, no COM, no headless anything — just the crate.
+No Excel, no LibreOffice, no COM, no headless anything - just the crate.
 
 ```toml
 [dependencies]
@@ -27,9 +27,9 @@ println!("{}: {} non-empty cells", sheet.title(), sheet.len());
   looks at the bytes first, so a `.txt` that is secretly a zip package still
   opens as xlsx. The extension only gets a vote when the bytes stay quiet.
 - **Formulas actually run.** Recalculate the whole book, one sheet, or just
-  what an edit touched — the incremental path is roughly 20× cheaper on a book
+  what an edit touched - the incremental path is roughly 20x cheaper on a book
   with 20k formulas.
-- **Round-trips without eating your file.** Read → write → read keeps styles,
+- **Round-trips without eating your file.** Read -> write -> read keeps styles,
   merges, conditional formatting, protection, autofilters and print setup.
   Charts are modelled and written back; anything the crate does not model yet,
   such as pictures and comments, rides through byte for byte along with its
@@ -65,7 +65,7 @@ write_xlsx(&book, "quote.xlsx")?;
 # Ok::<(), excelerate::Error>(())
 ```
 
-Converting between formats is a two-liner — the output format comes from the
+Converting between formats is a two-liner - the output format comes from the
 extension you ask for:
 
 ```rust
@@ -122,4 +122,4 @@ between "modelled" and "carried".
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

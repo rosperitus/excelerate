@@ -41,7 +41,7 @@ pub fn lower(args: &[Arg]) -> Value {
     one_text(args, |t| Value::Text(t.to_lowercase()))
 }
 
-/// `TRIM(text)` — drops leading and trailing spaces and squeezes the runs in
+/// `TRIM(text)` - drops leading and trailing spaces and squeezes the runs in
 /// between down to one.
 pub fn trim(args: &[Arg]) -> Value {
     one_text(args, |t| {
@@ -84,7 +84,7 @@ fn cut(args: &[Arg], take: fn(&[char], usize) -> String) -> Value {
     }
 }
 
-/// `MID(text, start, count)` — `start` counts from 1.
+/// `MID(text, start, count)` - `start` counts from 1.
 pub fn mid(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -131,7 +131,7 @@ pub fn rept(args: &[Arg]) -> Value {
     }
 }
 
-/// `EXACT(text1, text2)` — comparison that does mind the case, unlike `=`.
+/// `EXACT(text1, text2)` - comparison that does mind the case, unlike `=`.
 pub fn exact(args: &[Arg]) -> Value {
     let [a, b] = args else {
         return Value::Error(CellError::Value);
@@ -142,12 +142,12 @@ pub fn exact(args: &[Arg]) -> Value {
     }
 }
 
-/// `FIND(needle, haystack, [start])` — case-sensitive.
+/// `FIND(needle, haystack, [start])` - case-sensitive.
 pub fn find(args: &[Arg]) -> Value {
     locate(args, false)
 }
 
-/// `SEARCH(needle, haystack, [start])` — case-insensitive.
+/// `SEARCH(needle, haystack, [start])` - case-insensitive.
 ///
 /// Excel also reads `?` and `*` in the needle as wildcards; that arrives with
 /// the criteria functions (`COUNTIF` and its family), which need the same
@@ -246,7 +246,7 @@ pub fn substitute(args: &[Arg]) -> Value {
     Value::Text(out)
 }
 
-/// `VALUE(text)` — text read back as the number it spells.
+/// `VALUE(text)` - text read back as the number it spells.
 ///
 /// Excel takes "any of the constant number, date, or time formats" it knows,
 /// so a grouped number, a currency amount, a percentage and a date all come
@@ -291,7 +291,7 @@ fn number_of_text(text: &str, epoch: crate::shared::date::Epoch) -> Option<f64> 
     crate::shared::date_parse::parse(trimmed).and_then(|parsed| parsed.serial(epoch))
 }
 
-/// `TEXT(value, format)` — a number rendered through a cell format string.
+/// `TEXT(value, format)` - a number rendered through a cell format string.
 ///
 /// Lazy because it needs the workbook: which epoch the dates in it count from
 /// decides what `dd.mm.yyyy` renders.
@@ -337,7 +337,7 @@ fn count_value(n: usize) -> Value {
     Value::Number(n as f64)
 }
 
-/// `PROPER(text)` — the first letter of every word capitalised, the rest not.
+/// `PROPER(text)` - the first letter of every word capitalised, the rest not.
 ///
 /// A word starts after anything that is not a letter, so `o'neil` becomes
 /// `O'Neil` and `2nd` stays `2Nd`, which is what Excel does.
@@ -357,14 +357,14 @@ pub fn proper(args: &[Arg]) -> Value {
     })
 }
 
-/// `CLEAN(text)` — drops the control characters a terminal would not print.
+/// `CLEAN(text)` - drops the control characters a terminal would not print.
 pub fn clean(args: &[Arg]) -> Value {
     one_text(args, |t| {
         Value::Text(t.chars().filter(|c| !c.is_control()).collect())
     })
 }
 
-/// `T(value)` — the value if it is text, and the empty string if it is not.
+/// `T(value)` - the value if it is text, and the empty string if it is not.
 pub fn t(args: &[Arg]) -> Value {
     let [a] = args else {
         return Value::Error(CellError::Value);
@@ -376,12 +376,12 @@ pub fn t(args: &[Arg]) -> Value {
     }
 }
 
-/// `CHAR(number)` — the character of a code point, 1 to 255.
+/// `CHAR(number)` - the character of a code point, 1 to 255.
 pub fn char_(args: &[Arg]) -> Value {
     code_point(args, 1.0, 255.0)
 }
 
-/// `UNICHAR(number)` — the same over the whole of Unicode.
+/// `UNICHAR(number)` - the same over the whole of Unicode.
 pub fn unichar(args: &[Arg]) -> Value {
     code_point(args, 1.0, f64::from(u32::from(char::MAX)))
 }
@@ -406,13 +406,13 @@ fn code_point(args: &[Arg], low: f64, high: f64) -> Value {
     })
 }
 
-/// `CODE(text)` — the code of the first character, capped at 255 the way
+/// `CODE(text)` - the code of the first character, capped at 255 the way
 /// Excel's own byte-oriented `CODE` is.
 pub fn code(args: &[Arg]) -> Value {
     first_code(args, true)
 }
 
-/// `UNICODE(text)` — the same without the cap.
+/// `UNICODE(text)` - the same without the cap.
 pub fn unicode(args: &[Arg]) -> Value {
     first_code(args, false)
 }
@@ -424,14 +424,14 @@ fn first_code(args: &[Arg], legacy: bool) -> Value {
             return Value::Error(CellError::Value);
         };
         let code = u32::from(c);
-        // An implementation may answer 63 — a question mark — for a character the legacy
+        // An implementation may answer 63 - a question mark - for a character the legacy
         // single-byte `CODE` cannot name, which is what Excel shows.
         let code = if legacy && code > 255 { 63 } else { code };
         Value::Number(f64::from(code))
     })
 }
 
-/// `REPLACE(text, start, count, new)` — by position, where `SUBSTITUTE` works
+/// `REPLACE(text, start, count, new)` - by position, where `SUBSTITUTE` works
 /// by content.
 pub fn replace(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
@@ -507,7 +507,7 @@ pub fn textafter(args: &[Arg]) -> Value {
 /// Shared body of `TEXTBEFORE` and `TEXTAFTER`.
 ///
 /// A negative instance counts from the right, and an instance the text does not
-/// have is `#N/A` — the two ways these differ from `FIND`.
+/// have is `#N/A` - the two ways these differ from `FIND`.
 fn split_at_delimiter(args: &[Arg], before: bool) -> Value {
     if let Some(e) = first_error(args) {
         return Value::Error(e);
@@ -549,7 +549,7 @@ fn split_at_delimiter(args: &[Arg], before: bool) -> Value {
     })
 }
 
-/// `NUMBERVALUE(text, [decimal], [group])` — text read as a number with the
+/// `NUMBERVALUE(text, [decimal], [group])` - text read as a number with the
 /// separators said out loud, rather than the workbook's own.
 pub fn numbervalue(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
@@ -595,7 +595,7 @@ pub fn numbervalue(args: &[Arg]) -> Value {
     }
 }
 
-/// `FIXED(number, [decimals], [no_commas])` — a number as text, rounded and
+/// `FIXED(number, [decimals], [no_commas])` - a number as text, rounded and
 /// grouped.
 pub fn fixed(args: &[Arg]) -> Value {
     if let Some(e) = first_error(args) {
@@ -659,7 +659,7 @@ fn group_thousands(shown: &str) -> String {
     }
 }
 
-/// `DOLLAR(number, [decimals])` — a number as currency text.
+/// `DOLLAR(number, [decimals])` - a number as currency text.
 ///
 /// The dollar sign, because the locale a workbook was written in is not
 /// recorded in the file; `FIXED` is the same thing without one.
@@ -746,7 +746,7 @@ pub fn textsplit(args: &[Arg]) -> Value {
     )
 }
 
-/// `ARRAYTOTEXT(array, [format])` — an array written out as one string.
+/// `ARRAYTOTEXT(array, [format])` - an array written out as one string.
 pub fn arraytotext(args: &[Arg]) -> Value {
     let (array, strict) = match args {
         [a] => (a, false),
@@ -782,7 +782,7 @@ pub fn arraytotext(args: &[Arg]) -> Value {
     )
 }
 
-/// `VALUETOTEXT(value, [format])` — one value written the same way.
+/// `VALUETOTEXT(value, [format])` - one value written the same way.
 pub fn valuetotext(args: &[Arg]) -> Value {
     let [value, rest @ ..] = args else {
         return Value::Error(CellError::Value);
@@ -805,7 +805,7 @@ fn arg_of(value: Value) -> Arg {
 ///
 /// The two alphabets do not line up by arithmetic the way the ASCII range
 /// does, so the mapping is a table. A voiced sound is written with two
-/// half-width characters — `ｶ` plus `ﾞ` — and one full-width character, `ガ`,
+/// half-width characters - `ｶ` plus `ﾞ` - and one full-width character, `ガ`,
 /// which is why [`dbcs`] has to look ahead by one.
 const KATAKANA: [(char, char); 63] = [
     ('｡', '。'),
@@ -873,7 +873,7 @@ const KATAKANA: [(char, char); 63] = [
     ('ﾟ', '゜'),
 ];
 
-/// `ASC(text)` — full-width characters narrowed to half-width.
+/// `ASC(text)` - full-width characters narrowed to half-width.
 ///
 /// The ASCII range is a fixed offset apart (`Ａ` is `A` plus 0xFEE0) and the
 /// ideographic space is its own case; katakana comes from the table, read
@@ -902,7 +902,7 @@ pub fn asc(args: &[Arg]) -> Value {
     })
 }
 
-/// `DBCS(text)`, also spelled `JIS` — half-width characters widened.
+/// `DBCS(text)`, also spelled `JIS` - half-width characters widened.
 ///
 /// A half-width katakana followed by a voiced or semi-voiced mark is one
 /// full-width character, so the two are folded together when the combination
@@ -1046,7 +1046,7 @@ const THAI_WORDS: [&str; 10] = [
 /// The Thai words for the powers of ten, from ten to a million.
 const THAI_UNITS: [&str; 6] = ["สิบ", "ร้อย", "พัน", "หมื่น", "แสน", "ล้าน"];
 
-/// `THAIDIGIT(text)` — Arabic numerals rewritten as Thai ones.
+/// `THAIDIGIT(text)` - Arabic numerals rewritten as Thai ones.
 pub fn thaidigit(args: &[Arg]) -> Value {
     one_text(args, |t| {
         Value::Text(
@@ -1061,7 +1061,7 @@ pub fn thaidigit(args: &[Arg]) -> Value {
     })
 }
 
-/// `ISTHAIDIGIT(text)` — whether the text is written in Thai numerals.
+/// `ISTHAIDIGIT(text)` - whether the text is written in Thai numerals.
 ///
 /// Empty text is not: there are no Thai digits in it.
 pub fn isthaidigit(args: &[Arg]) -> Value {
@@ -1070,7 +1070,7 @@ pub fn isthaidigit(args: &[Arg]) -> Value {
     })
 }
 
-/// `ROUNDBAHTUP(number)` — the amount rounded up to a whole baht.
+/// `ROUNDBAHTUP(number)` - the amount rounded up to a whole baht.
 ///
 /// Microsoft documents neither of this pair, so the one thing pinning them is
 /// the name: a baht is the unit, so the rounding is to no decimal places. The
@@ -1080,12 +1080,12 @@ pub fn roundbahtup(args: &[Arg]) -> Value {
     super::one(args, |n| Value::Number(n.abs().ceil().copysign(n)))
 }
 
-/// `ROUNDBAHTDOWN(number)` — the same towards zero.
+/// `ROUNDBAHTDOWN(number)` - the same towards zero.
 pub fn roundbahtdown(args: &[Arg]) -> Value {
     super::one(args, |n| Value::Number(n.abs().floor().copysign(n)))
 }
 
-/// `BAHTTEXT(number)` — an amount of money written out in Thai.
+/// `BAHTTEXT(number)` - an amount of money written out in Thai.
 ///
 pub fn bahttext(args: &[Arg]) -> Value {
     let [arg] = args else {

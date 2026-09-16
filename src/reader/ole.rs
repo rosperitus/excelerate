@@ -2,7 +2,7 @@
 //!
 //! A compound file is a FAT filesystem inside one file: fixed-size sectors, a
 //! chain per stream, and a directory of named entries. Streams shorter than
-//! 4096 bytes live in a second, finer filesystem — the mini stream — kept as
+//! 4096 bytes live in a second, finer filesystem - the mini stream - kept as
 //! one ordinary stream of the root entry.
 //!
 //! Only reading is implemented, and only what a workbook needs: a stream by

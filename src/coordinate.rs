@@ -10,7 +10,7 @@ use crate::error::{Error, Result};
 
 /// Highest row number of an Excel sheet, 1-based (`AddressRange::MAX_ROW`).
 pub const MAX_ROW: u32 = 1_048_576;
-/// Highest column number of an Excel sheet, 1-based — column `XFD`.
+/// Highest column number of an Excel sheet, 1-based - column `XFD`.
 pub const MAX_COL: u32 = 16_384;
 
 /// A row index, 0-based.
@@ -92,7 +92,7 @@ impl Col {
         self.0 + 1
     }
 
-    /// Parses a column label: `A` → 0, `AA` → 26, `XFD` → 16383.
+    /// Parses a column label: `A` -> 0, `AA` -> 26, `XFD` -> 16383.
     ///
     /// Case-insensitive.
     ///
@@ -116,7 +116,7 @@ impl Col {
         Self::from_one_based(u64::from(n))
     }
 
-    /// Renders the column label: 0 → `A`, 26 → `AA`, 16383 → `XFD`.
+    /// Renders the column label: 0 -> `A`, 26 -> `AA`, 16383 -> `XFD`.
     ///
     #[must_use]
     pub fn to_letters(self) -> String {
@@ -211,7 +211,7 @@ impl Range {
     /// range `2:3`.
     ///
     /// Unions and intersections (`A1:B2,C3:D4`, or a space) are not handled
-    /// here — that is formula syntax and belongs to its own phase.
+    /// here - that is formula syntax and belongs to its own phase.
     ///
     /// # Errors
     /// [`Error::InvalidRange`] if the string does not parse as a range.
@@ -304,7 +304,7 @@ pub fn shift_references(formula: &str, d_col: i64, d_row: i64) -> String {
 ///
 /// The scanning half of a reference rewrite: quoted text
 /// and quoted sheet names pass through untouched, and a reference is only one
-/// where a reference can begin — never inside a longer name. `rewrite` is told
+/// where a reference can begin - never inside a longer name. `rewrite` is told
 /// which sheet the reference names, when it is qualified with one, and answers
 /// with how many characters of `s` it consumed and what replaces them, or
 /// `None` to leave the text alone.

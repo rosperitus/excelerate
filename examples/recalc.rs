@@ -6,8 +6,8 @@
 //! no other spreadsheet program on the machine.
 //!
 //! It is only as good as that application, though. A workbook whose package
-//! holds no `xl/calcChain.xml` was not last written by Excel — Excel always
-//! writes one for a workbook with formulas — and its cached values may be
+//! holds no `xl/calcChain.xml` was not last written by Excel - Excel always
+//! writes one for a workbook with formulas - and its cached values may be
 //! whatever some other tool left behind. Check a disagreement against a third
 //! engine before treating it as a bug here.
 //!

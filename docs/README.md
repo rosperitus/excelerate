@@ -18,5 +18,5 @@ cargo run --release --example recalc    -- workbook.xlsx
 cargo run --release --example parse_all -- workbook.xlsx
 ```
 
-`PLAN.md` in this folder is the internal porting plan — roadmap and design
+`PLAN.md` in this folder is the internal porting plan - roadmap and design
 notes, not user documentation.

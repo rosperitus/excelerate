@@ -44,9 +44,9 @@ impl Format {
     /// The format the first bytes of a file give away, if they give one away.
     ///
     /// This outranks the extension: a `.txt` that is really a zip is not CSV.
-    /// Only what a file says about itself is used — a zip is xlsx or ODS by the
+    /// Only what a file says about itself is used - a zip is xlsx or ODS by the
     /// `mimetype` part ODS stores first and uncompressed, an XML page is
-    /// `SpreadsheetML` by its own processing instruction — and anything else
+    /// `SpreadsheetML` by its own processing instruction - and anything else
     /// stays `None` for the extension to answer.
     #[must_use]
     pub fn from_signature(head: &[u8]) -> Option<Self> {

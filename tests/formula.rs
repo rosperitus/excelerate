@@ -1023,7 +1023,7 @@ fn the_japanese_width_pair_is_reversible() {
 #[test]
 fn the_byte_named_text_functions_are_their_ordinary_twins() {
     // `LENB` and its kin count bytes in a double-byte code page. Text here is
-    // UTF-8 and carries no code page, so they answer as the plain forms do —
+    // UTF-8 and carries no code page, so they answer as the plain forms do -
     // which is what a reader has to do too, mapping both names to one function.
     check(&[
         ("LENB(\"abc\")", "3"),

@@ -1,6 +1,6 @@
 //! Reading `OpenDocument` spreadsheets.
 //!
-//! Same container as xlsx — a zip of XML — and a different vocabulary inside.
+//! Same container as xlsx - a zip of XML - and a different vocabulary inside.
 //! The differences that matter:
 //!
 //! * A run of identical cells or rows is written once with a repeat count
@@ -13,7 +13,7 @@
 //! * There is no number-format id on the cell; the format lives in a named
 //!   style, and for dates and times the file gives no format at all. A reader
 //!   guesses one from the shape of the displayed text, and so does this.
-//! * Formulas are in `OpenDocument` notation — see
+//! * Formulas are in `OpenDocument` notation - see
 //!   [`crate::shared::odf_formula`].
 //! * A merge is stated on the top-left cell (`table:number-columns-spanned`),
 //!   not listed separately as xlsx does.
@@ -395,7 +395,7 @@ fn place(
 
     // A repeat count on a cell that holds something is a real run of copies.
     let repeat = cell.repeat.max(1);
-    // A format the file only implied — a date, a percentage — becomes a style
+    // A format the file only implied - a date, a percentage - becomes a style
     // of its own; a style the cell named already carries whatever it carried.
     let style = match (format, cell.style) {
         (Some(code), _) => Some(styles.intern(Style {
@@ -503,7 +503,7 @@ fn value_of(cell: &CellState) -> (CellValue, Option<String>) {
 }
 
 /// The typed number of a cell, falling back to the text if the attribute is
-/// missing — some writers leave it off for a formula whose result is a number.
+/// missing - some writers leave it off for a formula whose result is a number.
 fn number(cell: &CellState, shown: &str) -> CellValue {
     cell.value
         .as_deref()
@@ -747,7 +747,7 @@ fn colour_of(value: &str) -> Option<Color> {
         .map(|rgb| Color::Argb(0xFF00_0000 | rgb))
 }
 
-/// An `fo:border` value — `0.05in solid #000000` — as a border.
+/// An `fo:border` value - `0.05in solid #000000` - as a border.
 fn border_of(value: &str) -> Border {
     let mut parts = value.split_whitespace();
     let width = parts.next().unwrap_or("");

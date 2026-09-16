@@ -228,7 +228,7 @@ pub fn bitxor(args: &[Arg]) -> Value {
     bitwise(args, |a, b| a ^ b)
 }
 
-/// `BITLSHIFT(number, places)` — a negative count shifts the other way.
+/// `BITLSHIFT(number, places)` - a negative count shifts the other way.
 pub fn bitlshift(args: &[Arg]) -> Value {
     shift(args, true)
 }
@@ -309,7 +309,7 @@ fn whole_bits(arg: &Arg) -> Option<u64> {
     Some(whole)
 }
 
-/// `DELTA(a, [b])` — one when the two are equal, and nothing otherwise.
+/// `DELTA(a, [b])` - one when the two are equal, and nothing otherwise.
 pub fn delta(args: &[Arg]) -> Value {
     let (a, b) = match args {
         [a] => (a.number(), Ok(0.0)),
@@ -325,7 +325,7 @@ pub fn delta(args: &[Arg]) -> Value {
     )))
 }
 
-/// `GESTEP(number, [step])` — one when the number reaches the step.
+/// `GESTEP(number, [step])` - one when the number reaches the step.
 pub fn gestep(args: &[Arg]) -> Value {
     let (number, step) = match args {
         [n] => (n.number(), Ok(0.0)),
@@ -510,7 +510,7 @@ pub fn imabs(args: &[Arg]) -> Value {
     one_complex(args, |z| Value::Number(z.modulus()))
 }
 
-/// `IMARGUMENT(number)` — the angle it makes, in radians.
+/// `IMARGUMENT(number)` - the angle it makes, in radians.
 pub fn imargument(args: &[Arg]) -> Value {
     one_complex(args, |z| {
         if z.real == 0.0 && z.imaginary == 0.0 {
@@ -703,7 +703,7 @@ pub fn imcosh(args: &[Arg]) -> Value {
     })
 }
 
-/// `IMTAN(number)` — the sine over the cosine, and the rest follow from it.
+/// `IMTAN(number)` - the sine over the cosine, and the rest follow from it.
 pub fn imtan(args: &[Arg]) -> Value {
     ratio_of(args, imsin, imcos)
 }
@@ -713,7 +713,7 @@ pub fn imcot(args: &[Arg]) -> Value {
     ratio_of(args, imcos, imsin)
 }
 
-/// `IMSEC(number)` — one over the cosine.
+/// `IMSEC(number)` - one over the cosine.
 pub fn imsec(args: &[Arg]) -> Value {
     reciprocal_of(args, imcos)
 }
@@ -816,7 +816,7 @@ fn fold_complex(args: &[Arg], body: impl Fn(Complex, Complex) -> Complex) -> Val
     total.map_or(Value::Error(CellError::Value), Complex::show)
 }
 
-/// `BESSELJ(x, n)` — the Bessel function of the first kind, order `n`.
+/// `BESSELJ(x, n)` - the Bessel function of the first kind, order `n`.
 ///
 /// By its power series, which converges everywhere and needs no table of
 /// fitted constants.
@@ -824,13 +824,13 @@ pub fn besselj(args: &[Arg]) -> Value {
     bessel(args, |x, n| Some(series(x, n, -1.0)))
 }
 
-/// `BESSELI(x, n)` — the modified first kind, the same series without the
+/// `BESSELI(x, n)` - the modified first kind, the same series without the
 /// alternating sign.
 pub fn besseli(args: &[Arg]) -> Value {
     bessel(args, |x, n| Some(series(x, n, 1.0)))
 }
 
-/// `BESSELY(x, n)` — the second kind, defined only for a positive argument.
+/// `BESSELY(x, n)` - the second kind, defined only for a positive argument.
 ///
 /// Computed from its series rather than from a rational approximation: a page
 /// of fitted constants is exactly where a typo produces a plausible wrong
@@ -854,7 +854,7 @@ pub fn bessely(args: &[Arg]) -> Value {
     })
 }
 
-/// `BESSELK(x, n)` — the modified second kind, likewise positive-only.
+/// `BESSELK(x, n)` - the modified second kind, likewise positive-only.
 pub fn besselk(args: &[Arg]) -> Value {
     bessel(args, |x, n| {
         if x <= 0.0 {
@@ -879,7 +879,7 @@ pub fn besselk(args: &[Arg]) -> Value {
 /// Both series subtract two large quantities to leave a small one, and each
 /// loses precision at its own rate: `K0` at `x = 12` cancels seven orders of
 /// magnitude, `Y0` still holds there and only gives way around eighteen. The
-/// thresholds are where the two methods were measured to agree best — past
+/// thresholds are where the two methods were measured to agree best - past
 /// them the series is the worse of the two, before them the expansion is.
 const Y_ASYMPTOTIC_FROM: f64 = 18.0;
 
@@ -1074,7 +1074,7 @@ fn series(x: f64, n: u32, sign: f64) -> f64 {
     leading * total
 }
 
-/// `CONVERT(number, from, to)` — between units of the same kind.
+/// `CONVERT(number, from, to)` - between units of the same kind.
 ///
 /// The units Excel lists that a spreadsheet actually sees; the exotic tail of
 /// its table (light years, parsecs, the several kinds of barrel) is not here.

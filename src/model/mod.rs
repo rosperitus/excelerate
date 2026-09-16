@@ -34,14 +34,14 @@ pub const SHEET_TITLE_INVALID_CHARS: [char; 7] = ['*', ':', '/', '\\', '?', '[',
 
 /// The value held by a cell.
 ///
-/// Replaces the string type tags the formats use (`'n'`, `'s'`, `'f'`, …):
+/// Replaces the string type tags the formats use (`'n'`, `'s'`, `'f'`, ...):
 /// what was a convention there is checked by the compiler here.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub enum CellValue {
     /// An empty cell.
     #[default]
     Empty,
-    /// A number. Dates are numbers too — the cell's format is what makes one a
+    /// A number. Dates are numbers too - the cell's format is what makes one a
     /// date.
     Number(f64),
     /// A string. `TYPE_STRING`, `TYPE_STRING2` and `TYPE_INLINE` differ only in
@@ -145,7 +145,7 @@ pub struct TextRun {
 ///
 /// The text is rich, as a comment usually starts with the author's name in
 /// bold. Where the note sits and how big its box is are not here: that lives
-/// in the sheet's VML drawing, which travels through unparsed — moving a
+/// in the sheet's VML drawing, which travels through unparsed - moving a
 /// comment is a drawing edit, and drawings are their own phase.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Comment {
@@ -429,7 +429,7 @@ pub struct SheetView {
     pub zoom_scale_page_layout: Option<u32>,
     /// Zoom remembered for the page break preview.
     pub zoom_scale_sheet_layout: Option<u32>,
-    /// First visible cell — the scroll position.
+    /// First visible cell - the scroll position.
     pub top_left_cell: Option<CellRef>,
     /// Whether grid lines are drawn.
     pub show_grid_lines: bool,
@@ -482,7 +482,7 @@ pub enum ValidationType {
     Date,
     /// Any number.
     Decimal,
-    /// One of a list of values — the drop-down.
+    /// One of a list of values - the drop-down.
     List,
     /// Text of a bounded length.
     TextLength,
@@ -633,7 +633,7 @@ pub struct DataValidation {
     /// Whether an empty cell is accepted.
     pub allow_blank: bool,
     /// Whether the in-cell arrow is **hidden**. The attribute is named
-    /// `showDropDown`, but Excel writes `1` to suppress the arrow — the name
+    /// `showDropDown`, but Excel writes `1` to suppress the arrow - the name
     /// says the opposite of what it does, and the value is kept as the file
     /// spells it.
     pub hide_drop_down: bool,
@@ -774,7 +774,7 @@ pub struct PageSetup {
     pub use_first_page_number: bool,
     /// Package path of the printer settings part this page setup points at.
     ///
-    /// The part itself travels unparsed — it is a Windows `DEVMODE` blob — but
+    /// The part itself travels unparsed - it is a Windows `DEVMODE` blob - but
     /// `<pageSetup>` has to keep pointing at it, or the settings are in the
     /// package and attached to nothing.
     pub printer_settings: Option<String>,
@@ -811,7 +811,7 @@ pub struct PrintOptions {
 ///
 /// Each string is Excel's own little markup: `&L`, `&C` and `&R` open the left,
 /// centre and right section, `&P` is the page number, `&F` the file name. It is
-/// kept as written rather than parsed — nothing here needs to understand it.
+/// kept as written rather than parsed - nothing here needs to understand it.
 #[expect(
     clippy::struct_excessive_bools,
     reason = "the independent switches of one <headerFooter> element"
@@ -1276,7 +1276,7 @@ pub struct OpaquePart {
 /// book in [`Spreadsheet::external`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExternalBook {
-    /// Where the linked file was, as the relationship spells it — usually an
+    /// Where the linked file was, as the relationship spells it - usually an
     /// absolute `file:///` URL. Nothing here opens it; it says where the
     /// numbers came from.
     pub path: Option<String>,
@@ -1416,15 +1416,15 @@ pub struct Worksheet {
     /// The charts drawn on the sheet, read and written both: see
     /// [`crate::model::chart`].
     pub charts: Vec<chart::Chart>,
-    /// The 2016 charts on the sheet — waterfall, funnel, treemap and the
-    /// rest — read but not written.
+    /// The 2016 charts on the sheet - waterfall, funnel, treemap and the
+    /// rest - read but not written.
     pub extended_charts: Vec<chart::ChartEx>,
     /// The sheet's `<extLst>`, carried as it was written.
     ///
     /// Everything newer than the 2006 schema hangs off this element:
     /// sparklines, the conditional formats and data validations that needed
     /// more than the original format could say, slicer references. None of it
-    /// is modelled, and rewriting a sheet without it would drop the lot — so
+    /// is modelled, and rewriting a sheet without it would drop the lot - so
     /// the element travels whole, the way an unmodelled part does.
     pub extensions: Option<String>,
     /// Parts attached to this sheet: its drawing, the shapes behind its
@@ -1494,7 +1494,7 @@ impl Worksheet {
         self.cells.is_empty()
     }
 
-    /// Walks the cells row by row, left to right — the order xlsx requires them
+    /// Walks the cells row by row, left to right - the order xlsx requires them
     /// to be written in.
     pub fn iter(&self) -> impl Iterator<Item = (CellRef, &Cell)> {
         self.cells
@@ -1519,7 +1519,7 @@ impl Worksheet {
     /// The run of columns covering `col`, if the sheet describes one.
     ///
     /// Runs are searched from the last one back, so a later run overrides an
-    /// earlier one covering the same column — which is how Excel reads them.
+    /// earlier one covering the same column - which is how Excel reads them.
     #[must_use]
     pub fn column_run(&self, col: Col) -> Option<&ColumnRun> {
         self.columns
@@ -1693,7 +1693,7 @@ impl Spreadsheet {
         self.sheets.get(self.sheet_index_by_name(name)?)
     }
 
-    /// The tab index of a sheet by name, compared as Excel compares them —
+    /// The tab index of a sheet by name, compared as Excel compares them -
     /// ignoring case, and not only for ASCII.
     #[must_use]
     pub fn sheet_index_by_name(&self, name: &str) -> Option<usize> {
@@ -1749,7 +1749,7 @@ impl Spreadsheet {
     /// Appends a sheet and returns its tab index.
     ///
     /// # Errors
-    /// [`Error::DuplicateSheetName`] if a sheet with that name already exists —
+    /// [`Error::DuplicateSheetName`] if a sheet with that name already exists -
     /// Excel compares the names case-insensitively.
     pub fn add_sheet(&mut self, sheet: Worksheet) -> Result<usize> {
         if self.sheet_by_name(sheet.title()).is_some() {
@@ -1808,7 +1808,7 @@ mod tests {
     #[test]
     fn cells_store_and_iterate_in_write_order() {
         let mut ws = Worksheet::new("S").unwrap();
-        // Written out of order — iteration must still be row by row.
+        // Written out of order - iteration must still be row by row.
         ws.set(r("C1"), 3.0);
         ws.set(r("A2"), "text");
         ws.set(r("A1"), true);

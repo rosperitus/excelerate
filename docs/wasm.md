@@ -9,7 +9,7 @@ same reader that runs on your server runs in Node or a browser tab.
 npm install excelerate
 ```
 
-TypeScript declarations ship with the package — `wasm-bindgen` derives them
+TypeScript declarations ship with the package - `wasm-bindgen` derives them
 from the Rust signatures, so they never drift from the API.
 
 ## Build it yourself
@@ -28,7 +28,7 @@ The result is a publishable npm package: wasm, the JS glue, `.d.ts`, and
 import { Book } from "excelerate";
 import fs from "node:fs";
 
-// Any supported format — the bytes decide. The name is optional and only
+// Any supported format - the bytes decide. The name is optional and only
 // settles ambiguous cases.
 const book = Book.read(fs.readFileSync("report.xlsx"), "report.xlsx");
 
@@ -45,7 +45,7 @@ book.free();     // wasm memory is not the JS heap; let it go when you are done
 
 Runnable TypeScript examples live in
 [`npm/typescript/`](../npm/typescript): building a workbook, reading any
-format, and batching edits. Run them from `npm/` — `node typescript/basic.ts`
+format, and batching edits. Run them from `npm/` - `node typescript/basic.ts`
 on Node 22.6+, no build step and no separate install.
 
 ## The API
@@ -85,7 +85,7 @@ on Node 22.6+, no build step and no separate install.
 | `free()` | release the wasm memory it holds |
 
 `recalculateFrom` keeps its dependency index across calls, and `set` keeps that
-index in step — so a loop of edit-then-recalc does not rebuild it each time.
+index in step - so a loop of edit-then-recalc does not rebuild it each time.
 
 ## Gotchas
 
@@ -97,11 +97,11 @@ index in step — so a loop of edit-then-recalc does not rebuild it each time.
   year-less dates working instead of panicking.
 - **Free your books.** The workbook lives in wasm memory. `book.free()`, or
   `using book = Book.read(...)`, keeps a loop over many files from ballooning.
-- **Addresses are optional.** Every cell method has an `…At` twin taking
+- **Addresses are optional.** Every cell method has an `...At` twin taking
   1-based `row` and `column`; in a loop that is one less string to build and
   parse per cell.
 - **Cross the boundary once.** `getRange`/`setRange` move a whole rectangle per
   call; a loop of `get` pays the crossing per cell.
 - **Batch your edits.** `recalculateFromMany` runs one pass for the whole batch;
   calling `recalculateFrom` in a loop runs one per cell, and on a big book the
-  difference is roughly 20×.
+  difference is roughly 20x.

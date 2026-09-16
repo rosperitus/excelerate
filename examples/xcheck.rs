@@ -1,7 +1,7 @@
 //! Evaluates formulas from stdin against the table excelize's own tests use.
 //!
 //! Its purpose is to run the expectations in `excelize-master/calc_test.go`
-//! through this engine — see `tools/excelize-oracle/README.md`. The sheet is
+//! through this engine - see `tools/excelize-oracle/README.md`. The sheet is
 //! the one that file sets up above its formula table, so the expectations line
 //! up cell for cell.
 //!

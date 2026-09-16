@@ -3,12 +3,12 @@
 //!
 //! A function is written in one of two shapes:
 //!
-//! * **eager** — `fn(&[Arg]) -> Value`, for the great majority. Every argument
+//! * **eager** - `fn(&[Arg]) -> Value`, for the great majority. Every argument
 //!   is computed before the call.
-//! * **dated** — `fn(Epoch, &[Arg]) -> Value`, the same but told which base
+//! * **dated** - `fn(Epoch, &[Arg]) -> Value`, the same but told which base
 //!   date the workbook counts from. A serial number means a different day in a
 //!   1904 workbook, so anything reading or building one needs to know.
-//! * **lazy** — `fn(&mut Engine, Origin, &[Expr]) -> Value`, for the few that
+//! * **lazy** - `fn(&mut Engine, Origin, &[Expr]) -> Value`, for the few that
 //!   must not compute all of them (`IF` runs one branch) or that need the
 //!   reference rather than its value (`ROW`, `COLUMN`).
 
@@ -153,7 +153,7 @@ pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) 
 /// Whether an expression names cells rather than computing a value.
 ///
 /// The three reference operators build references out of references, so
-/// `SUM(A1:A2:D1)` reads its cells the way `SUM(A1:D2)` does — skipping the
+/// `SUM(A1:A2:D1)` reads its cells the way `SUM(A1:D2)` does - skipping the
 /// text and the booleans among them rather than converting them.
 fn is_reference(e: &Expr) -> bool {
     match e {
@@ -738,7 +738,7 @@ pub(crate) fn first_error(args: &[Arg]) -> Option<CellError> {
 
 /// The numbers an aggregate should work on.
 ///
-/// A value written into the formula is converted — `SUM("1",TRUE)` is 2 — while
+/// A value written into the formula is converted - `SUM("1",TRUE)` is 2 - while
 /// one read out of a cell is skipped unless it is already a number.
 pub(crate) fn aggregate_numbers(args: &[Arg]) -> Result<Vec<f64>, CellError> {
     let mut out = Vec::new();

@@ -6,7 +6,7 @@
 //!
 //! Short streams belong in the mini stream, a second filesystem inside the root
 //! entry's own stream. Rather than implement it for the one case where a
-//! workbook is under 4 KB, such a stream is padded up to the cutoff — the
+//! workbook is under 4 KB, such a stream is padded up to the cutoff - the
 //! records past its end read as nothing, and the reader stops at the `EOF`
 //! record long before.
 

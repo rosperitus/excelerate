@@ -1,7 +1,7 @@
 # excelerate
 
-Read, write and recalculate spreadsheets in Node — xlsx, xls, ods, csv, html
-and more — with a real formula engine (443 Excel functions). Rust compiled to
+Read, write and recalculate spreadsheets in Node - xlsx, xls, ods, csv, html
+and more - with a real formula engine (443 Excel functions). Rust compiled to
 WebAssembly, so there is no native module to build, no Python, no headless
 Office.
 
@@ -77,7 +77,7 @@ class Book {
   getRange(sheet: number, range: string): CellGrid;       // one call, not one per cell
   setRange(sheet: number, at: string, values: CellGrid): void;
 
-  // Cells, by 1-based row and column — no address to build and re-parse
+  // Cells, by 1-based row and column - no address to build and re-parse
   getAt(sheet: number, row: number, column: number): CellValue;
   setAt(sheet: number, row: number, column: number, value: CellValue): void;
   clearAt(sheet: number, row: number, column: number): void;
@@ -119,7 +119,7 @@ class Book {
 }
 ```
 
-Every method that can fail throws an `Error` with the reason — a bad address, a
+Every method that can fail throws an `Error` with the reason - a bad address, a
 missing sheet, a truncated package.
 
 ## Notes worth reading once
@@ -128,15 +128,15 @@ missing sheet, a truncated package.
   to it eventually, but in a loop over many files, release it deliberately:
   `book.free()`, or `using book = Book.read(...)` with explicit resource
   management.
-- **Numbers or addresses, your call.** Every cell method has an `…At` twin
-  taking 1-based `row` and `column` — the numbers `ROW()` and `COLUMN()`
+- **Numbers or addresses, your call.** Every cell method has an `...At` twin
+  taking 1-based `row` and `column` - the numbers `ROW()` and `COLUMN()`
   return. Looping over a grid, they save building an address string only to
   have it parsed straight back.
 - **Move rectangles, not cells.** `getRange`/`setRange` cross the wasm
   boundary once for the whole block; a loop of `get` crosses once per cell.
-- **Batch your edits.** `recalculateFromMany(sheet, ["A1", "B7", …])` runs one
+- **Batch your edits.** `recalculateFromMany(sheet, ["A1", "B7", ...])` runs one
   pass for the whole batch. Calling `recalculateFrom` in a loop runs one pass
-  per cell — on a 20k-formula workbook that is roughly 20× the work.
+  per cell - on a 20k-formula workbook that is roughly 20x the work.
 - **Big files.** Zip expansion is capped at 512 MB to stop a zip bomb. Real
   workbooks do exceed it (a 100 MB package can expand to 560 MB), so pass a
   larger `maxExpanded` third argument to `Book.read` when you know the source.
@@ -152,9 +152,9 @@ missing sheet, a truncated package.
 | ods | ✅ | ✅ (`toOds`) |
 | CSV | ✅ | ✅ (`toCsv`) |
 | HTML | ✅ | ✅ (`toHtml`) |
-| SYLK, Gnumeric, SpreadsheetML 2003 | ✅ | — |
+| SYLK, Gnumeric, SpreadsheetML 2003 | ✅ | - |
 
-SYLK, Gnumeric and SpreadsheetML are read-only in the Rust crate too — there is
+SYLK, Gnumeric and SpreadsheetML are read-only in the Rust crate too - there is
 nothing to bind.
 
 One catch on `toXls`: BIFF8 cannot store a formula as text, so every formula
@@ -166,7 +166,7 @@ This folder is both the published package's readme and the workspace that
 builds and exercises it.
 
 ```
-../tools/build-npm.sh          # wasm-pack --release --target nodejs → npm/pkg
+../tools/build-npm.sh          # wasm-pack --release --target nodejs -> npm/pkg
 npm install && npm test        # tests against the freshly built package
 npm start                      # example.js: build a book, calculate, round-trip
 npm run ts                     # typescript/basic.ts, no build step
@@ -178,7 +178,7 @@ npm run bench [iterations]     # parse timings, median and best
 |---|---|
 | `pkg/` | build output, published as-is (git-ignored) |
 | `example.js`, `test.js`, `bench.js` | JavaScript examples, tests, benchmark |
-| `typescript/` | TypeScript examples, run from here: `node typescript/basic.ts` (Node 22.6+). No node_modules of their own — they resolve the package from this folder |
+| `typescript/` | TypeScript examples, run from here: `node typescript/basic.ts` (Node 22.6+). No node_modules of their own - they resolve the package from this folder |
 | `files/` | workbooks the benchmark and tests use (git-ignored except `gen.xlsx`) |
 
 ## License

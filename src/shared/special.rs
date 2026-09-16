@@ -5,8 +5,8 @@
 //! its complement `Q(a,x)`, and the regularised incomplete beta function
 //! `I_x(a,b)`. The error function is `P(½, x²)`, so it comes free with them.
 //!
-//! These are the textbook algorithms — Lanczos for the gamma, a series where it
-//! converges and a continued fraction where the series does not — because that
+//! These are the textbook algorithms - Lanczos for the gamma, a series where it
+//! converges and a continued fraction where the series does not - because that
 //! is what every other implementation uses and what the reference values were
 //! computed with. A crate would have done, but the ones offering these bring
 //! linear algebra and random number generators along with them, which is a
@@ -129,7 +129,7 @@ fn series_p(a: f64, x: f64) -> f64 {
 }
 
 /// `Q(a,x)` by its continued fraction, evaluated with the modified Lentz
-/// method — the one that never divides by a zero that a plain evaluation would.
+/// method - the one that never divides by a zero that a plain evaluation would.
 #[expect(
     clippy::many_single_char_names,
     reason = "b, c, d and h are the names the modified Lentz method is \

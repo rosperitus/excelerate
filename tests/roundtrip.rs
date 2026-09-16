@@ -129,7 +129,7 @@ fn assert_same(before: &Spreadsheet, after: &Spreadsheet) {
             a.title()
         );
         assert_eq!(a.auto_filter, b.auto_filter, "auto filter on {}", a.title());
-        // A set of relationships has no order of its own — the reader imposes
+        // A set of relationships has no order of its own - the reader imposes
         // one so that two reads of a file agree.
         assert_eq!(
             sorted(&a.attachments),
@@ -643,7 +643,7 @@ fn protection_and_filters_survive() {
     sheet.set(at("C1"), "Дата");
 
     // The ISO password form, and a flag of each of the three states: on, off,
-    // and absent — the absent one must not come back as `Some(false)`.
+    // and absent - the absent one must not come back as `Some(false)`.
     sheet.protection = SheetProtection {
         sheet: Some(true),
         objects: Some(false),
@@ -1039,7 +1039,7 @@ fn values_survive_a_csv_cycle() {
 
 /// The same for HTML, which carries as much as a page can: the values as they
 /// are shown, the merges, and the link on a cell. The number formats are what
-/// produced the text in the first place, so they do not come back — a page
+/// produced the text in the first place, so they do not come back - a page
 /// shows `12.50`, not the rule that made it.
 #[test]
 fn values_and_merges_survive_an_html_cycle() {

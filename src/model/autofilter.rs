@@ -2,7 +2,7 @@
 //!
 //!
 //! Only the criteria are modelled, not their effect. Applying a filter means
-//! hiding rows, and a hidden row is already a row property in the file — Excel
+//! hiding rows, and a hidden row is already a row property in the file - Excel
 //! stores both, and the two are free to disagree in a file written by
 //! something else. Recomputing which rows a filter hides is a separate job
 //! from carrying the filter across a rewrite.
@@ -75,7 +75,7 @@ pub struct CustomFilter {
 /// A `<dateGroupItem>`: a date filter given by calendar parts rather than by a
 /// serial number.
 ///
-/// Each part is optional and they nest — a filter on a month has a year too,
+/// Each part is optional and they nest - a filter on a month has a year too,
 /// one on a year has nothing else. `grouping` names the finest part present.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DateGroup {
@@ -91,7 +91,7 @@ pub struct DateGroup {
     pub minute: Option<u32>,
     /// Second.
     pub second: Option<u32>,
-    /// `dateTimeGrouping`: the finest part the filter names — `year`, `month`,
+    /// `dateTimeGrouping`: the finest part the filter names - `year`, `month`,
     /// `day`, `hour`, `minute` or `second`.
     pub grouping: String,
 }
@@ -136,7 +136,7 @@ impl DateGroup {
 pub enum ColumnFilter {
     /// `<filters>`: keep the rows whose value is one of these. Always an OR.
     Values {
-        /// Whether empty cells are kept — the `blank` attribute.
+        /// Whether empty cells are kept - the `blank` attribute.
         blank: bool,
         /// The literal values, as the file spells them.
         values: Vec<String>,
@@ -154,7 +154,7 @@ pub enum ColumnFilter {
     /// `<dynamicFilter>`: a criterion Excel re-evaluates, such as `today` or
     /// `aboveAverage`. What it keeps depends on when it is opened.
     Dynamic {
-        /// The `type` attribute: `today`, `thisMonth`, `Q3`, `aboveAverage`…
+        /// The `type` attribute: `today`, `thisMonth`, `Q3`, `aboveAverage`...
         /// It is kept as a string: there are 42 of them, they are inert here,
         /// and an enum would only be a longer way to spell the same word.
         kind: String,
@@ -259,7 +259,7 @@ pub struct AutoFilter {
 }
 
 impl AutoFilter {
-    /// A filter over a range with no criteria yet — the arrows, and nothing
+    /// A filter over a range with no criteria yet - the arrows, and nothing
     /// filtered.
     #[must_use]
     pub const fn new(range: Range) -> Self {
@@ -309,8 +309,8 @@ mod tests {
     #[test]
     fn an_unknown_operator_is_equal() {
         assert_eq!(FilterOperator::parse("lessThan"), FilterOperator::LessThan);
-        // The attribute is absent for `equal`, so anything unrecognised —
-        // including the empty string — means it.
+        // The attribute is absent for `equal`, so anything unrecognised -
+        // including the empty string - means it.
         assert_eq!(FilterOperator::parse(""), FilterOperator::Equal);
         assert_eq!(FilterOperator::parse("nonsense"), FilterOperator::Equal);
     }
