@@ -839,7 +839,7 @@ impl Parser {
         // like - that is what keeps `LOG10(2)` from being read as a cell.
         if *self.peek() == Tok::Op(Op::LParen) && !self.spaced() {
             self.at += 1;
-            let name = text.to_uppercase();
+            let name = function_name(&text);
             let args = self.arguments()?;
             return Ok(Expr::Call { name, args });
         }
@@ -881,6 +881,23 @@ impl Parser {
             None => Expr::Name(text),
         })
     }
+}
+
+/// A function name as the engine knows it: upper-cased, without the prefixes
+/// a file puts on functions newer than the format.
+///
+/// Excel writes every function added after 2007 as `_xlfn.IFERROR`, and
+/// the ones that return arrays as `_xlfn._xlws.FILTER`, so that older versions
+/// show `#NAME?` rather than misread them. The prefix is storage, not a
+/// different function.
+fn function_name(text: &str) -> String {
+    let mut name = text.to_uppercase();
+    for prefix in ["_XLFN.", "_XLWS."] {
+        if let Some(rest) = name.strip_prefix(prefix) {
+            name = rest.to_owned();
+        }
+    }
+    name
 }
 
 #[cfg(test)]
@@ -1018,6 +1035,10 @@ mod tests {
         shows("SUM(SUM(1),2)", "(SUM (SUM 1) 2)");
         // A function name that reads like a cell reference stays a call.
         shows("LOG10(100)", "(LOG10 100)");
+        // The prefixes Excel stores newer functions under are not part of
+        // the name.
+        shows("_xlfn.IFERROR(1,2)", "(IFERROR 1 2)");
+        shows("_xlfn._xlws.FILTER(A1:A2,B1:B2)", "(FILTER A1:A2 B1:B2)");
     }
 
     #[test]
