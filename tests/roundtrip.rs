@@ -1135,12 +1135,12 @@ fn values_and_sizes_survive_an_xls_cycle() {
     assert_eq!(after.sheets()[1].title(), "Second");
     let (a, b) = (&before.sheets()[0], &after.sheets()[0]);
     for (cell, before) in a.iter() {
-        let want = match &before.value {
-            // A formula is written as what it worked out to.
-            CellValue::Formula { cached, .. } => (**cached.as_ref().unwrap()).clone(),
-            other => other.clone(),
-        };
-        assert_eq!(b.get(cell).map(|c| &c.value), Some(&want), "cell {cell}");
+        // A formula comes back as itself, cached result included.
+        assert_eq!(
+            b.get(cell).map(|c| &c.value),
+            Some(&before.value),
+            "cell {cell}"
+        );
     }
     assert_eq!(a.merges, b.merges, "merges");
     assert_eq!(

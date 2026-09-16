@@ -194,7 +194,7 @@ impl<'a> Engine<'a> {
             Expr::Bool(b) => Value::Bool(*b),
             Expr::Error(e) => Value::Error(*e),
             Expr::Missing => Value::Blank,
-            Expr::Range { sheet, range } => self.range(origin, sheet.as_deref(), *range),
+            Expr::Range { sheet, range, .. } => self.range(origin, sheet.as_deref(), *range),
             Expr::Structured(reference) => match self.resolve_table(origin, reference) {
                 Ok((sheet, range)) => self.range(origin, Some(&sheet), range),
                 Err(e) => Value::Error(e),
@@ -558,7 +558,13 @@ impl<'a> Engine<'a> {
 
     /// The cells two references have in common.
     fn intersect(&mut self, origin: Origin, a: &Expr, b: &Expr) -> Value {
-        let (Expr::Range { sheet, range: x }, Expr::Range { range: y, .. }) = (a, b) else {
+        let (
+            Expr::Range {
+                sheet, range: x, ..
+            },
+            Expr::Range { range: y, .. },
+        ) = (a, b)
+        else {
             return Value::Error(CellError::Value);
         };
         let (start, end) = (
@@ -728,7 +734,7 @@ fn at(v: &Value, row: usize, col: usize) -> Value {
 #[must_use]
 pub fn spanned(expr: &Expr) -> Option<(Option<String>, Range)> {
     match expr {
-        Expr::Range { sheet, range } => Some((sheet.clone(), *range)),
+        Expr::Range { sheet, range, .. } => Some((sheet.clone(), *range)),
         Expr::Binary(BinaryOp::Span, a, b) => {
             let (sheet, x) = spanned(a)?;
             let (_, y) = spanned(b)?;
@@ -1185,7 +1191,7 @@ fn collect_refs(
     always: &mut bool,
 ) {
     match expr {
-        Expr::Range { sheet, range } => {
+        Expr::Range { sheet, range, .. } => {
             let index = match sheet {
                 None => Some(own_sheet),
                 Some(name) => {

@@ -3,9 +3,11 @@
 //! A formula token names a function by index, not by name. The table below is
 //! the one the format has carried since Excel 97; its numbers, argument counts
 //! and operand classes were taken from the `xlrd` Python package and checked
-//! against `xlwt`, two independent implementations that agree on every entry
-//! except the lower bound of a few variadic functions (where `xlrd` allows
-//! none and Excel requires one; the upper bound is what matters here).
+//! against `xlwt`, two independent implementations. They disagree in three
+//! places, and each is settled by Excel's own signature: the lower bound of a
+//! few variadic functions (`xlrd` allows none, Excel requires one), and
+//! `GETPIVOTDATA` and `RTD`, which take up to 30 arguments where `xlrd` stops
+//! at 2 and 5. The upper bound matters: a formula over it is not written.
 //!
 //! Functions added after Excel 2003 have no number: a file stores them by
 //! name, as the analysis add-in functions ([`ADD_IN`]) always were.
@@ -1958,7 +1960,7 @@ pub const FUNCTIONS: &[Function] = &[
         index: 358,
         name: "GETPIVOTDATA",
         min: 2,
-        max: 2,
+        max: 30,
         returns: b'V',
         args: "RV",
     },
@@ -2125,8 +2127,8 @@ pub const FUNCTIONS: &[Function] = &[
     Function {
         index: 379,
         name: "RTD",
-        min: 2,
-        max: 5,
+        min: 3,
+        max: 30,
         returns: b'V',
         args: "V",
     },

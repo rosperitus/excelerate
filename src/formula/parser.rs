@@ -27,6 +27,9 @@ pub enum Expr {
         sheet: Option<String>,
         /// The cells.
         range: Range,
+        /// Which parts were written with `$`. The value does not depend on
+        /// them; a file format that stores references rather than text does.
+        anchors: Anchors,
     },
     /// A defined name.
     Name(String),
@@ -55,6 +58,60 @@ pub enum Expr {
         /// Arguments in source order.
         args: Vec<Expr>,
     },
+}
+
+/// Which parts of a reference are absolute, by corner of the normalised
+/// range: `$B4:D$9` anchors the first column and the last row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "four independent `$` signs, one per part of the reference"
+)]
+pub struct Anchors {
+    /// `$` before the first column.
+    pub start_col: bool,
+    /// `$` before the first row.
+    pub start_row: bool,
+    /// `$` before the last column.
+    pub end_col: bool,
+    /// `$` before the last row.
+    pub end_row: bool,
+}
+
+impl Anchors {
+    /// The anchors of `left:right` as written, moved to the corners a
+    /// normalised range puts them on: `D9:B4` is `B4:D9`, and a `$` travels
+    /// with the column or row it was written against.
+    fn of(left: &str, right: &str) -> Self {
+        let part = |text: &str| {
+            let col_abs = text.starts_with('$');
+            let body = text.trim_start_matches('$');
+            let letters: String = body.chars().take_while(char::is_ascii_alphabetic).collect();
+            let rest = &body[letters.len()..];
+            let row_abs = rest.starts_with('$');
+            let digits = rest.trim_start_matches('$');
+            let col = crate::Col::from_letters(&letters)
+                .ok()
+                .map(crate::Col::index);
+            let row = digits.parse::<u32>().ok();
+            // A lone `$1` is a row; the `$` before it anchors the row.
+            if letters.is_empty() {
+                (false, col_abs || row_abs, col, row)
+            } else {
+                (col_abs, row_abs, col, row)
+            }
+        };
+        let (c1, r1, col1, row1) = part(left);
+        let (c2, r2, col2, row2) = part(right);
+        let (start_col, end_col) = if col1 > col2 { (c2, c1) } else { (c1, c2) };
+        let (start_row, end_row) = if row1 > row2 { (r2, r1) } else { (r1, r2) };
+        Self {
+            start_col,
+            start_row,
+            end_col,
+            end_row,
+        }
+    }
 }
 
 /// A reference written in terms of a table rather than of cells, as
@@ -764,7 +821,11 @@ impl Parser {
                     && let Ok(range) = Range::parse(&format!("{n}:{end}"))
                 {
                     self.at += 2;
-                    return Ok(Expr::Range { sheet: None, range });
+                    return Ok(Expr::Range {
+                        sheet: None,
+                        range,
+                        anchors: Anchors::default(),
+                    });
                 }
                 Ok(Expr::Number(n))
             }
@@ -865,13 +926,19 @@ impl Parser {
                 && let Ok(range) = Range::parse(&format!("{text}:{right}"))
             {
                 self.at += 2;
-                return Ok(Expr::Range { sheet, range });
+                let anchors = Anchors::of(&text, &right);
+                return Ok(Expr::Range {
+                    sheet,
+                    range,
+                    anchors,
+                });
             }
         }
         if let Ok(cell) = CellRef::parse(&text) {
             return Ok(Expr::Range {
                 sheet,
                 range: Range::new(cell, cell),
+                anchors: Anchors::of(&text, &text),
             });
         }
         Ok(match sheet {
@@ -918,7 +985,7 @@ mod tests {
                 r.part,
                 r.columns
             ),
-            Expr::Range { sheet, range } => match sheet {
+            Expr::Range { sheet, range, .. } => match sheet {
                 Some(s) => format!("{s}!{range}"),
                 None => range.to_string(),
             },
@@ -1008,6 +1075,53 @@ mod tests {
         shows("Sheet1!A1:B2", "Sheet1!A1:B2");
         shows("myName", "myName");
         shows("Sheet1!myName", "Sheet1!myName");
+    }
+
+    #[test]
+    fn anchors_follow_the_part_they_were_written_on() {
+        use super::Anchors;
+        let anchors = |text: &str| match parse(text).unwrap() {
+            Expr::Range { anchors, .. } => anchors,
+            other => panic!("{text} parsed as {other:?}"),
+        };
+        let all = Anchors {
+            start_col: true,
+            start_row: true,
+            end_col: true,
+            end_row: true,
+        };
+        assert_eq!(anchors("$A$1"), all);
+        assert_eq!(anchors("A1"), Anchors::default());
+        assert_eq!(
+            anchors("$B4:D$9"),
+            Anchors {
+                start_col: true,
+                end_row: true,
+                ..Anchors::default()
+            }
+        );
+        // Written backwards, normalised: the `$` on D stays on D.
+        assert_eq!(
+            anchors("$D9:B4"),
+            Anchors {
+                end_col: true,
+                ..Anchors::default()
+            }
+        );
+        assert_eq!(
+            anchors("$A:B"),
+            Anchors {
+                start_col: true,
+                ..Anchors::default()
+            }
+        );
+        assert_eq!(
+            anchors("$2:3"),
+            Anchors {
+                start_row: true,
+                ..Anchors::default()
+            }
+        );
     }
 
     #[test]

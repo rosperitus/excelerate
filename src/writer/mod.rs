@@ -6,6 +6,7 @@ pub mod html;
 pub mod ods;
 pub(crate) mod ole;
 pub mod xls;
+mod xls_formula;
 pub mod xlsx;
 pub(crate) mod xmlesc;
 

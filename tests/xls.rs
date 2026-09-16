@@ -180,3 +180,124 @@ fn formulas_decompile_to_the_text_they_were_compiled_from() {
     }
     assert_eq!(checked, 28);
 }
+
+fn formula_of(book: &Spreadsheet, sheet: usize, at: &str) -> Option<String> {
+    match &book.sheets()[sheet].get(CellRef::parse(at).unwrap())?.value {
+        excelerate::model::CellValue::Formula { formula, .. } => Some(formula.clone()),
+        _ => None,
+    }
+}
+
+#[test]
+fn formulas_from_the_xlwt_fixture_survive_our_writer() {
+    let original = open("formulas.xls");
+    let back = rewrite(&original);
+    for row in 4..=31 {
+        let at = format!("B{row}");
+        assert_eq!(
+            formula_of(&back, 0, &at),
+            formula_of(&original, 0, &at),
+            "{at}"
+        );
+    }
+}
+
+/// What xlwt cannot write: every kind of token our compiler emits, read back
+/// by our decompiler to the text it started from.
+#[test]
+fn every_kind_of_formula_survives_a_round_trip() {
+    use excelerate::model::{CellValue, DefinedName, Worksheet};
+    let mut book = Spreadsheet::new();
+    book.add_sheet(Worksheet::new("Данные 2").unwrap()).unwrap();
+    book.add_sheet(Worksheet::new("R1C1").unwrap()).unwrap();
+    book.defined_names.push(DefinedName {
+        name: "Rate".to_owned(),
+        sheet: None,
+        formula: "'Данные 2'!$B$2".to_owned(),
+        hidden: false,
+    });
+    book.defined_names.push(DefinedName {
+        name: "_xlnm.Print_Area".to_owned(),
+        sheet: Some(0),
+        formula: "Worksheet!$A$1:$C$10".to_owned(),
+        hidden: false,
+    });
+    let formulas = [
+        "(A1+B1)*2",
+        "A1-(B1-C1)",
+        "A1-B1-C1",
+        "-(A1^2)",
+        "-A1^2",
+        "2^3^2",
+        "A1&(B1=\"x\")",
+        "$A1+A$1+$A$1",
+        "SUM($B4:D$9)",
+        "SUM(A:A,$2:$3)",
+        "SUM('Данные 2'!A1:B3)",
+        "SUM('Worksheet:R1C1'!A1)",
+        "'R1C1'!A1",
+        "Rate*2",
+        "IF(A1>0,\"yes\",\"no\")",
+        "IF(A1,1)",
+        "CHOOSE(2,\"a\",B1,3)",
+        "SUM((A1,B1))",
+        "SUM(A1:B2 B1:C3)",
+        "INDEX({1,2;3,4},2,1)",
+        "{-1.5,\"q\";TRUE,#N/A}",
+        "EOMONTH(A1,0)",
+        "IFERROR(1/0,\"none\")",
+        "VLOOKUP(A1,'Данные 2'!A:B,2,FALSE)",
+        "ROUND(PI(),2)",
+        "A1%",
+        "NOW()",
+        "COUNTIF(A1:A9,\">3\")",
+    ];
+    let sheet = book.sheet_mut(0).unwrap();
+    for (i, formula) in formulas.iter().enumerate() {
+        let cell = sheet.entry(CellRef::parse(&format!("D{}", i + 1)).unwrap());
+        cell.value = CellValue::Formula {
+            formula: (*formula).to_owned(),
+            cached: Some(Box::new(CellValue::Number(0.0))),
+        };
+    }
+    // A text result goes out in a STRING record and has to come back.
+    sheet.entry(CellRef::parse("E1").unwrap()).value = CellValue::Formula {
+        formula: "\"a\"&\"b\"".to_owned(),
+        cached: Some(Box::new(CellValue::text("ab"))),
+    };
+
+    let back = rewrite(&book);
+    for (i, formula) in formulas.iter().enumerate() {
+        let at = format!("D{}", i + 1);
+        assert_eq!(formula_of(&back, 0, &at).as_deref(), Some(*formula), "{at}");
+    }
+    assert_eq!(
+        back.sheets()[0]
+            .get(CellRef::parse("E1").unwrap())
+            .map(|c| c.value.clone()),
+        Some(CellValue::Formula {
+            formula: "\"a\"&\"b\"".to_owned(),
+            cached: Some(Box::new(CellValue::text("ab"))),
+        })
+    );
+    assert_eq!(back.defined_names, book.defined_names);
+}
+
+/// What BIFF8 cannot hold is written as the value it shows, not dropped.
+#[test]
+fn a_formula_the_format_cannot_hold_is_written_as_its_value() {
+    use excelerate::model::CellValue;
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.entry(CellRef::parse("A1").unwrap()).value = CellValue::Formula {
+        formula: "SUM(A70000:A70001)".to_owned(),
+        cached: Some(Box::new(CellValue::Number(5.0))),
+    };
+    let back = rewrite(&book);
+    assert_eq!(
+        back.sheets()[0]
+            .get(CellRef::parse("A1").unwrap())
+            .map(|c| c.value.clone()),
+        Some(CellValue::Number(5.0))
+    );
+}

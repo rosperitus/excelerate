@@ -17,15 +17,19 @@
 //! written, and past 56 distinct colours the rest get the nearest entry. Theme
 //! colours are resolved through the workbook's theme first.
 //!
+//! Formulas are compiled into tokens ([`super::xls_formula`]) and written
+//! with their result, and defined names go out as `NAME` records. A formula
+//! BIFF8 cannot hold - a structured reference, a reference past row 65536 or
+//! column IV - is written as its result, so the file still says what the sheet
+//! showed.
+//!
 //! What is not:
 //!
-//! - **Formulas.** They would have to be compiled into token trees, the mirror
-//!   of the decompiler the reader does not have either. A formula cell is
-//!   written as its cached result, so the file says what the sheet showed.
 //! - Everything the model carries for xlsx and the old format has no room for:
 //!   conditional formatting, data validation, rich text inside a cell, opaque
 //!   parts.
 
+use super::xls_formula::{self, Compiled, Links, Place};
 use crate::error::{Error, Result};
 use crate::formula::eval::{Engine, Origin};
 use crate::formula::value::Value as FormulaValue;
@@ -128,6 +132,13 @@ struct Plan {
     /// result, so the result has to be known before the string table is, and
     /// working it out twice would mean two passes of the engine.
     resolved: HashMap<(usize, CellRef), CellValue>,
+    /// The formulas that compiled, by cell.
+    compiled: HashMap<(usize, CellRef), Compiled>,
+    /// Each defined name's tokens, in book order; `None` for one that did not
+    /// compile, which is still declared so the numbering holds.
+    names: Vec<Option<Compiled>>,
+    /// The sheets, books and names the formulas refer to.
+    links: Links,
     /// Where in the globals each `BOUNDSHEET` keeps its sheet's position.
     boundsheet_offsets: Vec<usize>,
 }
@@ -145,6 +156,15 @@ impl Plan {
             string_index: HashMap::new(),
             string_uses: 0,
             resolved: HashMap::new(),
+            compiled: HashMap::new(),
+            names: Vec::new(),
+            links: Links::new(
+                book.sheets().iter().map(|s| s.title().to_owned()).collect(),
+                book.defined_names
+                    .iter()
+                    .map(|n| (n.name.clone(), n.sheet))
+                    .collect(),
+            ),
             boundsheet_offsets: Vec::new(),
         };
         for style in book.styles.all() {
@@ -166,6 +186,18 @@ impl Plan {
                             None => from_formula(engine.eval(Origin::new(index, at), formula)),
                         };
                         plan.resolved.insert((index, at), value.clone());
+                        let compiled =
+                            crate::formula::parser::parse(formula)
+                                .ok()
+                                .and_then(|expr| {
+                                    xls_formula::compile(&expr, Place::Cell(index), &mut plan.links)
+                                });
+                        if let Some(compiled) = compiled {
+                            // A formula's text result waits in a `STRING`
+                            // record, not in the shared table.
+                            plan.compiled.insert((index, at), compiled);
+                            continue;
+                        }
                         value
                     }
                     other => other.clone(),
@@ -179,6 +211,14 @@ impl Plan {
                     }
                 }
             }
+        }
+        for name in &book.defined_names {
+            let compiled = crate::formula::parser::parse(&name.formula)
+                .ok()
+                .and_then(|expr| {
+                    xls_formula::compile(&expr, Place::Name(name.sheet), &mut plan.links)
+                });
+            plan.names.push(compiled);
         }
         plan
     }
@@ -238,17 +278,53 @@ impl Plan {
             record(&mut out, 0x0092, &data);
         }
 
-        self.shared_strings(&mut out);
-
-        // Written last, so patching their positions touches nothing else.
         for sheet in book.sheets() {
             let mut data = vec![0, 0, 0, 0, 0, 0];
             data.extend_from_slice(&short_string(sheet.title()));
-            // The position sits four bytes past the record's own header.
+            // The position sits four bytes past the record's own header, and
+            // is patched once the globals are complete.
             self.boundsheet_offsets.push(out.len() + 4);
             record(&mut out, 0x0085, &data);
         }
+        self.links_and_names(book, &mut out);
+        self.shared_strings(&mut out);
         out
+    }
+
+    /// The books references go through, the table of them, and the defined
+    /// names, in the order the format wants them: `SUPBOOK` records with their
+    /// `EXTERNNAME`s, then `EXTERNSHEET`, then `NAME`.
+    fn links_and_names(&self, book: &Spreadsheet, out: &mut Vec<u8>) {
+        let links = &self.links;
+        if !links.externs.is_empty() {
+            let sheets = u16::try_from(book.sheets().len()).unwrap_or(u16::MAX);
+            let mut data = sheets.to_le_bytes().to_vec();
+            data.extend_from_slice(&[0x01, 0x04]);
+            record(out, 0x01AE, &data);
+        }
+        if !links.add_ins.is_empty() {
+            record(out, 0x01AE, &[0x01, 0x00, 0x01, 0x3A]);
+            for name in &links.add_ins {
+                let mut data = vec![0, 0, 0, 0, 0, 0];
+                data.extend_from_slice(&short_string(name));
+                // The name's own formula, which for a function is `#REF!`.
+                data.extend_from_slice(&[0x02, 0x00, 0x1C, 0x17]);
+                record(out, 0x0023, &data);
+            }
+        }
+        if !links.externs.is_empty() {
+            let count = u16::try_from(links.externs.len()).unwrap_or(u16::MAX);
+            let mut data = count.to_le_bytes().to_vec();
+            for (book, first, last) in &links.externs {
+                data.extend_from_slice(&book.to_le_bytes());
+                data.extend_from_slice(&first.to_le_bytes());
+                data.extend_from_slice(&last.to_le_bytes());
+            }
+            record(out, 0x0017, &data);
+        }
+        for (name, compiled) in book.defined_names.iter().zip(&self.names) {
+            record(out, 0x0018, &name_record(name, compiled.as_ref()));
+        }
     }
 
     /// The shared string table, split across `CONTINUE` records where a record
@@ -462,7 +538,13 @@ fn cell_record(
         data.extend_from_slice(&xf.to_le_bytes());
     };
 
-    // A formula is written as what it worked out to; see the module note. The
+    if let Some(compiled) = plan.compiled.get(&(sheet, at)) {
+        let result = plan.resolved.get(&(sheet, at)).unwrap_or(&CellValue::Empty);
+        formula_record(out, at, xf, result, compiled);
+        return;
+    }
+
+    // A formula that did not compile is written as what it worked out to. The
     // result was worked out while the string table was being planned.
     let value = match &cell.value {
         CellValue::Formula { .. } => plan
@@ -494,7 +576,7 @@ fn cell_record(
         }
         CellValue::Error(e) => {
             head(&mut data);
-            data.push(error_code(*e));
+            data.push(xls_formula::error_code(*e));
             data.push(1);
             record(out, 0x0205, &data);
         }
@@ -514,6 +596,104 @@ fn cell_record(
     }
 }
 
+/// A `FORMULA` record, and the `STRING` record after it when the result is
+/// text.
+fn formula_record(
+    out: &mut Vec<u8>,
+    at: CellRef,
+    xf: u16,
+    result: &CellValue,
+    compiled: &Compiled,
+) {
+    let mut data = Vec::with_capacity(22 + compiled.tokens.len() + compiled.extra.len());
+    data.extend_from_slice(&at.row.index_u16().to_le_bytes());
+    data.extend_from_slice(&at.col.index_u16().to_le_bytes());
+    data.extend_from_slice(&xf.to_le_bytes());
+    // A result that is not a number says what it is in its first byte and
+    // marks itself with 0xFFFF in its last two.
+    let special = |kind: u8, value: u8| [kind, 0, value, 0, 0, 0, 0xFF, 0xFF];
+    let text = match result {
+        CellValue::Number(n) => {
+            data.extend_from_slice(&n.to_le_bytes());
+            None
+        }
+        CellValue::Text(_) | CellValue::RichText(_) => {
+            data.extend_from_slice(&special(0, 0));
+            string_of(result)
+        }
+        CellValue::Bool(b) => {
+            data.extend_from_slice(&special(1, u8::from(*b)));
+            None
+        }
+        CellValue::Error(e) => {
+            data.extend_from_slice(&special(2, xls_formula::error_code(*e)));
+            None
+        }
+        CellValue::Empty | CellValue::Formula { .. } => {
+            data.extend_from_slice(&special(3, 0));
+            None
+        }
+    };
+    // Options, then the chain cookie Excel fills in itself.
+    data.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    let length = u16::try_from(compiled.tokens.len()).unwrap_or(0);
+    data.extend_from_slice(&length.to_le_bytes());
+    data.extend_from_slice(&compiled.tokens);
+    data.extend_from_slice(&compiled.extra);
+    record(out, 0x0006, &data);
+    if let Some(text) = text {
+        record(out, 0x0207, &unicode_string(&text));
+    }
+}
+
+/// A `NAME` record. A built-in name (`_xlnm.Print_Area`) is stored as a
+/// single character code rather than spelled out.
+fn name_record(name: &crate::model::DefinedName, compiled: Option<&Compiled>) -> Vec<u8> {
+    const BUILTIN: [&str; 14] = [
+        "Consolidate_Area",
+        "Auto_Open",
+        "Auto_Close",
+        "Extract",
+        "Database",
+        "Criteria",
+        "Print_Area",
+        "Print_Titles",
+        "Recorder",
+        "Data_Form",
+        "Auto_Activate",
+        "Auto_Deactivate",
+        "Sheet_Title",
+        "_FilterDatabase",
+    ];
+    let builtin = name
+        .name
+        .strip_prefix("_xlnm.")
+        .and_then(|rest| BUILTIN.iter().position(|b| b.eq_ignore_ascii_case(rest)));
+    let mut flags = u16::from(name.hidden);
+    let units: Vec<u16> = match builtin {
+        Some(code) => {
+            flags |= 0x20;
+            vec![u16::try_from(code).unwrap_or(0)]
+        }
+        None => name.name.encode_utf16().take(255).collect(),
+    };
+    let wide = units.iter().any(|&u| u > 0xFF);
+    let (tokens, extra): (&[u8], &[u8]) = compiled.map_or((&[], &[]), |c| (&c.tokens, &c.extra));
+    let mut data = flags.to_le_bytes().to_vec();
+    data.push(0);
+    data.push(u8::try_from(units.len()).unwrap_or(0));
+    data.extend_from_slice(&u16::try_from(tokens.len()).unwrap_or(0).to_le_bytes());
+    data.extend_from_slice(&[0, 0]);
+    let sheet = name.sheet.map_or(0, |s| s + 1);
+    data.extend_from_slice(&u16::try_from(sheet).unwrap_or(0).to_le_bytes());
+    data.extend_from_slice(&[0, 0, 0, 0]);
+    data.push(u8::from(wide));
+    push_units(&mut data, &units, wide);
+    data.extend_from_slice(tokens);
+    data.extend_from_slice(extra);
+    data
+}
+
 /// The `XF` index of a style: the fifteen style formats come first.
 fn cell_format(plan: &Plan, style: crate::style::StyleId) -> u16 {
     let index = u16::try_from(style.index()).unwrap_or(0);
@@ -521,20 +701,6 @@ fn cell_format(plan: &Plan, style: crate::style::StyleId) -> u16 {
         15 + index
     } else {
         15
-    }
-}
-
-/// An error code, as BIFF numbers them.
-fn error_code(error: crate::CellError) -> u8 {
-    use crate::CellError as E;
-    match error {
-        E::Null => 0x00,
-        E::Div0 => 0x07,
-        E::Value => 0x0F,
-        E::Ref => 0x17,
-        E::Name => 0x1D,
-        E::Num => 0x24,
-        E::Na | E::Calc => 0x2A,
     }
 }
 

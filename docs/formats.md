@@ -75,7 +75,15 @@ cell; the rest of its range keeps the values. A formula the reader cannot turn
 back - a data table, a token it does not know - keeps only its cached value
 rather than a text that says something else.
 
-The writer is not symmetric yet: a formula goes out as its value.
+The writer compiles formulas back into tokens and writes them with their
+result, and defined names as `NAME` records. Parentheses Excel needs are put
+back from operator precedence, so `(A1+B1)*2` survives, but redundant ones
+(`(A1&B1)="x"`) do not: the parsed formula no longer holds them. Functions
+newer than the format go out by name with the `_xlfn.` prefix, the way Excel
+stores them. What BIFF8 cannot hold is written as its value instead: a
+structured reference, a reference past row 65536 or column IV, a string
+literal over 255 characters, a function called with more arguments than the
+format allows.
 
 BIFF5 and older, and encrypted workbooks, are rejected rather than read halfway.
 
