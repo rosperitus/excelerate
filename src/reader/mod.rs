@@ -5,6 +5,7 @@ pub mod csv;
 pub mod detect;
 pub mod gnumeric;
 pub mod html;
+pub(crate) mod image;
 pub mod ods;
 pub(crate) mod ole;
 pub mod slk;

@@ -8,6 +8,7 @@
 
 pub mod autofilter;
 pub mod chart;
+pub mod image;
 pub mod pivot;
 pub mod protection;
 pub mod table;
@@ -1419,6 +1420,9 @@ pub struct Worksheet {
     /// The 2016 charts on the sheet - waterfall, funnel, treemap and the
     /// rest - read but not written.
     pub extended_charts: Vec<chart::ChartEx>,
+    /// The pictures on the sheet, read and written both: see
+    /// [`crate::model::image`].
+    pub images: Vec<image::Image>,
     /// The sheet's `<extLst>`, carried as it was written.
     ///
     /// Everything newer than the 2006 schema hangs off this element:

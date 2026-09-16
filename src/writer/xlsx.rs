@@ -59,8 +59,9 @@ pub fn write_xlsx_to_with<W: Write + Seek>(
     if book.sheets().is_empty() {
         return Err(Error::Xlsx("cannot write a workbook with no sheets".into()));
     }
-    // Charts are applied to the parts first; an untouched book passes through.
-    let prepared = super::chart::prepare(book)?;
+    // Charts and pictures are applied to the parts first; an untouched book
+    // passes through.
+    let prepared = super::image::prepare(super::chart::prepare(book)?);
     let book: &Spreadsheet = &prepared;
     let mut zip = zip::ZipWriter::new(sink);
     let opts = zip::write::SimpleFileOptions::default()

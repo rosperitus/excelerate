@@ -3,6 +3,7 @@
 mod chart;
 pub mod csv;
 pub mod html;
+mod image;
 pub mod ods;
 pub(crate) mod ole;
 pub mod xls;

@@ -192,13 +192,51 @@ changing its anchor is not written; removing it is. The 2016 chart types
 A plot that needs axes and names fewer than two existing ones makes the write
 fail instead of producing a file Excel repairs.
 
+## Pictures
+
+`Worksheet::images` holds one `Image` per picture in the sheet's drawing: its
+bytes, format, anchor, name and alt text. Cropping, borders, effects and the SVG
+a modern Excel keeps beside a PNG fallback stay in the drawing as written.
+
+The writer compares each picture with what was read. An untouched one goes back
+byte for byte. A moved one keeps its element and gets a new anchor, a renamed
+one gets two attributes rewritten, and new bytes go into a media part of their
+own (the SVG beside the old bytes is dropped, or it would be drawn instead). A
+picture removed from the list is removed from the drawing; one built in code is
+added to it, and a sheet with no drawing gets one.
+
+```rust
+# use excelerate::model::Spreadsheet;
+# use excelerate::model::chart::{Anchor, Marker};
+# use excelerate::model::image::Image;
+# let png: Vec<u8> = b"\x89PNG\r\n\x1a\n".to_vec();
+let mut book = Spreadsheet::new();
+let from = Marker {
+    col: excelerate::Col::new(1).unwrap_or_default(),
+    row: excelerate::Row::new(2).unwrap_or_default(),
+    ..Marker::default()
+};
+// 914 400 EMU to the inch: a picture one inch square at B3.
+let anchor = Anchor::OneCell { from, width: 914_400, height: 914_400 };
+if let (Some(mut logo), Some(sheet)) = (Image::new(png, anchor), book.sheet_mut(0)) {
+    logo.description = "Company logo".into();
+    sheet.images.push(logo);
+}
+```
+
+`Image::new` tells the format from the bytes and returns `None` for a file Excel
+would not show. A picture inside a group of shapes is placed by the group
+(`ImageOrigin::grouped`), so moving it is not written; removing it is. A picture
+linked to a file outside the package has no bytes and is not in the list; it
+stays in the drawing as written.
+
 ## Carried parts
 
 `OpaquePart` and `Attachment` are the escape hatch. Anything the crate does not
-model, such as pictures, shapes, comments and their VML, and document
-properties, is carried as raw bytes plus the relationship pointing at it,
-recursively. Chart parts are carried as well, which is what lets an untouched
-chart go back byte for byte.
+model, such as shapes, comments and their VML, and document properties, is
+carried as raw bytes plus the relationship pointing at it, recursively. Chart
+parts, drawings and media are carried as well, which is what lets an untouched
+chart or picture go back byte for byte.
 
 One part is deliberately *not* carried: `calcChain.xml`. It records the order
 formulas were computed in, and after a rewrite it would be a lie.

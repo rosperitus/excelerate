@@ -63,7 +63,7 @@ impl<'a> Node<'a> {
         children(self.inner)
     }
 
-    fn child(&self, name: &str) -> Option<Node<'a>> {
+    pub fn child(&self, name: &str) -> Option<Node<'a>> {
         self.children().into_iter().find(|n| n.name == name)
     }
 
@@ -202,7 +202,7 @@ pub(crate) fn scan_drawing(xml: &str) -> Vec<DrawingObject> {
     objects
 }
 
-fn read_anchor(node: &Node<'_>, kids: &[Node<'_>]) -> Option<Anchor> {
+pub(crate) fn read_anchor(node: &Node<'_>, kids: &[Node<'_>]) -> Option<Anchor> {
     let find = |name: &str| kids.iter().find(|n| n.name == name);
     let ext = |n: Option<&Node<'_>>| {
         let size = |k| n.and_then(|n| n.attr(k)).and_then(|v| v.parse().ok());

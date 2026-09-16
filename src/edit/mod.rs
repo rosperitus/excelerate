@@ -311,18 +311,7 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
         t.auto_filter = t.auto_filter.and_then(|f| shift.range(f));
         true
     });
-    // A chart's frame is anchored to cells like any drawing. The bytes of the
-    // drawing were moved by `anchor`, so an untouched chart stays untouched.
-    for chart in &mut sheet.charts {
-        let untouched = chart.is_unchanged();
-        anchor::move_anchor(&mut chart.anchor, shift);
-        if untouched {
-            chart.settle();
-        }
-    }
-    for chart in &mut sheet.extended_charts {
-        anchor::move_anchor(&mut chart.anchor, shift);
-    }
+    move_drawn_objects(sheet, shift);
 
     // Row and column properties are indexed by the axis they sit on, so only
     // the matching ones move; the others name the axis that did not change.
@@ -364,6 +353,30 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
                 }
                 None => false,
             });
+        }
+    }
+}
+
+/// Moves the charts and pictures of the model with the grid.
+fn move_drawn_objects(sheet: &mut Worksheet, shift: Shift) {
+    // A chart's frame is anchored to cells like any drawing. The bytes of the
+    // drawing were moved by `anchor`, so an untouched chart stays untouched.
+    for chart in &mut sheet.charts {
+        let untouched = chart.is_unchanged();
+        anchor::move_anchor(&mut chart.anchor, shift);
+        if untouched {
+            chart.settle();
+        }
+    }
+    for chart in &mut sheet.extended_charts {
+        anchor::move_anchor(&mut chart.anchor, shift);
+    }
+    // Pictures the same way: their drawing moved with the charts'.
+    for image in &mut sheet.images {
+        let untouched = image.is_unchanged();
+        anchor::move_anchor(&mut image.anchor, shift);
+        if untouched {
+            image.settle();
         }
     }
 }

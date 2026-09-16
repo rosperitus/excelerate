@@ -24,12 +24,14 @@ use std::borrow::Cow;
 use std::fmt::Write as _;
 
 const CHART_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
-const DRAWING_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
-const MAIN_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
-const REL_NS: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+pub(super) const DRAWING_NS: &str =
+    "http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing";
+pub(super) const MAIN_NS: &str = "http://schemas.openxmlformats.org/drawingml/2006/main";
+pub(super) const REL_NS: &str =
+    "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
 const CHART_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawingml.chart+xml";
-const DRAWING_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawing+xml";
-const XML_DECL: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
+pub(super) const DRAWING_TYPE: &str = "application/vnd.openxmlformats-officedocument.drawing+xml";
+pub(super) const XML_DECL: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#;
 
 /// The workbook as the writer should see it, charts applied.
 ///
@@ -65,7 +67,7 @@ pub(super) fn prepare(book: &Spreadsheet) -> Result<Cow<'_, Spreadsheet>> {
     Ok(Cow::Owned(out))
 }
 
-fn drawings(sheet: &Worksheet) -> impl Iterator<Item = &str> {
+pub(super) fn drawings(sheet: &Worksheet) -> impl Iterator<Item = &str> {
     sheet
         .attachments
         .iter()
@@ -115,26 +117,26 @@ fn check(chart: &Chart) -> Result<()> {
     Ok(())
 }
 
-fn part_text<'a>(book: &'a Spreadsheet, path: &str) -> Option<&'a str> {
+pub(super) fn part_text<'a>(book: &'a Spreadsheet, path: &str) -> Option<&'a str> {
     let part = book.parts.iter().find(|p| p.path == path)?;
     core::str::from_utf8(&part.data).ok()
 }
 
 /// One entry of a relationship part.
-struct Relationship {
-    id: String,
-    kind: String,
+pub(super) struct Relationship {
+    pub id: String,
+    pub kind: String,
     /// The package path it resolves to.
-    target: String,
+    pub target: String,
     /// Where the element sits in the relationship part.
-    span: Range<usize>,
+    pub span: Range<usize>,
 }
 
-fn relationships(book: &Spreadsheet, part: &str) -> Vec<Relationship> {
+pub(super) fn relationships(book: &Spreadsheet, part: &str) -> Vec<Relationship> {
     part_text(book, &rels_path(part)).map_or_else(Vec::new, |xml| parse_relationships(xml, part))
 }
 
-fn parse_relationships(xml: &str, part: &str) -> Vec<Relationship> {
+pub(super) fn parse_relationships(xml: &str, part: &str) -> Vec<Relationship> {
     let base = part.rsplit_once('/').map_or("", |(dir, _)| dir);
     let Some(root) = children(xml)
         .into_iter()
@@ -156,7 +158,7 @@ fn parse_relationships(xml: &str, part: &str) -> Vec<Relationship> {
         .collect()
 }
 
-fn rels_path(part: &str) -> String {
+pub(super) fn rels_path(part: &str) -> String {
     match part.rsplit_once('/') {
         Some((dir, file)) => format!("{dir}/_rels/{file}.rels"),
         None => format!("_rels/{part}.rels"),
@@ -185,7 +187,12 @@ fn free_path(book: &Spreadsheet, stem: &str) -> String {
         .unwrap_or_default()
 }
 
-fn set_part(book: &mut Spreadsheet, path: &str, content_type: Option<&str>, data: String) {
+pub(super) fn set_part(
+    book: &mut Spreadsheet,
+    path: &str,
+    content_type: Option<&str>,
+    data: String,
+) {
     if let Some(part) = book.parts.iter_mut().find(|p| p.path == path) {
         part.data = data.into_bytes();
     } else {
@@ -199,7 +206,7 @@ fn set_part(book: &mut Spreadsheet, path: &str, content_type: Option<&str>, data
 
 /// The highest drawing object id in use, so a new frame's is unique. Every
 /// object carries one on its `cNvPr`, whatever kind of object it is.
-fn max_object_id(xml: &str) -> u32 {
+pub(super) fn max_object_id(xml: &str) -> u32 {
     xml.match_indices("cNvPr ")
         .filter_map(|(i, _)| {
             let tag = &xml[i..];
@@ -356,16 +363,18 @@ fn rewrite_drawing(
     }
     out.push_str(&xml[at..]);
     set_part(book, path, Some(DRAWING_TYPE), out);
-    edit_relationships(book, path, &removed, &added);
+    edit_relationships(book, path, &removed, &added, "chart");
 }
 
 /// Drops and adds relationships of a drawing, creating its relationship part
-/// when it had none.
-fn edit_relationships(
+/// when it had none. The added ones are all of one kind, the last segment of
+/// the relationship type: `chart`, `image`.
+pub(super) fn edit_relationships(
     book: &mut Spreadsheet,
     drawing: &str,
     removed: &[String],
     added: &[(String, String)],
+    kind: &str,
 ) {
     if removed.is_empty() && added.is_empty() {
         return;
@@ -393,7 +402,7 @@ fn edit_relationships(
     for (id, target) in added {
         let _ = write!(
             out,
-            r#"<Relationship Id="{id}" Type="{REL_NS}/chart" Target="{}"/>"#,
+            r#"<Relationship Id="{id}" Type="{REL_NS}/{kind}" Target="{}"/>"#,
             escape(&relative_target(base, target))
         );
     }
@@ -404,7 +413,6 @@ fn edit_relationships(
 /// A frame for a chart, declaring its own namespaces so it can go into a
 /// drawing whose root binds them to other prefixes, or not at all.
 fn render_frame(chart: &Chart, placed: &Placed) -> String {
-    let ns = format!(r#" xmlns:xdr="{DRAWING_NS}" xmlns:a="{MAIN_NS}" xmlns:r="{REL_NS}""#);
     let frame = format!(
         concat!(
             r#"<xdr:graphicFrame macro=""><xdr:nvGraphicFramePr><xdr:cNvPr id="{id}" name="{name}"/>"#,
@@ -419,11 +427,18 @@ fn render_frame(chart: &Chart, placed: &Placed) -> String {
         chart_ns = CHART_NS,
         rel = escape(&placed.rel),
     );
-    match chart.anchor {
+    render_anchor(chart.anchor, &frame)
+}
+
+/// An anchor element around the object it places, declaring the namespaces
+/// its own markup uses so it can go into any drawing.
+pub(super) fn render_anchor(anchor: Anchor, object: &str) -> String {
+    let ns = format!(r#" xmlns:xdr="{DRAWING_NS}" xmlns:a="{MAIN_NS}" xmlns:r="{REL_NS}""#);
+    match anchor {
         Anchor::TwoCell { from, to, edit_as } => {
             let edit = edit_as.map_or(String::new(), |e| format!(r#" editAs="{}""#, e.as_str()));
             format!(
-                "<xdr:twoCellAnchor{ns}{edit}>{}{}{frame}</xdr:twoCellAnchor>",
+                "<xdr:twoCellAnchor{ns}{edit}>{}{}{object}</xdr:twoCellAnchor>",
                 marker("from", from),
                 marker("to", to)
             )
@@ -433,7 +448,7 @@ fn render_frame(chart: &Chart, placed: &Placed) -> String {
             width,
             height,
         } => format!(
-            r#"<xdr:oneCellAnchor{ns}>{}<xdr:ext cx="{width}" cy="{height}"/>{frame}</xdr:oneCellAnchor>"#,
+            r#"<xdr:oneCellAnchor{ns}>{}<xdr:ext cx="{width}" cy="{height}"/>{object}</xdr:oneCellAnchor>"#,
             marker("from", from)
         ),
         Anchor::Absolute {
@@ -442,7 +457,7 @@ fn render_frame(chart: &Chart, placed: &Placed) -> String {
             width,
             height,
         } => format!(
-            r#"<xdr:absoluteAnchor{ns}><xdr:pos x="{x}" y="{y}"/><xdr:ext cx="{width}" cy="{height}"/>{frame}</xdr:absoluteAnchor>"#
+            r#"<xdr:absoluteAnchor{ns}><xdr:pos x="{x}" y="{y}"/><xdr:ext cx="{width}" cy="{height}"/>{object}</xdr:absoluteAnchor>"#
         ),
     }
 }

@@ -164,6 +164,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
         // The charts are modelled and their parts carried as well: an
         // untouched chart goes back as the bytes it came in.
         (sheet.charts, sheet.extended_charts) = read_sheet_charts(&mut zip, &links, sheet_base);
+        sheet.images = read_sheet_images(&mut zip, &links, sheet_base);
         sheet.attachments = attachments(&links, sheet_base, &["hyperlink", "comments", "table"]);
         book.add_sheet(sheet)?;
     }
@@ -663,6 +664,74 @@ fn read_sheet_charts<R: Read + Seek>(
         }
     }
     (charts, extended)
+}
+
+/// The pictures drawn on one sheet, in drawing order. A picture linked to a
+/// file outside the package has no bytes to model and stays in the drawing
+/// as written.
+fn read_sheet_images<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    links: &HashMap<String, Relationship>,
+    base: &str,
+) -> Vec<crate::model::image::Image> {
+    use crate::model::image::{Image, ImageFormat, ImageOrigin, hash};
+    let mut images = Vec::new();
+    let mut drawings: Vec<String> = links
+        .values()
+        .filter(|r| !r.external && r.kind.ends_with("/drawing"))
+        .map(|r| resolve(base, &r.target))
+        .collect();
+    drawings.sort();
+    for drawing in drawings {
+        let Ok(xml) = read_part(zip, &drawing) else {
+            continue;
+        };
+        if !xml.contains("pic") {
+            continue;
+        }
+        let rels = read_relationships(zip, &rels_path_for(&drawing)).unwrap_or_default();
+        let dir = drawing.rsplit_once('/').map_or("", |(dir, _)| dir);
+        for object in super::image::scan_pictures(&xml) {
+            let Some(anchor) = object.anchor else {
+                continue;
+            };
+            for picture in object.pictures {
+                let Some(rel) = picture.rel.as_ref().and_then(|id| rels.get(id)) else {
+                    continue;
+                };
+                if rel.external {
+                    continue;
+                }
+                let part = resolve(dir, &rel.target);
+                let Ok(data) = read_bytes(zip, &part) else {
+                    continue;
+                };
+                let Some(format) =
+                    ImageFormat::sniff(&data).or_else(|| ImageFormat::from_extension(&part))
+                else {
+                    continue;
+                };
+                images.push(Image {
+                    origin: Some(ImageOrigin {
+                        drawing: drawing.clone(),
+                        id: picture.id,
+                        grouped: picture.grouped,
+                        name: picture.name.clone(),
+                        description: picture.description.clone(),
+                        anchor,
+                        data_len: data.len(),
+                        data_hash: hash(&data),
+                    }),
+                    name: picture.name,
+                    description: picture.description,
+                    anchor,
+                    format,
+                    data,
+                });
+            }
+        }
+    }
+    images
 }
 
 /// The tables of one sheet, in the order their parts are related.

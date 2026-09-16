@@ -31,9 +31,9 @@ println!("{}: {} non-empty cells", sheet.title(), sheet.len());
   with 20k formulas.
 - **Round-trips without eating your file.** Read -> write -> read keeps styles,
   merges, conditional formatting, protection, autofilters and print setup.
-  Charts are modelled and written back; anything the crate does not model yet,
-  such as pictures and comments, rides through byte for byte along with its
-  relationships.
+  Charts and pictures are modelled and written back; anything the crate does
+  not model yet, such as shapes and comment boxes, rides through byte for byte
+  along with its relationships.
 - **Builds for WebAssembly**, so the same reader runs in Node.
 - **No `unsafe`**, `clippy::pedantic` clean, and the only deps are `zip`,
   `quick-xml`, `flate2` and `thiserror`.
@@ -115,9 +115,9 @@ cargo clippy --all-targets -- -D warnings
 ## Status
 
 Formats, styles, the formula engine and the xlsx object model (protection,
-autofilters, validation, conditional formatting, print setup, tables, charts)
-are in. Pivots are read but not written; pictures and comment shapes are
-carried through untouched. See [docs/formats.md](docs/formats.md) for the exact line
+autofilters, validation, conditional formatting, print setup, tables, charts,
+pictures) are in. Pivots are read but not written; shapes and comment boxes are
+carried through untouched. xls keeps formulas and styles both ways. See [docs/formats.md](docs/formats.md) for the exact line
 between "modelled" and "carried".
 
 ## License
