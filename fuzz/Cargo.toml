@@ -1,0 +1,40 @@
+[package]
+name = "excelerate-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.excelerate]
+path = ".."
+
+# Its own workspace, so the crate's `cargo test` never builds the fuzz targets,
+# which need a nightly toolchain.
+[workspace]
+members = ["."]
+
+[[bin]]
+name = "read_bytes"
+path = "fuzz_targets/read_bytes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "xls"
+path = "fuzz_targets/xls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "formula"
+path = "fuzz_targets/formula.rs"
+test = false
+doc = false
+bench = false
