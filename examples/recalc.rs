@@ -19,7 +19,6 @@
 use excelerate::formula::eval::{Engine, Origin};
 use excelerate::formula::value::Value;
 use excelerate::model::CellValue;
-use excelerate::reader::xlsx::read_xlsx;
 use std::collections::BTreeMap;
 
 fn main() {
@@ -29,7 +28,7 @@ fn main() {
     let per_bucket: usize = std::env::args()
         .nth(2)
         .map_or(5, |n| n.parse().expect("example count is a number"));
-    let book = read_xlsx(&input).expect("input reads");
+    let book = excelerate::reader::read(&input).expect("input reads");
 
     let mut engine = Engine::new(&book);
     let (mut checked, mut agree) = (0usize, 0usize);

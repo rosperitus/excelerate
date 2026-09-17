@@ -1102,7 +1102,9 @@ fn sst_string(data: &[u8], at: usize, breaks: &[usize]) -> Option<(String, usize
 /// Steps over the flag byte a `CONTINUE` record opens with, taking the width
 /// from it.
 fn skip_break(data: &[u8], pos: &mut usize, breaks: &[usize], wide: &mut bool) {
-    if breaks.contains(pos) {
+    // The breaks are in stream order, and this is asked for every byte of
+    // every string: a linear scan made a 30 MB workbook take seconds.
+    if breaks.binary_search(pos).is_ok() {
         *wide = data.get(*pos).copied().unwrap_or(0) & 1 != 0;
         *pos += 1;
     }
