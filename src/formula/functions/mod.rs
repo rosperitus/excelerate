@@ -143,11 +143,66 @@ pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) 
         let values: Vec<Value> = args.into_iter().map(|a| a.value).collect();
         return f(&values);
     }
-    match (eager, dated) {
-        (Some(f), _) => f(&args),
-        (_, Some(f)) => f(epoch, &args),
+    let run = |args: &[Arg]| match (eager, dated) {
+        (Some(f), _) => f(args),
+        (_, Some(f)) => f(epoch, args),
         _ => Value::Error(CellError::Name),
+    };
+    match lifted(name, &args) {
+        Some(positions) => lift(&args, &positions, run),
+        None => run(&args),
     }
+}
+
+/// The positions of the arguments a call has to be repeated over: an array
+/// handed to a parameter that takes one value.
+///
+/// Excel calls this lifting. `ISNUMBER(A1:A3)` inside an array formula is
+/// three answers, one per cell, and `PRODUCT(IF(ISNUMBER(r), r, 1))` depends
+/// on it. Which parameters take one value is part of the function's
+/// signature, and the format has carried it since Excel 97: a parameter of
+/// value class lifts, one of reference or array class takes the array whole.
+/// Functions newer than that table do their own thing with arrays.
+fn lifted(name: &str, args: &[Arg]) -> Option<Vec<usize>> {
+    // `TYPE` is the one that asks about the array itself: 64, not a type
+    // per element.
+    if name == "TYPE" || !args.iter().any(|a| matches!(a.value, Value::Array(_))) {
+        return None;
+    }
+    let signature = crate::shared::biff_functions::by_name(name)?;
+    let positions: Vec<usize> = args
+        .iter()
+        .enumerate()
+        .filter(|(i, a)| matches!(a.value, Value::Array(_)) && signature.arg_class(*i) == b'V')
+        .map(|(i, _)| i)
+        .collect();
+    (!positions.is_empty()).then_some(positions)
+}
+
+/// Calls a function once per element of the lifted arguments, stretching a
+/// single row or column over the shape of the rest the way the operators do.
+fn lift(args: &[Arg], positions: &[usize], run: impl Fn(&[Arg]) -> Value) -> Value {
+    let (rows, cols) = positions
+        .iter()
+        .map(|&i| crate::formula::eval::shape(&args[i].value))
+        .fold((0, 0), |(r, c), (ar, ac)| (r.max(ar), c.max(ac)));
+    let mut call = args.to_vec();
+    let out = (0..rows)
+        .map(|r| {
+            (0..cols)
+                .map(|c| {
+                    for &i in positions {
+                        call[i] = Arg {
+                            value: crate::formula::eval::at(&args[i].value, r, c),
+                            reference: false,
+                        };
+                    }
+                    run(&call).scalar().clone()
+                })
+                .collect()
+        })
+        .collect();
+    Value::array(out)
 }
 
 /// Whether an expression names cells rather than computing a value.
@@ -158,6 +213,14 @@ pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) 
 fn is_reference(e: &Expr) -> bool {
     match e {
         Expr::Range { .. } => true,
+        // A function that answers with a reference hands over cells, not
+        // values written into the formula: `SKEW(INDIRECT("Scores"))` skips
+        // the text in those cells, as `SKEW(Scores!A1:A9)` does.
+        Expr::Call { name, args } => match name.as_str() {
+            "INDIRECT" | "OFFSET" => true,
+            "INDEX" => args.first().is_some_and(is_reference),
+            _ => false,
+        },
         Expr::Binary(BinaryOp::Span | BinaryOp::Intersect | BinaryOp::Union, a, b) => {
             is_reference(a) && is_reference(b)
         }
@@ -739,18 +802,21 @@ pub(crate) fn first_error(args: &[Arg]) -> Option<CellError> {
 /// The numbers an aggregate should work on.
 ///
 /// A value written into the formula is converted - `SUM("1",TRUE)` is 2 - while
-/// one read out of a cell is skipped unless it is already a number.
+/// one inside a reference or an array is skipped unless it is already a
+/// number: `SUM({1,"2",TRUE})` is 1, and so is the sum of an array a formula
+/// computed, as `SKEW(IF(r="n/a","n/a",r))` computes one.
 pub(crate) fn aggregate_numbers(args: &[Arg]) -> Result<Vec<f64>, CellError> {
     let mut out = Vec::new();
     for arg in args {
         let mut flat = Vec::new();
         arg.value.flatten(&mut flat);
+        let skips = arg.reference || matches!(arg.value, Value::Array(_));
         for v in flat {
             match v {
                 Value::Error(e) => return Err(*e),
                 Value::Number(n) => out.push(*n),
                 Value::Blank => {}
-                Value::Bool(_) | Value::Text(_) if arg.reference => {}
+                Value::Bool(_) | Value::Text(_) if skips => {}
                 other => out.push(other.number()?),
             }
         }

@@ -801,7 +801,7 @@ fn broadcast(op: BinaryOp, a: &Value, b: &Value) -> Value {
 }
 
 /// Rows and columns a value covers; a scalar covers one of each.
-fn shape(v: &Value) -> (usize, usize) {
+pub(crate) fn shape(v: &Value) -> (usize, usize) {
     match v {
         Value::Array(rows) => (rows.len(), rows.iter().map(Vec::len).max().unwrap_or(0)),
         _ => (1, 1),
@@ -811,7 +811,7 @@ fn shape(v: &Value) -> (usize, usize) {
 /// The element at a position, repeating the only row or column when the value
 /// is narrower than the shape being filled - Excel stretches a single row or
 /// column across the whole result and pads the rest with `#N/A`.
-fn at(v: &Value, row: usize, col: usize) -> Value {
+pub(crate) fn at(v: &Value, row: usize, col: usize) -> Value {
     match v {
         Value::Array(rows) => {
             let r = if rows.len() == 1 { 0 } else { row };

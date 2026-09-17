@@ -30,10 +30,13 @@ use std::path::Path;
 /// `test1.xlsx` was last saved by something other than Excel (no
 /// `calcChain.xml`), so its cache is not Excel's and the floor is what the
 /// engine agreed on when it was recorded, not a target. `COIN` was saved by
-/// Excel in manual calculation mode.
+/// Excel in manual calculation mode. The formula reference was saved by Excel
+/// 2016 in a Russian locale: functions newer than 2016 are `#NAME?` in its
+/// cache, and number and date text follows that locale.
 const AGREEMENT: &[(&str, usize)] = &[
     ("test1.xlsx", 13_270),
-    ("COIN_Tool_v1_LITE_exampledata.xlsm", 564_694),
+    ("COIN_Tool_v1_LITE_exampledata.xlsm", 568_345),
+    ("Excel_Формулы_Справочник_676_формул.xlsx", 540),
 ];
 
 /// Files the reader refuses on purpose, with the reason it must give.

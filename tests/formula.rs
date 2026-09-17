@@ -667,6 +667,8 @@ fn references_can_be_built_and_moved_while_the_formula_runs() {
         // constant is no reference to follow.
         ("SUM(INDIRECT(\"Числа\"))", "6"),
         ("INDIRECT(\"Ставка\")", "#REF!"),
+        // What INDIRECT reads is cells, whose text an aggregate skips.
+        ("SUM(INDIRECT(\"A1:A3\"),INDIRECT(\"A1\"))", "7"),
         // R1C1 notation is a different language, and not one this reads.
         ("INDIRECT(\"A1\",FALSE)", "#REF!"),
         ("SUM(INDIRECT(\"Data!A1:A3\"))", "6"),
@@ -825,6 +827,37 @@ fn math_rounds_the_way_excel_does() {
         ("LOG10(1000)", "3"),
         ("CEILING(2.1,1)", "3"),
         ("FLOOR(2.9,1)", "2"),
+    ]);
+}
+
+/// A function whose parameter takes one value, handed an array, answers
+/// element by element - what Excel calls lifting, and what an array formula
+/// such as `PRODUCT(IF(ISNUMBER(r), r, 1))` rests on. Which parameters lift is
+/// the value class of the function's signature; a reference or array
+/// parameter takes the array whole.
+#[test]
+fn a_one_value_parameter_lifts_over_an_array() {
+    check(&[
+        ("ABS({-1,2})", "{1 2}"),
+        ("LEN({\"a\",\"bb\"})", "{1 2}"),
+        ("ISNUMBER({1,\"a\"})", "{TRUE FALSE}"),
+        ("ROUND({1.26,2.34},1)", "{1.3 2.3}"),
+        ("MATCH({2,3},{1,2,3},0)", "{2 3}"),
+        ("LARGE({5,3,9},{1,2})", "{9 5}"),
+        // Reference and array parameters take the array whole.
+        ("SUM({1,2})", "3"),
+        ("SUMPRODUCT({1,2},{3,4})", "11"),
+        // `TYPE` asks about the array itself.
+        ("TYPE({1,2})", "64"),
+        // An array of conditions picks element by element, from both branches.
+        ("IF(ISNUMBER({1,\"a\"}),{2,3},1)", "{2 1}"),
+        ("IF({TRUE,FALSE},5)", "{5 FALSE}"),
+        ("PRODUCT(IF(ISNUMBER({2,\"n/a\",3}),{2,\"n/a\",3},1))", "6"),
+        // Each element of an array is caught on its own.
+        ("IFERROR({1,#N/A},0)", "{1 0}"),
+        // Inside an array, only numbers count, as inside a reference.
+        ("SUM({1,\"2\",TRUE})", "1"),
+        ("SUM(1,\"2\",TRUE)", "4"),
     ]);
 }
 

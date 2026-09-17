@@ -2242,9 +2242,21 @@ pub fn by_index(index: u16) -> Option<&'static Function> {
 }
 
 /// The numbered function a name stands for, ignoring case.
+///
+/// Asked on every function call the engine makes, so the table is indexed
+/// once rather than walked.
 #[must_use]
 pub fn by_name(name: &str) -> Option<&'static Function> {
-    FUNCTIONS.iter().find(|f| f.name.eq_ignore_ascii_case(name))
+    static INDEX: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static Function>> =
+        std::sync::OnceLock::new();
+    let index = INDEX.get_or_init(|| FUNCTIONS.iter().map(|f| (f.name, f)).collect());
+    match index.get(name) {
+        Some(f) => Some(f),
+        None if name.bytes().any(|b| b.is_ascii_lowercase()) => {
+            index.get(name.to_ascii_uppercase().as_str()).copied()
+        }
+        None => None,
+    }
 }
 
 #[cfg(test)]

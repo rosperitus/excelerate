@@ -19,7 +19,21 @@ pub fn if_(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
         [c, t, e] => (c, Some(t), Some(e)),
         _ => return Value::Error(CellError::Value),
     };
-    let taken = match engine.eval_expr(origin, condition).boolean() {
+    let condition = engine.eval_expr(origin, condition);
+    // An array of conditions picks element by element, and needs both
+    // branches whole to pick from.
+    if let Value::Array(_) = condition {
+        let then = then.map_or(Value::Bool(true), |e| engine.eval_expr(origin, e));
+        let otherwise = otherwise.map_or(Value::Bool(false), |e| engine.eval_expr(origin, e));
+        return elementwise(&[&condition, &then, &otherwise], |values| {
+            match values[0].boolean() {
+                Ok(true) => values[1].clone(),
+                Ok(false) => values[2].clone(),
+                Err(e) => Value::Error(e),
+            }
+        });
+    }
+    let taken = match condition.boolean() {
         Ok(true) => then,
         Ok(false) => match otherwise {
             Some(e) => Some(e),
@@ -55,10 +69,46 @@ fn fallback_when(
         return Value::Error(CellError::Value);
     };
     let v = engine.eval_expr(origin, value);
+    if let Value::Array(rows) = &v {
+        // Each element is caught on its own; the fallback is computed once,
+        // and only if some element needs it.
+        if !rows.iter().flatten().any(caught) {
+            return v;
+        }
+        let fallback = engine.eval_expr(origin, fallback);
+        return elementwise(&[&v, &fallback], |values| {
+            if caught(&values[0]) {
+                values[1].clone()
+            } else {
+                values[0].clone()
+            }
+        });
+    }
     if caught(v.scalar()) {
         return engine.eval_expr(origin, fallback);
     }
     v
+}
+
+/// Builds an array over the combined shape of some values, a single row or
+/// column stretched over the rest, from what `pick` makes of each position.
+fn elementwise(values: &[&Value], pick: impl Fn(&[Value]) -> Value) -> Value {
+    use crate::formula::eval::{at, shape};
+    let (rows, cols) = values
+        .iter()
+        .map(|v| shape(v))
+        .fold((0, 0), |(r, c), (vr, vc)| (r.max(vr), c.max(vc)));
+    let out = (0..rows)
+        .map(|r| {
+            (0..cols)
+                .map(|c| {
+                    let here: Vec<Value> = values.iter().map(|v| at(v, r, c)).collect();
+                    pick(&here)
+                })
+                .collect()
+        })
+        .collect();
+    Value::array(out)
 }
 
 /// `AND(logical1, ...)` - every argument must be true.
