@@ -1118,7 +1118,9 @@ pub fn offset(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
         clippy::cast_possible_truncation,
         reason = "out-of-range offsets are caught by the corner check below"
     )]
-    let step = |by: f64| by as i64;
+    // Clamped first: a count past any sheet saturates the cast at i64::MAX,
+    // and adding the corner to that overflows before the check can refuse it.
+    let step = |by: f64| by.clamp(-1.0e12, 1.0e12) as i64;
     let (top, rows) = (
         i64::from(base.start.row.one_based()) + step(down),
         i64::from(base.height()),
@@ -1134,7 +1136,7 @@ pub fn offset(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
                 clippy::cast_possible_truncation,
                 reason = "bounded by the sheet in the check that follows"
             )]
-            Some(n) => n as i64,
+            Some(n) => n.clamp(-1.0e12, 1.0e12) as i64,
             None => span,
         };
         if span == 0 {

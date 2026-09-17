@@ -215,6 +215,11 @@ fn shift_months(epoch: Epoch, args: &[Arg], to_end: bool) -> Value {
     let (Ok(dt), Some(months)) = (from_serial(serial, epoch), whole(months)) else {
         return Value::Error(CellError::Num);
     };
+    // Ten thousand years is further than Excel's calendar reaches from any
+    // day of it, and refusing earlier keeps the month arithmetic in range.
+    if months.abs() > 120_000 {
+        return Value::Error(CellError::Num);
+    }
     #[expect(
         clippy::cast_possible_wrap,
         reason = "a month number is between 1 and 12"
@@ -225,8 +230,8 @@ fn shift_months(epoch: Epoch, args: &[Arg], to_end: bool) -> Value {
     // one month after 31 January is 28 February.
     let day = if to_end { last } else { dt.day.min(last) };
     match to_serial(DateTime::date(year, month, day), epoch) {
-        Ok(serial) => Value::Number(serial),
-        Err(_) => Value::Error(CellError::Num),
+        Ok(serial) if serial <= last_serial(epoch) => Value::Number(serial),
+        _ => Value::Error(CellError::Num),
     }
 }
 

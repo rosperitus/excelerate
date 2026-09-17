@@ -897,6 +897,10 @@ fn what_an_excel_formula_reference_cached() {
         ("YEAR(2958465)", "9999"),
         ("WORKDAY(1,1E+9)", "#NUM!"),
         ("EDATE(1E+9,1)", "#NUM!"),
+        ("EDATE(1,2147483646)", "#NUM!"),
+        ("EOMONTH(1,-2147483646)", "#NUM!"),
+        ("EDATE(2958465,1)", "#NUM!"),
+        ("EDATE(2958100,12)", "2958465"),
         // Found by fuzzing: a fractional position under one is the whole row.
         ("SUM(INDEX({1,2;3,4},0.2,1))", "4"),
         ("INDEX({1,2;3,4},1.9,2.7)", "2"),
@@ -913,6 +917,11 @@ fn what_an_excel_formula_reference_cached() {
         ("ROUND(BINOM.DIST.RANGE(5000,0.5,0,2500),6)", "0.505642"),
         ("ROUND(BINOM.DIST.RANGE(60,0.75,45,50),6)", "0.52363"),
         ("HYPGEOM.DIST(2E+7,4E+7,3E+7,5E+7,TRUE)", "#NUM!"),
+        // Found by fuzzing: a size past any sheet is off the sheet, not an
+        // overflow on the way there.
+        ("SUM(OFFSET(A1,0,0,1E+99))", "#REF!"),
+        ("SUM(OFFSET(A1,-1E+99,0))", "#REF!"),
+        ("SUM(OFFSET(A1,0,0,-1E+99,-1E+99))", "#REF!"),
         // Only values of the needle's kind are searched: blanks and numbers
         // in a row of names are stepped over.
         ("MATCH(\"b\",{\"a\",1,\"b\",2,\"c\"})", "3"),
