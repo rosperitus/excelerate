@@ -9,6 +9,21 @@
 
 # Third-party sources kept alongside for comparison (BetterOffice).
 tmp/
+.claude/settings.json
+.claude/agents/excel-function.md
+.claude/skills/no-ai-slop/SKILL.md
+.claude/skills/no-ai-slop/references/ai-writing-detection.md
+.claude/skills/rossmann-voice/SKILL.md
+.claude/skills/rust-port/SKILL.md
+CLAUDE.md
+tools/build-npm-reader.sh
+tools/build-npm.sh
+tools/excelize-oracle/go.mod
+tools/excelize-oracle/go.sum
+tools/excelize-oracle/main.go
+tools/excelize-oracle/README.md
+tools/excelize-oracle/tables/chart.go
+tools/excelize-oracle/tables/main.go
 
 # Real workbooks for the corpus test: large, and not all of them ours to
 # publish. See tests/corpus.rs.
