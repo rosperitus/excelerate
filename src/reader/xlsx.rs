@@ -1726,6 +1726,7 @@ fn read_sheet<R: Read + Seek>(
         in_formula1: false,
         in_formula2: false,
         filter_col: None,
+        ext_depth: 0,
     };
 
     let mut reader = Reader::from_str(&xml);
@@ -1796,6 +1797,13 @@ struct SheetReader<'a> {
     /// Offset of the `<filterColumn>` being read. Its criteria arrive as
     /// children, so the column they belong to has to be remembered.
     filter_col: Option<u32>,
+
+    /// How deep inside `<extLst>` the reader is. What an extension holds
+    /// travels whole in [`Worksheet::extensions`], and the names inside it
+    /// repeat the sheet's own under another namespace: an
+    /// `<x14:conditionalFormatting>` read as a `<conditionalFormatting>`
+    /// becomes a rule with no range that the writer then puts in the sheet.
+    ext_depth: u32,
 }
 
 impl SheetReader<'_> {
@@ -1806,6 +1814,12 @@ impl SheetReader<'_> {
         // of magnitude, so `start_cell` goes first.
         let name = e.local_name();
         let name = name.as_ref();
+        if name == "extLst" && !empty {
+            self.ext_depth += 1;
+        }
+        if self.ext_depth > 0 {
+            return;
+        }
         let _ = self.start_cell(name, e, empty)
             || self.start_furniture(name, e)
             || self.start_page(name, e)
@@ -2123,6 +2137,13 @@ impl SheetReader<'_> {
     /// plus the two elements that commit what they gathered.
     // TODO: too many flags by now; a small stack of open elements would replace them.
     fn end(&mut self, name: &str) {
+        if name == "extLst" {
+            self.ext_depth = self.ext_depth.saturating_sub(1);
+            return;
+        }
+        if self.ext_depth > 0 {
+            return;
+        }
         match name {
             "v" => self.in_value = false,
             "f" => self.in_formula = false,
@@ -2954,6 +2975,38 @@ mod tests {
         let sheet = book.sheet(0).expect("one sheet");
         assert_eq!(sheet.data_validations.len(), 1);
         assert_eq!(sheet.data_validations[0].formula1, "'Lists'!$A$1:$C$1");
+    }
+
+    #[test]
+    fn a_rule_inside_an_extension_is_not_read_as_the_sheets_own() {
+        // Excel 2010 keeps rules that refer to other sheets in `<extLst>`,
+        // under names the sheet's own rules and validations also use. They
+        // travel with the extension; read as the sheet's, each became a rule
+        // with no range, written back as `sqref=""`.
+        let book = read_xlsx_from(Cursor::new(package(concat!(
+            r#"<sheetData/><conditionalFormatting sqref="A1"><cfRule type="expression" priority="2">"#,
+            r#"<formula>A1>0</formula></cfRule></conditionalFormatting>"#,
+            r#"<extLst><ext uri="{78C0D931-6437-407d-A8EE-F0AAD7539E65}" "#,
+            r#"xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">"#,
+            r#"<x14:conditionalFormattings><x14:conditionalFormatting "#,
+            r#"xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">"#,
+            r#"<x14:cfRule type="expression" priority="1"><xm:f>Other!A1</xm:f></x14:cfRule>"#,
+            r#"<xm:sqref>B1</xm:sqref></x14:conditionalFormatting></x14:conditionalFormattings>"#,
+            r#"<x14:dataValidations count="1"><x14:dataValidation type="list">"#,
+            r#"<x14:formula1><xm:f>Other!$A$1:$A$3</xm:f></x14:formula1><xm:sqref>C1</xm:sqref>"#,
+            r#"</x14:dataValidation></x14:dataValidations></ext></extLst>"#
+        ))))
+        .expect("package reads");
+        let sheet = book.sheet(0).expect("one sheet");
+        assert_eq!(sheet.conditional_formats.len(), 1);
+        assert_eq!(sheet.conditional_formats[0].rules[0].formulas, ["A1>0"]);
+        assert!(sheet.data_validations.is_empty());
+        assert!(
+            sheet
+                .extensions
+                .as_deref()
+                .is_some_and(|x| x.contains("Other!A1"))
+        );
     }
 
     #[test]
