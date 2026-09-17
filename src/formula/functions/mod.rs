@@ -124,8 +124,32 @@ impl Arg {
 ///
 /// Names are matched upper-cased, as the parser hands them over.
 pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) -> Value {
+    let signature = crate::shared::biff_functions::by_name(name);
+    let class = |i: usize| signature.map(|s| s.arg_class(i));
     if let Some(f) = lazy(name) {
-        return f(engine, origin, args);
+        // A lazy function reads its own arguments, so a range handed to a
+        // value parameter is narrowed before it gets them.
+        let narrowed: Vec<_> = args
+            .iter()
+            .enumerate()
+            .map(|(i, e)| match class(i) {
+                Some(b'V') => engine.narrowed(origin, e),
+                _ => None,
+            })
+            .collect();
+        if narrowed.iter().all(Option::is_none) {
+            return f(engine, origin, args);
+        }
+        let args: Vec<Expr> = args
+            .iter()
+            .zip(narrowed)
+            .map(|(e, n)| match n {
+                Some(Ok(cell)) => cell,
+                Some(Err(err)) => Expr::Error(err),
+                None => e.clone(),
+            })
+            .collect();
+        return f(engine, origin, &args);
     }
     let eager = eager(name);
     let dated = dated(name);
@@ -142,8 +166,13 @@ pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) 
     let epoch = engine.book().epoch;
     let args: Vec<Arg> = args
         .iter()
-        .map(|e| Arg {
-            value: engine.eval_expr(origin, e),
+        .enumerate()
+        .map(|(i, e)| Arg {
+            value: match class(i) {
+                Some(b'V') => engine.eval_value(origin, e),
+                Some(b'A') => engine.in_array(|engine| engine.eval_expr(origin, e)),
+                _ => engine.eval_expr(origin, e),
+            },
             reference: is_reference(e),
         })
         .collect();
@@ -151,7 +180,6 @@ pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) 
         let values: Vec<Value> = args.into_iter().map(|a| a.value).collect();
         return f(&values);
     }
-    let signature = crate::shared::biff_functions::by_name(name);
     let run = |args: &[Arg]| {
         if let Some(e) = passed_error(name, signature, args) {
             return Value::Error(e);

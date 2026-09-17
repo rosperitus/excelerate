@@ -20,8 +20,12 @@
 - Implicit intersection: a formula stored in a cell that answers with a range
   shows the cell of that range in its own row or column (`=A1:A9` in B5 is
   A5; `INDEX(A1:D6,2,0)` in column C is C2), and `#VALUE!` when its row
-  misses the range. Array formulas keep the range whole. Only the formula's
-  final answer is intersected, not a range handed to an operator.
+  misses the range. The same holds for a range met by an operator or passed
+  to a value parameter (`=A1:A9*2`, `ABS(A1:A9)`, a defined name standing for
+  a range); array parameters (`SUMPRODUCT`) and array formulas keep the range
+  whole. A reference returned at run time by `IF`, `CHOOSE` or `OFFSET` is not
+  narrowed.
+- The `ARRAY` record of an xls file marks its formula as an array formula.
 
 ### Performance
 

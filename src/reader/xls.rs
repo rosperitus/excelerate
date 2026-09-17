@@ -176,6 +176,8 @@ struct Reader<'a> {
     /// `Exp` token, by their first cell: tokens, extra data, and whether the
     /// tokens are relative to the cell reading them.
     shared: HashMap<(u16, u16), Group>,
+    /// The area of the last `ARRAY` record, until the sheet takes it.
+    array: Option<Range>,
 }
 
 /// A shared or array formula: its tokens, their extra data, and whether the
@@ -198,6 +200,7 @@ impl<'a> Reader<'a> {
             context: Context::default(),
             name_records: Vec::new(),
             shared: HashMap::new(),
+            array: None,
         }
     }
 
@@ -466,6 +469,9 @@ impl<'a> Reader<'a> {
             }
             record::FORMULA => {
                 let formula = self.formula(data, r, c, at);
+                if let Some(area) = self.array.take() {
+                    sheet.array_formulas.push(area);
+                }
                 let cached = self.formula_result(data, at);
                 let value = match formula {
                     Some(formula) => CellValue::Formula {
@@ -497,6 +503,14 @@ impl<'a> Reader<'a> {
             if let Some((start, relative)) = group {
                 *at = next.next;
                 let first = (u16_at(next.data, 0), u16::from(next.data.get(4).copied()?));
+                if next.id == record::ARRAY {
+                    let corner = |r: u16, c: u8| {
+                        Some(CellRef::new(column(c.into()).ok()?, self::row(r).ok()?))
+                    };
+                    self.array = corner(first.0, next.data.get(4).copied()?)
+                        .zip(corner(u16_at(next.data, 2), next.data.get(5).copied()?))
+                        .map(|(a, b)| Range::new(a, b));
+                }
                 if next.id != record::TABLE {
                     let length = usize::from(u16_at(next.data, start - 2));
                     let tokens = next.data.get(start..start + length)?.to_vec();
@@ -1270,6 +1284,10 @@ mod tests {
         assert_eq!(text("A3").as_deref(), Some("A2*2"));
         assert_eq!(text("B1").as_deref(), Some("Rate"));
         assert_eq!(text("B2"), None, "the rest of an array keeps its value");
+        assert_eq!(
+            book.sheets()[0].array_formulas,
+            vec![Range::parse("B1:B2").unwrap()]
+        );
         assert_eq!(
             book.sheets()[0]
                 .get(CellRef::parse("B2").unwrap())

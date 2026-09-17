@@ -381,3 +381,47 @@ fn implicit_intersection_picks_the_formula_row() {
     assert_eq!(cached(&book, 0, "B7"), Some(21.0));
     assert_eq!(cached(&book, 0, "D3"), Some(10.0));
 }
+
+/// Inside a formula that is not an array formula a range met by an operator or
+/// a value parameter is one cell too; an array parameter and an array formula
+/// keep it whole.
+#[test]
+fn implicit_intersection_reaches_operators_and_parameters() {
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    for (i, n) in [-1.0, -2.0, -3.0].into_iter().enumerate() {
+        sheet.set(at(&format!("A{}", i + 1)), n);
+    }
+    sheet.set(at("B2"), formula("A1:A3*10"));
+    sheet.set(at("C2"), formula("ABS(A1:A3)"));
+    sheet.set(at("D2"), formula("SUM(A1:A3*2)"));
+    sheet.set(at("E2"), formula("SUMPRODUCT(A1:A3*2)"));
+    sheet.set(at("F2"), formula("IF(A1:A3<-1,7,0)"));
+    sheet.set(at("G2"), formula("Vals+1"));
+    sheet.set(at("H9"), formula("A1:A3*10"));
+    sheet.set(at("I1"), formula("SUM(A1:A3*2)"));
+    sheet
+        .array_formulas
+        .push(excelerate::coordinate::Range::parse("I1").unwrap());
+    book.add_sheet(sheet).unwrap();
+    book.defined_names.push(excelerate::model::DefinedName {
+        name: "Vals".to_owned(),
+        sheet: None,
+        formula: "S!$A$1:$A$3".to_owned(),
+        hidden: false,
+    });
+    recalculate(&mut book, None, &Options::default());
+
+    assert_eq!(cached(&book, 0, "B2"), Some(-20.0));
+    assert_eq!(cached(&book, 0, "C2"), Some(2.0));
+    assert_eq!(cached(&book, 0, "D2"), Some(-4.0));
+    assert_eq!(cached(&book, 0, "E2"), Some(-12.0));
+    assert_eq!(cached(&book, 0, "F2"), Some(7.0));
+    assert_eq!(cached(&book, 0, "G2"), Some(-1.0));
+    assert!(matches!(
+        book.sheet(0).unwrap().get(at("H9")).map(|c| &c.value),
+        Some(CellValue::Formula { cached: Some(v), .. })
+            if **v == CellValue::Error(excelerate::error::CellError::Value)
+    ));
+    assert_eq!(cached(&book, 0, "I1"), Some(-12.0));
+}
