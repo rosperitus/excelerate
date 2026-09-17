@@ -49,7 +49,7 @@ fn fitted(args: &[Arg], exponential: bool) -> Value {
     row.push(Value::Number(show(fit.coefficients[0])));
 
     if !request.stats {
-        return Value::Array(vec![row]);
+        return Value::array(vec![row]);
     }
     let width = row.len();
     let blank = |mut line: Vec<Value>| {
@@ -68,7 +68,7 @@ fn fitted(args: &[Arg], exponential: bool) -> Value {
         .map(|e| Value::Number(*e))
         .collect();
     errors.push(Value::Number(fit.errors[0]));
-    Value::Array(vec![
+    Value::array(vec![
         row,
         errors,
         blank(vec![
@@ -116,9 +116,9 @@ fn predicted(args: &[Arg], exponential: bool) -> Value {
     // The answer takes the shape of the values it was asked about: a row of
     // new values gives a row back, a column gives a column.
     if request.new_x_is_row {
-        Value::Array(vec![predictions])
+        Value::array(vec![predictions])
     } else {
-        Value::Array(predictions.into_iter().map(|v| vec![v]).collect())
+        Value::array(predictions.into_iter().map(|v| vec![v]).collect())
     }
 }
 

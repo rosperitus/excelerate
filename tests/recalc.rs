@@ -324,3 +324,23 @@ fn one_cell_recalculates_by_itself() {
     assert!(!recalculate_cell(&mut book, 0, at("Z99")));
     assert!(!recalculate_cell(&mut book, 9, at("A3")));
 }
+
+/// An array formula entered over a column keeps the whole array in its first
+/// cell and the rest of it as stored values below. Read through a range, each
+/// cell is one value: the first cell must not bring the whole array along.
+#[test]
+fn an_array_formula_is_one_value_when_its_cell_is_read() {
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("First").unwrap();
+    sheet.set(at("A1"), formula("TRANSPOSE({1,2,3})"));
+    sheet.set(at("A2"), 2.0);
+    sheet.set(at("A3"), 3.0);
+    sheet.set(at("B1"), formula("COUNTA(A1:A3)"));
+    sheet.set(at("B2"), formula("SUM(A1:A3)"));
+    sheet.set(at("B3"), formula("A1*10"));
+    book.add_sheet(sheet).unwrap();
+    recalculate(&mut book, None, &Options::default());
+    assert_eq!(cached(&book, 0, "B1"), Some(3.0));
+    assert_eq!(cached(&book, 0, "B2"), Some(6.0));
+    assert_eq!(cached(&book, 0, "B3"), Some(10.0));
+}

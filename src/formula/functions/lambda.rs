@@ -102,7 +102,7 @@ pub fn map(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
         }
         out.push(line);
     }
-    Value::Array(out)
+    Value::array(out)
 }
 
 /// `REDUCE(initial, array, lambda)` - the array folded into one value.
@@ -140,7 +140,7 @@ fn fold(engine: &mut Engine<'_>, origin: Origin, args: &[Expr], keep_steps: bool
         steps.push(line);
     }
     if keep_steps {
-        Value::Array(steps)
+        Value::array(steps)
     } else {
         total
     }
@@ -180,16 +180,16 @@ fn by_line(engine: &mut Engine<'_>, origin: Origin, args: &[Expr], rows: bool) -
     let mut out = Vec::with_capacity(lines.len());
     for line in lines {
         let argument = if rows {
-            Value::Array(vec![line])
+            Value::array(vec![line])
         } else {
-            Value::Array(line.into_iter().map(|v| vec![v]).collect())
+            Value::array(line.into_iter().map(|v| vec![v]).collect())
         };
         out.push(engine.apply(origin, &function, vec![argument]));
     }
     if rows {
-        Value::Array(out.into_iter().map(|v| vec![v]).collect())
+        Value::array(out.into_iter().map(|v| vec![v]).collect())
     } else {
-        Value::Array(vec![out])
+        Value::array(vec![out])
     }
 }
 
@@ -237,7 +237,7 @@ pub fn makearray(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Valu
         }
         out.push(line);
     }
-    Value::Array(out)
+    Value::array(out)
 }
 
 /// Checks that what was passed where a function belongs really is one, so
@@ -255,7 +255,7 @@ fn callable(value: &Value) -> Option<Value> {
 /// same way.
 fn grid_of(value: &Value) -> Vec<Vec<Value>> {
     match value {
-        Value::Array(rows) if !rows.is_empty() => rows.clone(),
+        Value::Array(rows) if !rows.is_empty() => rows.as_ref().clone(),
         other => vec![vec![other.clone()]],
     }
 }

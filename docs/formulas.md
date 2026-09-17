@@ -144,14 +144,21 @@ pub enum Value {
     Text(String),
     Bool(bool),
     Error(CellError),
-    Array(Vec<Vec<Value>>),
+    Array(Rc<Vec<Vec<Value>>>),
+    Lambda(Rc<Lambda>),
 }
 ```
 
 Excel's own coercion rules apply throughout, including the comparison order
 that trips people up: numbers < text < `FALSE` < `TRUE`. A formula that returns
 an array shows its top-left value in a cell - there is no spill range here, and
-one cell is one cell.
+one cell is one cell. A reference to that cell reads the value it shows;
+`A1#` (`ANCHORARRAY`) reads the array behind it.
+
+An array is shared, not owned: a range is read once and handed to every
+formula that asks for it, so `INDEX(Data, ROW(), 1)` down forty thousand rows
+does not copy `Data` forty thousand times. Make one with `Value::array(rows)`;
+take the rows out with `Rc::unwrap_or_clone`.
 
 ## About that cached result
 
@@ -168,7 +175,8 @@ So: trust it for display, recalculate before you rely on it.
 Defined names resolve during evaluation. A sheet-scoped name beats a
 workbook-scoped one of the same name - that is how two sheets can give one name
 two meanings - and a name that refers to itself yields `#REF!` instead of
-looping.
+looping. `INDIRECT("Sales")` follows a name that stands for a reference; one
+that stands for a constant is `#REF!`, as in Excel.
 
 ## Errors
 

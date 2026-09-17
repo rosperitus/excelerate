@@ -15,6 +15,7 @@ use crate::formula::value::{Value, compare};
 use crate::model::{CellValue, Spreadsheet};
 use crate::progress::{Options, Stage};
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 /// Where a formula sits: which sheet it belongs to and which cell holds it.
 ///
@@ -77,6 +78,22 @@ pub struct Engine<'a> {
     /// whole cost of a recalculation. An empty sheet stays `None` and is asked
     /// again, which costs nothing: it has no cells to walk.
     dims: Vec<Option<Range>>,
+    /// Rectangles already read, by sheet. A column a thousand formulas read,
+    /// as `SKEW(E$17:E$316)` down a sheet, would otherwise be rebuilt cell by
+    /// cell a thousand times.
+    ranges: HashMap<(usize, Range), Value>,
+    /// How many times a cell was read while it was still being computed. A
+    /// rectangle read across such a moment holds a stand-in error, not the
+    /// cell's value, and must not be kept.
+    cycle_hits: u64,
+    /// The defined names by their lower-cased name, built on first use. A
+    /// book with seven hundred names and formulas naming them on every row
+    /// cannot afford a walk of the list per mention.
+    name_index: Option<HashMap<String, Vec<usize>>>,
+    /// Formula texts already parsed that are read again and again: what a
+    /// defined name stands for, and the text `INDIRECT` is handed. `None` for
+    /// a text that does not parse.
+    parsed: HashMap<String, Option<Rc<Expr>>>,
 }
 
 impl<'a> Engine<'a> {
@@ -91,6 +108,10 @@ impl<'a> Engine<'a> {
             custom: None,
             scope: Vec::new(),
             dims: vec![None; book.sheets().len()],
+            ranges: HashMap::new(),
+            cycle_hits: 0,
+            name_index: None,
+            parsed: HashMap::new(),
         }
     }
 
@@ -128,15 +149,20 @@ impl<'a> Engine<'a> {
     /// is what lets `ISBLANK` and `COUNTBLANK` tell the two apart. An answer
     /// covering a single cell is likewise handed back as that cell's value.
     pub fn eval(&mut self, origin: Origin, formula: &str) -> Value {
-        let value = match parse(formula) {
-            Ok(expr) => self.eval_expr(origin, &expr),
+        match parse(formula) {
+            Ok(expr) => self.eval_tree(origin, &expr),
             Err(_) => Value::Error(CellError::Name),
-        };
+        }
+    }
+
+    /// The same for a formula already parsed.
+    pub fn eval_tree(&mut self, origin: Origin, expr: &Expr) -> Value {
+        let value = self.eval_expr(origin, expr);
         // A result of one cell is that cell: `INDEX(A1:A3,2)` is a number, not
         // a one-element array, and neither is `{5}`.
         let value = match value {
             Value::Array(rows) if rows.len() == 1 && rows[0].len() == 1 => {
-                rows.into_iter().next().and_then(|r| r.into_iter().next())
+                rows.first().and_then(|r| r.first()).cloned()
             }
             other => Some(other),
         };
@@ -147,7 +173,26 @@ impl<'a> Engine<'a> {
     }
 
     /// The value of one cell, computing its formula if it holds one.
+    ///
+    /// A cell holds one value. A formula that works out to an array -
+    /// `{=TRANSPOSE(...)}` entered over a column - shows its top left value in
+    /// its own cell, and the rest of its range holds the rest as stored
+    /// values; read through a reference, the whole array would otherwise be
+    /// counted again for every cell. [`Engine::spilled`] has the array whole.
     pub fn cell(&mut self, sheet: usize, at: CellRef) -> Value {
+        match self.spilled(sheet, at) {
+            Value::Array(rows) => rows
+                .first()
+                .and_then(|row| row.first())
+                .cloned()
+                .unwrap_or(Value::Blank),
+            other => other,
+        }
+    }
+
+    /// What a cell's formula works out to, an array included, which is what
+    /// `A1#` asks for.
+    pub fn spilled(&mut self, sheet: usize, at: CellRef) -> Value {
         if let Some(v) = self.cache.get(&(sheet, at)) {
             return v.clone();
         }
@@ -171,6 +216,7 @@ impl<'a> Engine<'a> {
                 // ever. Excel answers 0 and warns; making it visible is more
                 // use than a silent zero.
                 if !self.running.insert((sheet, at)) {
+                    self.cycle_hits += 1;
                     return Value::Error(CellError::Ref);
                 }
                 if self.running.len() > MAX_CHAIN_DEPTH {
@@ -207,7 +253,7 @@ impl<'a> Engine<'a> {
             Expr::Binary(op, a, b) => self.binary(origin, *op, a, b),
             Expr::Call { name, args } => functions::call(self, origin, name, args),
             Expr::Apply { callee, args } => self.apply_expr(origin, callee, args),
-            Expr::Array(rows) => Value::Array(
+            Expr::Array(rows) => Value::array(
                 rows.iter()
                     .map(|r| r.iter().map(|e| self.eval_expr(origin, e)).collect())
                     .collect(),
@@ -297,32 +343,60 @@ impl<'a> Engine<'a> {
             Some((sheet, bare)) => (self.sheet_index(origin, Some(sheet)), bare),
             None => (Some(origin.sheet), name),
         };
-        let wanted = bare.to_lowercase();
-        let found = self
-            .book
-            .defined_names
-            .iter()
-            .filter(|d| d.name.to_lowercase() == wanted)
-            .max_by_key(|d| usize::from(d.sheet.is_some() && d.sheet == scope));
-        let Some(definition) = found else {
+        let Some(found) = self.defined_name(bare, scope) else {
             return Value::Error(CellError::Name);
         };
-        // A name whose scope is another sheet is not in view from here.
-        if definition.sheet.is_some() && definition.sheet != scope {
-            return Value::Error(CellError::Name);
-        }
-        let formula = definition.formula.clone();
-        let key = wanted;
+        let key = bare.to_lowercase();
         if !self.resolving.insert(key.clone()) {
             // A name that stands for itself has nothing to stand for.
             return Value::Error(CellError::Ref);
         }
-        let value = match parse(&formula) {
-            Ok(expr) => self.eval_expr(origin, &expr),
-            Err(_) => Value::Error(CellError::Name),
+        let formula = self.book.defined_names[found].formula.as_str();
+        let value = match self.parsed(formula) {
+            Some(expr) => self.eval_expr(origin, &expr),
+            None => Value::Error(CellError::Name),
         };
         self.resolving.remove(&key);
         value
+    }
+
+    /// The defined name `name` means from a sheet, by its position in the
+    /// book's list: the sheet's own name wins over the workbook's, and a name
+    /// scoped to another sheet is not in view.
+    pub(crate) fn defined_name(&mut self, name: &str, scope: Option<usize>) -> Option<usize> {
+        let book = self.book;
+        let index = self.name_index.get_or_insert_with(|| {
+            let mut index: HashMap<String, Vec<usize>> = HashMap::new();
+            for (i, defined) in book.defined_names.iter().enumerate() {
+                index
+                    .entry(defined.name.to_lowercase())
+                    .or_default()
+                    .push(i);
+            }
+            index
+        });
+        let candidates = index.get(&name.to_lowercase())?;
+        let names = &book.defined_names;
+        candidates
+            .iter()
+            .copied()
+            .find(|&i| names[i].sheet.is_some() && names[i].sheet == scope)
+            .or_else(|| {
+                candidates
+                    .iter()
+                    .copied()
+                    .find(|&i| names[i].sheet.is_none())
+            })
+    }
+
+    /// A formula text parsed once however often it is asked for.
+    pub(crate) fn parsed(&mut self, text: &str) -> Option<Rc<Expr>> {
+        if let Some(expr) = self.parsed.get(text) {
+            return expr.clone();
+        }
+        let expr = parse(text).ok().map(Rc::new);
+        self.parsed.insert(text.to_owned(), expr.clone());
+        expr
     }
 
     /// Reads a reference, as a scalar for one cell and as an array otherwise.
@@ -444,6 +518,10 @@ impl<'a> Engine<'a> {
         if (range.width() as usize).saturating_mul(range.height() as usize) > MAX_RANGE_CELLS {
             return Value::Error(CellError::Value);
         }
+        if let Some(value) = self.ranges.get(&(index, range)) {
+            return value.clone();
+        }
+        let hits = self.cycle_hits;
         let rows = (range.start.row.index()..=range.end.row.index())
             .filter_map(Row::new)
             .map(|row| {
@@ -453,7 +531,11 @@ impl<'a> Engine<'a> {
                     .collect()
             })
             .collect();
-        Value::Array(rows)
+        let value = Value::array(rows);
+        if self.cycle_hits == hits {
+            self.ranges.insert((index, range), value.clone());
+        }
+        value
     }
 
     /// Trims a reference to the part of the sheet that holds anything.
@@ -527,19 +609,17 @@ impl<'a> Engine<'a> {
                     .collect()
             })
             .collect();
-        Value::Array(rows)
+        Value::array(rows)
     }
 
     pub(crate) fn sheet_index(&self, origin: Origin, sheet: Option<&str>) -> Option<usize> {
         match sheet {
             None => Some(origin.sheet),
-            Some(name) => {
-                let name = name.to_lowercase();
-                self.book
-                    .sheets()
-                    .iter()
-                    .position(|s| s.title().to_lowercase() == name)
-            }
+            Some(name) => self
+                .book
+                .sheets()
+                .iter()
+                .position(|s| same_name(s.title(), name)),
         }
     }
 
@@ -599,18 +679,36 @@ impl<'a> Engine<'a> {
         let mut rows = Vec::new();
         for v in areas {
             match v {
-                Value::Array(mut r) => rows.append(&mut r),
+                Value::Array(r) => rows.extend(std::rc::Rc::unwrap_or_clone(r)),
                 other => rows.push(vec![other]),
             }
         }
-        Value::Array(rows)
+        Value::array(rows)
     }
 }
 
+/// Whether two sheet or defined names are the same name. Excel compares them
+/// without case, Cyrillic included, and every qualified reference and every
+/// name in a formula asks this, so it compares in place rather than
+/// lower-casing copies of both.
+pub(crate) fn same_name(a: &str, b: &str) -> bool {
+    a == b
+        || a.chars()
+            .flat_map(char::to_lowercase)
+            .eq(b.chars().flat_map(char::to_lowercase))
+}
+
 /// Applies a one-operand operator.
+///
+/// A leading `+` is no operator at all in Excel: `=+Sheet!A1` is how Lotus
+/// users write a reference, and it gives the text or the logical the cell
+/// holds, not `#VALUE!` for failing to be a number.
 fn unary(op: UnaryOp, v: &Value) -> Value {
+    if op == UnaryOp::Plus {
+        return v.clone();
+    }
     if let Value::Array(rows) = v {
-        return Value::Array(
+        return Value::array(
             rows.iter()
                 .map(|r| r.iter().map(|x| unary(op, x)).collect())
                 .collect(),
@@ -699,7 +797,7 @@ fn broadcast(op: BinaryOp, a: &Value, b: &Value) -> Value {
                 .collect()
         })
         .collect();
-    Value::Array(out)
+    Value::array(out)
 }
 
 /// Rows and columns a value covers; a scalar covers one of each.
@@ -769,7 +867,9 @@ pub fn spanned(expr: &Expr) -> Option<(Option<String>, Range)> {
 /// wanted often enough to have its own entry point, so a caller with neither
 /// passes `&Options::default()`.
 pub fn recalculate(book: &mut Spreadsheet, sheet: Option<usize>, options: &Options<'_>) -> usize {
-    let deps = Dependencies::of(book);
+    // The trees are kept beside the index for this one pass, so each formula
+    // is parsed once rather than once to index it and again to compute it.
+    let (deps, trees) = Dependencies::of_with_trees(book);
     let mut results = Vec::new();
     {
         // Formulas the index knows come first, each after what it reads; one
@@ -792,12 +892,8 @@ pub fn recalculate(book: &mut Spreadsheet, sheet: Option<usize>, options: &Optio
             let Node {
                 sheet: index, at, ..
             } = deps.formulas[i];
-            if let Some(CellValue::Formula { formula, .. }) =
-                book.sheet(index).and_then(|s| s.get(at)).map(|c| &c.value)
-            {
-                let value = engine.eval(Origin::new(index, at), formula);
-                results.push((index, at, value));
-            }
+            let value = engine.eval_tree(Origin::new(index, at), &trees[i]);
+            results.push((index, at, value));
         }
         for (index, s) in book.sheets().iter().enumerate() {
             if sheet.is_some_and(|only| only != index) {
@@ -934,15 +1030,22 @@ impl Dependencies {
     /// Reads every formula of the workbook and remembers what it depends on.
     #[must_use]
     pub fn of(book: &Spreadsheet) -> Self {
+        Self::of_with_trees(book).0
+    }
+
+    /// The same, with each formula's parsed tree at the same position.
+    fn of_with_trees(book: &Spreadsheet) -> (Self, Vec<Expr>) {
         let mut formulas = Vec::new();
+        let mut trees = Vec::new();
         for (index, sheet) in book.sheets().iter().enumerate() {
             for (at, cell) in sheet.iter() {
-                if let Some(node) = node_of(book, index, at, &cell.value) {
+                if let Some((node, tree)) = node_of(book, index, at, &cell.value) {
                     formulas.push(node);
+                    trees.push(tree);
                 }
             }
         }
-        Self { formulas }
+        (Self { formulas }, trees)
     }
 
     /// How many formulas the index holds.
@@ -963,7 +1066,7 @@ impl Dependencies {
         self.formulas
             .retain(|node| node.sheet != sheet || node.at != at);
         if let Some(value) = book.sheet(sheet).and_then(|s| s.get(at)).map(|c| &c.value)
-            && let Some(node) = node_of(book, sheet, at, value)
+            && let Some((node, _)) = node_of(book, sheet, at, value)
         {
             self.formulas.push(node);
         }
@@ -994,32 +1097,67 @@ impl Dependencies {
             list.sort_unstable();
         }
 
-        // `readers[i]` are the formulas waiting on `i`; `waiting[i]` counts
-        // what `i` itself is waiting for.
-        let mut readers: HashMap<usize, Vec<usize>> = HashMap::new();
+        // The graph goes through the ranges rather than straight from formula
+        // to formula: a formula waits on each distinct range it reads, and a
+        // range waits on the formulas inside it. Edges straight between
+        // formulas number the reads times the formulas inside each, and fifty
+        // thousand formulas reading one table of fifty thousand is billions of
+        // them; through the range it is fifty thousand plus fifty thousand.
+        //
+        // A formula reading a range it sits in waits on itself. That is a
+        // circular reference, and it is left for the tail below with the
+        // others, where the engine answers it.
+        let mut range_ids: HashMap<(usize, Range), usize> = HashMap::new();
+        // Per range: how many formulas inside it are not placed yet, and the
+        // formulas reading it.
+        let mut range_left: Vec<usize> = Vec::new();
+        let mut range_readers: Vec<Vec<usize>> = Vec::new();
+        // Per formula: the ranges it sits in, and how many ranges it waits on.
+        let mut member_of: HashMap<usize, Vec<usize>> = HashMap::new();
         let mut waiting: HashMap<usize, usize> = nodes.iter().map(|&i| (i, 0)).collect();
         for &i in nodes {
             let mut seen = HashSet::new();
-            for (sheet, range) in &self.formulas[i].reads {
-                for j in formulas_in(&by_sheet, *sheet, *range) {
-                    if j != i && seen.insert(j) {
-                        readers.entry(j).or_default().push(i);
-                        *waiting.entry(i).or_default() += 1;
+            for &(sheet, range) in &self.formulas[i].reads {
+                let id = *range_ids.entry((sheet, range)).or_insert_with(|| {
+                    let id = range_left.len();
+                    let members = formulas_in(&by_sheet, sheet, range);
+                    for &j in &members {
+                        member_of.entry(j).or_default().push(id);
                     }
+                    range_left.push(members.len());
+                    range_readers.push(Vec::new());
+                    id
+                });
+                if seen.insert(id) {
+                    range_readers[id].push(i);
+                    *waiting.entry(i).or_default() += 1;
                 }
             }
         }
 
         let mut queue: Vec<usize> = nodes.iter().copied().filter(|i| waiting[i] == 0).collect();
+        // A range with no formula inside is ready from the start.
+        let mut ready: Vec<usize> = (0..range_left.len())
+            .filter(|&id| range_left[id] == 0)
+            .collect();
         let mut order = Vec::with_capacity(nodes.len());
-        while let Some(i) = queue.pop() {
-            order.push(i);
-            for &r in readers.get(&i).into_iter().flatten() {
-                if let Some(left) = waiting.get_mut(&r) {
-                    *left -= 1;
-                    if *left == 0 {
-                        queue.push(r);
+        loop {
+            while let Some(id) = ready.pop() {
+                for &r in &range_readers[id] {
+                    if let Some(left) = waiting.get_mut(&r) {
+                        *left -= 1;
+                        if *left == 0 {
+                            queue.push(r);
+                        }
                     }
+                }
+            }
+            let Some(i) = queue.pop() else { break };
+            order.push(i);
+            for &id in member_of.get(&i).into_iter().flatten() {
+                range_left[id] -= 1;
+                if range_left[id] == 0 {
+                    ready.push(id);
                 }
             }
         }
@@ -1144,19 +1282,27 @@ fn formulas_in(
 }
 
 /// The index entry for a cell, if it holds a formula that parses.
-fn node_of(book: &Spreadsheet, sheet: usize, at: CellRef, value: &CellValue) -> Option<Node> {
+fn node_of(
+    book: &Spreadsheet,
+    sheet: usize,
+    at: CellRef,
+    value: &CellValue,
+) -> Option<(Node, Expr)> {
     let CellValue::Formula { formula, .. } = value else {
         return None;
     };
     let expr = parse(formula).ok()?;
     let (mut reads, mut always) = (Vec::new(), false);
     collect_refs(&expr, sheet, book, &mut reads, &mut always);
-    Some(Node {
-        sheet,
-        at,
-        reads,
-        always,
-    })
+    Some((
+        Node {
+            sheet,
+            at,
+            reads,
+            always,
+        },
+        expr,
+    ))
 }
 
 /// Recomputes only the formulas that depend on `changed`, directly or through
@@ -1194,12 +1340,10 @@ fn collect_refs(
         Expr::Range { sheet, range, .. } => {
             let index = match sheet {
                 None => Some(own_sheet),
-                Some(name) => {
-                    let name = name.to_lowercase();
-                    book.sheets()
-                        .iter()
-                        .position(|s| s.title().to_lowercase() == name)
-                }
+                Some(name) => book
+                    .sheets()
+                    .iter()
+                    .position(|s| same_name(s.title(), name)),
             };
             if let Some(index) = index {
                 out.push((index, *range));

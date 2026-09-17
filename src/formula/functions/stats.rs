@@ -1079,7 +1079,7 @@ pub fn mode_mult(args: &[Arg]) -> Value {
             out.push(vec![Value::Number(*n)]);
         }
     }
-    Value::Array(out)
+    Value::array(out)
 }
 
 /// `FREQUENCY(data, bins)` - how many of the data fall in each bin, as a
@@ -1109,7 +1109,7 @@ pub fn frequency(args: &[Arg]) -> Value {
         let bin = edges.iter().position(|edge| value <= *edge);
         counts[bin.unwrap_or(edges.len())] += 1.0;
     }
-    Value::Array(counts.into_iter().map(|n| vec![Value::Number(n)]).collect())
+    Value::array(counts.into_iter().map(|n| vec![Value::Number(n)]).collect())
 }
 
 /// `PROB(values, probabilities, low, [high])` - the chance of landing in a

@@ -212,7 +212,7 @@ fn position_of(headings: &[Value], name: &str) -> Option<usize> {
 /// An argument as a rectangle of values.
 fn grid_of(arg: &Arg) -> Option<Vec<Vec<Value>>> {
     if let Value::Array(rows) = &arg.value {
-        return Some(rows.clone());
+        return Some(rows.as_ref().clone());
     }
     // A single cell is not a table.
     let flat: Vec<Value> = cells(arg).into_iter().cloned().collect();

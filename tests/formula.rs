@@ -122,6 +122,11 @@ fn arithmetic_and_operators() {
         ("2^3^2", "64"),
         ("50%", "0.5"),
         ("2%*100", "2"),
+        // A leading plus is not an operator: text and logicals pass through,
+        // as `=+Sheet!A1` in an old workbook expects. A minus still converts.
+        ("+\"abc\"", "\"abc\""),
+        ("+TRUE", "TRUE"),
+        ("-\"abc\"", "#VALUE!"),
         ("\"a\"&1", "\"a1\""),
         ("\"a\"&TRUE", "\"aTRUE\""),
         ("1&\"\"", "\"1\""),
@@ -658,6 +663,10 @@ fn references_can_be_built_and_moved_while_the_formula_runs() {
         ("SUM(INDIRECT(\"A1:A3\"))", "6"),
         ("INDIRECT(\"1+1\")", "#REF!"),
         ("INDIRECT(\"nonsense\")", "#REF!"),
+        // A defined name that is a reference is followed; one that is a
+        // constant is no reference to follow.
+        ("SUM(INDIRECT(\"Числа\"))", "6"),
+        ("INDIRECT(\"Ставка\")", "#REF!"),
         // R1C1 notation is a different language, and not one this reads.
         ("INDIRECT(\"A1\",FALSE)", "#REF!"),
         ("SUM(INDIRECT(\"Data!A1:A3\"))", "6"),
@@ -1357,9 +1366,9 @@ fn implicit_intersection_takes_the_caller_own_row_or_column() {
 
 #[test]
 fn anchorarray_hands_back_the_whole_array_a_cell_computed() {
-    // Nothing spills here, and reading a cell whose formula gave an array
-    // already hands back that array, so `ANCHORARRAY` says explicitly what a
-    // plain reference does anyway. What differs is `SINGLE`, which narrows.
+    // Nothing spills here: a cell whose formula gave an array shows its top
+    // left value, and a plain reference reads that, as it reads any cell.
+    // `ANCHORARRAY` - `F1#` - is what asks for the array behind it.
     let mut wb = book();
     let sheet = wb.sheet_mut(0).unwrap();
     sheet.set(
@@ -1372,7 +1381,7 @@ fn anchorarray_hands_back_the_whole_array_a_cell_computed() {
     let mut engine = Engine::new(&wb);
     let origin = Origin::new(0, at("Z100"));
     assert_eq!(show(&engine.eval(origin, "ANCHORARRAY(F1)")), "{1 2; 3 4}");
-    assert_eq!(show(&engine.eval(origin, "F1")), "{1 2; 3 4}");
+    assert_eq!(show(&engine.eval(origin, "F1")), "1");
     assert_eq!(show(&engine.eval(origin, "SINGLE(F1)")), "1");
     // The anchor is one cell, not a range.
     assert_eq!(show(&engine.eval(origin, "ANCHORARRAY(A1:A3)")), "#REF!");

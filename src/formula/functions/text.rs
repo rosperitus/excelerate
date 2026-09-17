@@ -734,7 +734,7 @@ pub fn textsplit(args: &[Arg]) -> Value {
     }
     // A ragged split is padded, the way the stacking functions pad.
     let width = rows.iter().map(Vec::len).max().unwrap_or(0);
-    Value::Array(
+    Value::array(
         rows.into_iter()
             .map(|mut row| {
                 while row.len() < width {

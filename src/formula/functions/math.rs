@@ -765,7 +765,7 @@ pub fn munit(args: &[Arg]) -> Value {
             reason = "bounded to 1..=1000 on the line above"
         )]
         let size = n as usize;
-        Value::Array(
+        Value::array(
             (0..size)
                 .map(|r| {
                     (0..size)
@@ -802,7 +802,7 @@ pub fn mmult(args: &[Arg]) -> Value {
                 .collect()
         })
         .collect();
-    Value::Array(product)
+    Value::array(product)
 }
 
 /// `MDETERM(array)` - the determinant, by the same elimination that inverts.
@@ -825,7 +825,7 @@ pub fn minverse(args: &[Arg]) -> Value {
         return Value::Error(CellError::Value);
     };
     match crate::formula::functions::regression::invert_matrix(&square) {
-        Some(inverse) => Value::Array(
+        Some(inverse) => Value::array(
             inverse
                 .into_iter()
                 .map(|row| row.into_iter().map(|n| Value::Number(tidy(n))).collect())
@@ -951,7 +951,7 @@ pub fn sequence(args: &[Arg]) -> Value {
     if rows.saturating_mul(columns) > 1_000_000 {
         return Value::Error(CellError::Num);
     }
-    Value::Array(
+    Value::array(
         (0..rows)
             .map(|r| {
                 (0..columns)
@@ -1305,8 +1305,9 @@ fn aggregate_by_code(
 /// A value with its errors taken out, for the options that ignore them.
 fn without_errors(value: Value) -> Value {
     match value {
-        Value::Array(rows) => Value::Array(
-            rows.into_iter()
+        Value::Array(rows) => Value::array(
+            std::rc::Rc::unwrap_or_clone(rows)
+                .into_iter()
                 .map(|row| {
                     row.into_iter()
                         .map(|v| {
@@ -1395,7 +1396,7 @@ pub fn randarray(args: &[Arg]) -> Value {
     let (Some(rows), Some(columns)) = (size(rows), size(columns)) else {
         return Value::Error(CellError::Value);
     };
-    Value::Array(
+    Value::array(
         (0..rows)
             .map(|_| {
                 (0..columns)

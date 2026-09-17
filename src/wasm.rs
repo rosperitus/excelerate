@@ -1135,7 +1135,7 @@ fn js_to_value(value: &JsValue) -> Value {
                 Err(one) => vec![js_to_value(&one)],
             })
             .collect();
-        return Value::Array(grid);
+        return Value::array(grid);
     }
     Value::Blank
 }
@@ -1160,7 +1160,7 @@ fn value_to_js_deep(value: &Value) -> JsValue {
     match value {
         Value::Array(rows) => {
             let out = js_sys::Array::new();
-            for row in rows {
+            for row in rows.iter() {
                 let line = js_sys::Array::new();
                 for cell in row {
                     line.push(&value_to_js_deep(cell));

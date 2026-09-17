@@ -7,6 +7,7 @@ use crate::formula::parser::Expr;
 use crate::formula::value::{Value, compare};
 use crate::{CellRef, Col, Range, Row};
 use std::cmp::Ordering;
+use std::rc::Rc;
 
 /// `ROW([reference])` - the row of the reference, or of the cell asking.
 ///
@@ -42,8 +43,8 @@ fn position(engine: &mut Engine<'_>, origin: Origin, args: &[Expr], want_rows: b
             match (line.len(), want_rows) {
                 (1, _) => line[0].clone(),
                 // A column of numbers for `ROW`, a row of them for `COLUMN`.
-                (_, true) => Value::Array(line.into_iter().map(|v| vec![v]).collect()),
-                (_, false) => Value::Array(vec![line]),
+                (_, true) => Value::array(line.into_iter().map(|v| vec![v]).collect()),
+                (_, false) => Value::array(vec![line]),
             }
         }
         [other] => {
@@ -153,13 +154,13 @@ pub fn index(args: &[Arg]) -> Value {
             .unwrap_or(Value::Error(CellError::Ref)),
         (Position::At(r), Position::All) => grid.get(r).map_or_else(
             || Value::Error(CellError::Ref),
-            |line| Value::Array(vec![line.clone()]),
+            |line| Value::array(vec![line.clone()]),
         ),
         (Position::All, Position::At(c)) => {
             if grid.iter().any(|line| c >= line.len()) {
                 return Value::Error(CellError::Ref);
             }
-            Value::Array(grid.iter().map(|line| vec![line[c].clone()]).collect())
+            Value::array(grid.iter().map(|line| vec![line[c].clone()]).collect())
         }
         // Both zero: the whole array.
         (Position::All, Position::All) => Value::Array(grid),
@@ -321,20 +322,31 @@ fn table_lookup(args: &[Arg], vertical: bool) -> Value {
     cell.cloned().unwrap_or(Value::Error(CellError::Ref))
 }
 
+/// A value as a rectangle of its own, for a function that reorders or
+/// rebuilds the rows.
+fn owned_grid(v: &Value) -> Vec<Vec<Value>> {
+    Rc::unwrap_or_clone(as_grid(v))
+}
+
 /// A value as a rectangle, so a scalar and a range can be walked the same way.
-fn as_grid(v: &Value) -> Vec<Vec<Value>> {
+///
+/// Shared with the value, not copied: `INDEX` picking one cell out of a
+/// table of forty thousand must not copy the forty thousand. A function that
+/// reorders the rows takes its own copy with [`Rc::unwrap_or_clone`].
+fn as_grid(v: &Value) -> Rc<Vec<Vec<Value>>> {
     match v {
-        Value::Array(rows) => rows.clone(),
-        other => vec![vec![other.clone()]],
+        Value::Array(rows) => Rc::clone(rows),
+        other => Rc::new(vec![vec![other.clone()]]),
     }
 }
 
 /// A value as a flat list, for the functions that search a single row or
-/// column.
-fn as_list(v: &Value) -> Vec<Value> {
+/// column. Borrowed from the value: a search reads the list, and copying a
+/// column of text to look for one entry in it cost more than the search.
+fn as_list(v: &Value) -> Vec<&Value> {
     match v {
-        Value::Array(rows) => rows.iter().flat_map(|r| r.iter().cloned()).collect(),
-        other => vec![other.clone()],
+        Value::Array(rows) => rows.iter().flatten().collect(),
+        other => vec![other],
     }
 }
 
@@ -351,12 +363,12 @@ pub fn transpose(args: &[Arg]) -> Value {
     let [arg] = args else {
         return Value::Error(CellError::Value);
     };
-    let grid = as_grid(&arg.value);
+    let grid = owned_grid(&arg.value);
     let width = grid.first().map_or(0, Vec::len);
     let flipped = (0..width)
         .map(|c| grid.iter().map(|row| row[c].clone()).collect())
         .collect();
-    Value::Array(flipped)
+    Value::array(flipped)
 }
 
 /// `AREAS(reference)` - how many separate rectangles a reference names.
@@ -484,7 +496,7 @@ pub fn sort(args: &[Arg]) -> Value {
     let (Ok(index), Ok(order)) = (number(0, 1.0), number(1, 1.0)) else {
         return Value::Error(CellError::Value);
     };
-    let mut grid = as_grid(&array.value);
+    let mut grid = owned_grid(&array.value);
     let width = grid.first().map_or(0, Vec::len);
     let Some(column) = index_within(index, width) else {
         return Value::Error(CellError::Value);
@@ -498,7 +510,7 @@ pub fn sort(args: &[Arg]) -> Value {
             ordering
         }
     });
-    Value::Array(grid)
+    Value::array(grid)
 }
 
 /// A one-based index into an axis of `len` cells, as a position from zero.
@@ -525,7 +537,7 @@ pub fn sortby(args: &[Arg]) -> Value {
     if rest.is_empty() {
         return Value::Error(CellError::Value);
     }
-    let grid = as_grid(&array.value);
+    let grid = owned_grid(&array.value);
     let keys = as_list(&rest[0].value);
     if keys.len() != grid.len() {
         return Value::Error(CellError::Value);
@@ -536,14 +548,14 @@ pub fn sortby(args: &[Arg]) -> Value {
         .is_some_and(|order| order < 0.0);
     let mut rows: Vec<(usize, Vec<Value>)> = grid.into_iter().enumerate().collect();
     rows.sort_by(|(i, _), (j, _)| {
-        let ordering = compare(&keys[*i], &keys[*j]);
+        let ordering = compare(keys[*i], keys[*j]);
         if descending {
             ordering.reverse()
         } else {
             ordering
         }
     });
-    Value::Array(rows.into_iter().map(|(_, row)| row).collect())
+    Value::array(rows.into_iter().map(|(_, row)| row).collect())
 }
 
 /// `UNIQUE(array, [by_column], [exactly_once])`
@@ -555,7 +567,7 @@ pub fn unique(args: &[Arg]) -> Value {
         .get(1)
         .and_then(|a| a.value.boolean().ok())
         .unwrap_or(false);
-    let grid = as_grid(&array.value);
+    let grid = owned_grid(&array.value);
     let same = |a: &[Value], b: &[Value]| {
         a.len() == b.len()
             && a.iter()
@@ -576,7 +588,7 @@ pub fn unique(args: &[Arg]) -> Value {
     if out.is_empty() {
         return Value::Error(CellError::Calc);
     }
-    Value::Array(out)
+    Value::array(out)
 }
 
 /// `FILTER(array, include, [if_empty])` - the rows where the test holds.
@@ -586,7 +598,7 @@ pub fn filter(args: &[Arg]) -> Value {
         [a, i, f] => (a, i, Some(f)),
         _ => return Value::Error(CellError::Value),
     };
-    let grid = as_grid(&array.value);
+    let grid = owned_grid(&array.value);
     let tests = as_list(&include.value);
     if tests.len() != grid.len() {
         return Value::Error(CellError::Value);
@@ -603,7 +615,7 @@ pub fn filter(args: &[Arg]) -> Value {
             None => Value::Error(CellError::Calc),
         };
     }
-    Value::Array(kept)
+    Value::array(kept)
 }
 
 /// `TAKE(array, rows, [columns])` - the first or last few of each.
@@ -626,7 +638,7 @@ fn slice_of(args: &[Arg], keep: bool) -> Value {
         [a, r, c] => (a, r.number(), Some(c.number())),
         _ => return Value::Error(CellError::Value),
     };
-    let grid = as_grid(&array.value);
+    let grid = owned_grid(&array.value);
     let width = grid.first().map_or(0, Vec::len);
     let span = |count: Option<f64>, len: usize| -> Option<(usize, usize)> {
         let Some(count) = count else {
@@ -665,7 +677,7 @@ fn slice_of(args: &[Arg], keep: bool) -> Value {
     if top >= bottom || left >= right {
         return Value::Error(CellError::Calc);
     }
-    Value::Array(
+    Value::array(
         grid[top..bottom]
             .iter()
             .map(|row| row[left..right].to_vec())
@@ -691,7 +703,7 @@ fn chosen(args: &[Arg], by_row: bool) -> Value {
     if wanted.is_empty() {
         return Value::Error(CellError::Value);
     }
-    let grid = as_grid(&array.value);
+    let grid = owned_grid(&array.value);
     let width = grid.first().map_or(0, Vec::len);
     let len = if by_row { grid.len() } else { width };
     let mut picked = Vec::new();
@@ -722,7 +734,7 @@ fn chosen(args: &[Arg], by_row: bool) -> Value {
             picked.push(at);
         }
     }
-    Value::Array(if by_row {
+    Value::array(if by_row {
         picked.into_iter().map(|i| grid[i].clone()).collect()
     } else {
         grid.iter()
@@ -733,7 +745,7 @@ fn chosen(args: &[Arg], by_row: bool) -> Value {
 
 /// `VSTACK(array1, ...)` - the arrays one under another.
 pub fn vstack(args: &[Arg]) -> Value {
-    let grids: Vec<Vec<Vec<Value>>> = args.iter().map(|a| as_grid(&a.value)).collect();
+    let grids: Vec<Vec<Vec<Value>>> = args.iter().map(|a| owned_grid(&a.value)).collect();
     let width = grids
         .iter()
         .map(|g| g.first().map_or(0, Vec::len))
@@ -753,12 +765,12 @@ pub fn vstack(args: &[Arg]) -> Value {
     if out.is_empty() {
         return Value::Error(CellError::Value);
     }
-    Value::Array(out)
+    Value::array(out)
 }
 
 /// `HSTACK(array1, ...)` - the arrays side by side.
 pub fn hstack(args: &[Arg]) -> Value {
-    let grids: Vec<Vec<Vec<Value>>> = args.iter().map(|a| as_grid(&a.value)).collect();
+    let grids: Vec<Vec<Vec<Value>>> = args.iter().map(|a| owned_grid(&a.value)).collect();
     let height = grids.iter().map(Vec::len).max().unwrap_or(0);
     if height == 0 {
         return Value::Error(CellError::Value);
@@ -773,14 +785,14 @@ pub fn hstack(args: &[Arg]) -> Value {
             }
         }
     }
-    Value::Array(out)
+    Value::array(out)
 }
 
 /// `TOROW(array)` - everything in one row, read across.
 pub fn torow(args: &[Arg]) -> Value {
     let flat = flatten_grid(args);
     flat.map_or(Value::Error(CellError::Value), |values| {
-        Value::Array(vec![values])
+        Value::array(vec![values])
     })
 }
 
@@ -788,14 +800,14 @@ pub fn torow(args: &[Arg]) -> Value {
 pub fn tocol(args: &[Arg]) -> Value {
     let flat = flatten_grid(args);
     flat.map_or(Value::Error(CellError::Value), |values| {
-        Value::Array(values.into_iter().map(|v| vec![v]).collect())
+        Value::array(values.into_iter().map(|v| vec![v]).collect())
     })
 }
 
 /// Every value of the first argument, read across the rows.
 fn flatten_grid(args: &[Arg]) -> Option<Vec<Value>> {
     let array = args.first()?;
-    let grid = as_grid(&array.value);
+    let grid = owned_grid(&array.value);
     let values: Vec<Value> = grid.into_iter().flatten().collect();
     (!values.is_empty()).then_some(values)
 }
@@ -845,13 +857,12 @@ pub fn xlookup(args: &[Arg]) -> Value {
     if grid.len() == list.len() {
         return match grid[at].len() {
             1 => grid[at][0].clone(),
-            _ => Value::Array(vec![grid[at].clone()]),
+            _ => Value::array(vec![grid[at].clone()]),
         };
     }
     as_list(&results.value)
         .get(at)
-        .cloned()
-        .unwrap_or(Value::Error(CellError::Ref))
+        .map_or(Value::Error(CellError::Ref), |v| (*v).clone())
 }
 
 /// `XMATCH(value, lookup, [mode], [search])` - the position rather than the
@@ -879,7 +890,7 @@ pub fn xmatch(args: &[Arg]) -> Value {
 ///
 /// Mode 0 is exact, -1 takes the next smaller and 1 the next larger, and 2 is
 /// a wildcard match. A negative direction searches from the end.
-fn find_in(list: &[Value], needle: &Value, mode: f64, direction: f64) -> Option<usize> {
+fn find_in(list: &[&Value], needle: &Value, mode: f64, direction: f64) -> Option<usize> {
     /// Exact, the nearest below, the nearest above, or a wildcard match.
     #[derive(PartialEq, Eq)]
     enum Mode {
@@ -914,7 +925,7 @@ fn find_in(list: &[Value], needle: &Value, mode: f64, direction: f64) -> Option<
     if let Some(exact) = order
         .iter()
         .copied()
-        .find(|i| compare(&list[*i], needle) == Ordering::Equal)
+        .find(|i| compare(list[*i], needle) == Ordering::Equal)
     {
         return Some(exact);
     }
@@ -958,7 +969,10 @@ pub fn lookup_vector(args: &[Arg]) -> Value {
     // The array form looks in the first row or column and answers from the
     // last, whichever way round the rectangle is.
     let (list, answers): (Vec<Value>, Vec<Value>) = match results {
-        Some(_) => (as_list(&haystack.value), Vec::new()),
+        Some(_) => (
+            as_list(&haystack.value).into_iter().cloned().collect(),
+            Vec::new(),
+        ),
         None if width > grid.len() => (
             grid.first().cloned().unwrap_or_default(),
             grid.last().cloned().unwrap_or_default(),
@@ -981,8 +995,7 @@ pub fn lookup_vector(args: &[Arg]) -> Value {
     match results {
         Some(results) => as_list(&results.value)
             .get(at)
-            .cloned()
-            .unwrap_or(Value::Error(CellError::Na)),
+            .map_or(Value::Error(CellError::Na), |v| (*v).clone()),
         None => answers
             .get(at)
             .cloned()
@@ -1014,8 +1027,23 @@ pub fn indirect(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value
     let Ok(text) = value.text() else {
         return Value::Error(CellError::Ref);
     };
-    let Ok(parsed) = crate::formula::parse(&text) else {
+    let Some(parsed) = engine.parsed(&text) else {
         return Value::Error(CellError::Ref);
+    };
+    // A defined name is a reference too: `INDIRECT("Sales")` reads the cells
+    // the name points at. A name that is no reference is not one to follow.
+    let parsed = match &*parsed {
+        Expr::Name(name) => {
+            let Some(found) = engine.defined_name(name, Some(origin.sheet)) else {
+                return Value::Error(CellError::Ref);
+            };
+            let formula = engine.book().defined_names[found].formula.clone();
+            match engine.parsed(&formula) {
+                Some(definition) => definition,
+                None => return Value::Error(CellError::Ref),
+            }
+        }
+        _ => parsed,
     };
     let Some((sheet, range)) = crate::formula::eval::spanned(&parsed) else {
         return Value::Error(CellError::Ref);
@@ -1151,14 +1179,14 @@ fn wrapped(args: &[Arg], by_row: bool) -> Value {
     let lines: Vec<Vec<Value>> = values
         .chunks(count)
         .map(|chunk| {
-            let mut line = chunk.to_vec();
+            let mut line: Vec<Value> = chunk.iter().map(|v| (*v).clone()).collect();
             while line.len() < count {
                 line.push(filler.clone());
             }
             line
         })
         .collect();
-    Value::Array(if by_row {
+    Value::array(if by_row {
         lines
     } else {
         // Folded into columns, each chunk is a column of the answer.
@@ -1177,7 +1205,7 @@ pub fn expand(args: &[Arg]) -> Value {
         [array, rest @ ..] if (1..=3).contains(&rest.len()) => (array, rest),
         _ => return Value::Error(CellError::Value),
     };
-    let grid = as_grid(&array.value);
+    let grid = owned_grid(&array.value);
     let width = grid.first().map_or(0, Vec::len);
     let size = |at: usize, current: usize| -> Option<usize> {
         let Some(arg) = rest.get(at).filter(|a| !a.missing()) else {
@@ -1205,7 +1233,7 @@ pub fn expand(args: &[Arg]) -> Value {
         .get(2)
         .filter(|a| !a.missing())
         .map_or(Value::Error(CellError::Na), |a| a.value.scalar().clone());
-    Value::Array(
+    Value::array(
         (0..rows)
             .map(|r| {
                 (0..columns)
@@ -1269,9 +1297,8 @@ pub fn single(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
 ///
 /// Excel means by this the range a result spilled into. Nothing spills here:
 /// a formula answering with an array occupies one cell and shows its top-left
-/// value, and reading that cell already hands back the array whole. So this
-/// says explicitly what a plain reference does anyway - which is the useful
-/// half of it, since a formula written with `#` still means something.
+/// value. A plain reference to that cell reads the value it shows; this reads
+/// the array behind it.
 pub fn anchorarray(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     let [reference] = args else {
         return Value::Error(CellError::Value);
@@ -1286,5 +1313,5 @@ pub fn anchorarray(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Va
     let Some(index) = engine.sheet_index(origin, sheet.as_deref()) else {
         return Value::Error(CellError::Ref);
     };
-    engine.cell(index, range.start)
+    engine.spilled(index, range.start)
 }

@@ -35,12 +35,26 @@ pub enum Value {
     /// An error, which propagates through anything that touches it.
     Error(CellError),
     /// A rectangle of values: a range of cells, or an array constant.
-    Array(Vec<Vec<Value>>),
+    ///
+    /// Shared rather than owned: a range is read once and handed to every
+    /// formula that asks for it, and `INDEX(Data,ROW(),1)` down forty thousand
+    /// rows must not copy the whole of `Data` forty thousand times. Use
+    /// [`Value::array`] to make one and [`Rc::unwrap_or_clone`] to take the
+    /// rows out.
+    Array(Rc<Vec<Vec<Value>>>),
     /// A function, which `LAMBDA` makes and `MAP` and its kin call.
     ///
     /// A cell cannot hold one: it is a value only while a formula is running,
     /// and a formula that answers with one shows `#CALC!`, as Excel does.
     Lambda(Rc<Lambda>),
+}
+
+impl Value {
+    /// An array value from its rows.
+    #[must_use]
+    pub fn array(rows: Vec<Vec<Self>>) -> Self {
+        Self::Array(Rc::new(rows))
+    }
 }
 
 impl PartialEq for Value {
@@ -144,7 +158,7 @@ impl Value {
     pub fn flatten<'a>(&'a self, out: &mut Vec<&'a Self>) {
         match self {
             Self::Array(rows) => {
-                for row in rows {
+                for row in rows.iter() {
                     for v in row {
                         v.flatten(out);
                     }
@@ -277,14 +291,26 @@ pub fn compare(a: &Value, b: &Value) -> std::cmp::Ordering {
                 x.partial_cmp(&y).unwrap_or(Ordering::Equal)
             }
         }
-        (1, _) => {
-            // Text comparison ignores case, as in Excel.
-            let (x, y) = (
-                a.text().unwrap_or_default().to_uppercase(),
-                b.text().unwrap_or_default().to_uppercase(),
-            );
-            x.cmp(&y)
-        }
+        (1, _) => match (a, b) {
+            // Text comparison ignores case, as in Excel. Compared a character
+            // at a time rather than by upper-casing copies: a `MATCH` down a
+            // column of names does this for every row.
+            (Value::Text(x), Value::Text(y)) => {
+                if x == y {
+                    return Ordering::Equal;
+                }
+                if x.is_ascii() && y.is_ascii() {
+                    return x
+                        .bytes()
+                        .map(|b| b.to_ascii_uppercase())
+                        .cmp(y.bytes().map(|b| b.to_ascii_uppercase()));
+                }
+                x.chars()
+                    .flat_map(char::to_uppercase)
+                    .cmp(y.chars().flat_map(char::to_uppercase))
+            }
+            _ => Ordering::Equal,
+        },
         _ => Ordering::Equal,
     }
 }

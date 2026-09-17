@@ -583,7 +583,7 @@ mod tests {
 
     fn arg(values: &[f64]) -> Arg {
         Arg {
-            value: Value::Array(vec![values.iter().copied().map(Value::Number).collect()]),
+            value: Value::array(vec![values.iter().copied().map(Value::Number).collect()]),
             reference: true,
         }
     }
