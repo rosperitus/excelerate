@@ -367,8 +367,8 @@ fn rewrite_drawing(
 }
 
 /// Drops and adds relationships of a drawing, creating its relationship part
-/// when it had none. The added ones are all of one kind, the last segment of
-/// the relationship type: `chart`, `image`.
+/// when it had none. The added ones are all of one kind: the last segment of
+/// an Office relationship type (`chart`, `image`), or a whole type.
 pub(super) fn edit_relationships(
     book: &mut Spreadsheet,
     drawing: &str,
@@ -389,6 +389,11 @@ pub(super) fn edit_relationships(
         },
         str::to_owned,
     );
+    let kind = if kind.contains("://") {
+        kind.to_owned()
+    } else {
+        format!("{REL_NS}/{kind}")
+    };
     let mut out = String::with_capacity(text.len());
     let mut at = 0;
     for rel in parse_relationships(&text, drawing) {
@@ -402,7 +407,7 @@ pub(super) fn edit_relationships(
     for (id, target) in added {
         let _ = write!(
             out,
-            r#"<Relationship Id="{id}" Type="{REL_NS}/{kind}" Target="{}"/>"#,
+            r#"<Relationship Id="{id}" Type="{kind}" Target="{}"/>"#,
             escape(&relative_target(base, target))
         );
     }

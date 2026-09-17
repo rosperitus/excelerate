@@ -62,6 +62,25 @@ pub(super) fn rewrite_model(book: &mut Spreadsheet, rewrite: impl Fn(&str) -> St
                 chart.settle();
             }
         }
+        for chart in &mut sheet.extended_charts {
+            let untouched = chart.is_unchanged();
+            let texts = chart
+                .title
+                .iter_mut()
+                .chain(chart.series.iter_mut().flat_map(|s| &mut s.name));
+            for text in texts {
+                if let crate::model::chart::ChartText::Reference { formula, .. } = text {
+                    *formula = rewrite(formula);
+                }
+            }
+            let dimensions = chart.series.iter_mut().flat_map(|s| &mut s.dimensions);
+            for formula in dimensions.filter_map(|d| d.formula.as_mut()) {
+                *formula = rewrite(formula);
+            }
+            if untouched {
+                chart.settle();
+            }
+        }
     }
 }
 

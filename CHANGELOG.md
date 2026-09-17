@@ -4,6 +4,8 @@
 
 ### Breaking changes
 
+- `ChartEx`, `PivotTable` and `PivotCache` have an `origin` field, which a
+  struct literal has to fill (`..Default::default()` does).
 - `CellValue::Text` holds `Arc<str>` instead of `String`. Cells read from the
   same shared string share one allocation. `CellValue::text` still builds one
   from any string; `CellValue::shared_text` takes an `Arc<str>` as it is.
@@ -23,6 +25,17 @@
   untouched shape keeps its bytes; a rename, new outline, new text or move is
   spliced into the drawing; a removed shape is cut and a new one added.
   Inserting rows and columns moves shapes with the grid.
+- 2016 charts (`ChartEx`: waterfall, funnel, treemap and the rest) are
+  written back. An untouched one keeps its bytes; a change to the title or a
+  series' layout, name, visibility or data is spliced into the part, which
+  keeps every colour and label style; a removed one is cut from the drawing,
+  and `ChartEx::new` builds one with Excel's defaults. Inserting rows moves
+  them and what they read.
+- Pivot tables and caches are written back. An untouched one keeps its
+  bytes; a changed or new report is written from the model the way excelize
+  writes one, with the cache marked `refreshOnLoad`; a removed report takes
+  its part with it. excelize reads the changed and the new report with the
+  same fields.
 - A comment added to a sheet gets the VML box Excel draws it in, and a sheet
   with no VML part gets one; the box of a removed comment is cut out. Before,
   a new comment was written without a box and Excel did not show it.

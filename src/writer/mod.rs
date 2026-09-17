@@ -1,12 +1,14 @@
 //! Writers for spreadsheet file formats.
 
 mod chart;
+mod chart_ex;
 mod comment;
 pub mod csv;
 pub mod html;
 mod image;
 pub mod ods;
 pub(crate) mod ole;
+mod pivot;
 mod shape;
 pub mod xls;
 mod xls_formula;

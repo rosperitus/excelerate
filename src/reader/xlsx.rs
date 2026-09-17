@@ -18,10 +18,10 @@
 
 use crate::coordinate::{CellRef, Col, Range, Row, shift_references};
 use crate::error::{CellError, Error, Result};
-use crate::model::chart::{Chart, ChartEx, ChartOrigin};
+use crate::model::chart::{Chart, ChartEx, ChartExOrigin, ChartOrigin};
 use crate::model::pivot::{
-    CacheField, CacheSource, DataField, PivotAxis, PivotCache, PivotField, PivotStyleInfo,
-    PivotTable, Subtotal,
+    CacheField, CacheSource, DataField, PivotAxis, PivotCache, PivotField, PivotOrigin,
+    PivotStyleInfo, PivotTable, Subtotal,
 };
 use crate::model::protection::PasswordAttrs;
 use crate::model::table::{Table, TableColumn, TableStyle};
@@ -585,7 +585,15 @@ fn read_sheet_pivots<R: Read + Seek>(
     let mut out: Vec<PivotTable> = links
         .values()
         .filter(|r| !r.external && r.kind.ends_with("/pivotTable"))
-        .filter_map(|rel| read_pivot_table(zip, &resolve(base, &rel.target)).ok())
+        .filter_map(|rel| {
+            let part = resolve(base, &rel.target);
+            let mut table = read_pivot_table(zip, &part).ok()?;
+            table.origin = Some(PivotOrigin {
+                part,
+                read: Box::new(table.clone()),
+            });
+            Some(table)
+        })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
@@ -607,6 +615,7 @@ fn read_pivot_caches<R: Read + Seek>(
         if let Ok(mut cache) = read_pivot_cache(zip, &path) {
             cache.id = *id;
             cache.definition_part = path;
+            cache.origin = Some(Box::new(cache.clone()));
             out.push(cache);
         }
     }
@@ -659,6 +668,12 @@ fn read_sheet_charts<R: Read + Seek>(
                         chart.name = frame.name;
                         chart.anchor = anchor;
                         chart.part = part;
+                        chart.origin = Some(ChartExOrigin {
+                            drawing: drawing.clone(),
+                            id: frame.id,
+                            grouped: frame.grouped,
+                            read: Box::new(chart.clone()),
+                        });
                         extended.push(chart);
                     }
                 } else if let Some((mut chart, root_attributes, prefix)) =

@@ -13,8 +13,9 @@ use excelerate::coordinate::{Col, Row};
 use excelerate::edit::insert_rows;
 use excelerate::model::Spreadsheet;
 use excelerate::model::chart::{
-    Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartText, DataSource, Grouping,
-    LegendPosition, Marker, Plot, PlotKind, Series, SeriesLayout, Title,
+    Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartEx, ChartText, DataSource, Dimension,
+    DimensionRole, ExSeries, Grouping, LegendPosition, Marker, Plot, PlotKind, Series,
+    SeriesLayout, Title,
 };
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
@@ -395,4 +396,112 @@ fn a_plot_with_no_axes_is_refused() {
     });
     let mut bytes = Vec::new();
     assert!(write_xlsx_to(&book, Cursor::new(&mut bytes)).is_err());
+}
+
+/// What a 2016 chart says, without where it was read from.
+fn said(chart: &ChartEx) -> (String, Anchor, Option<ChartText>, Vec<ExSeries>) {
+    (
+        chart.name.clone(),
+        chart.anchor,
+        chart.title.clone(),
+        chart.series.clone(),
+    )
+}
+
+#[test]
+fn a_changed_waterfall_keeps_its_formatting() {
+    let mut book = open("chart1.xlsx");
+    let sheet = book.sheet_mut(0).unwrap();
+    let chart = &mut sheet.extended_charts[0];
+    let path = chart.part.clone();
+    chart.name = "Bridge & walk".into();
+    chart.title = Some(ChartText::text("Profit bridge"));
+    chart.series[0].name = Some(ChartText::Reference {
+        formula: "Sheet1!$A$1".into(),
+        cache: Some("2025".into()),
+    });
+    chart.series[0].dimensions[1].formula = Some("'Q1'!$C$2:$C$9".into());
+    if let Anchor::TwoCell { from, to, .. } = &mut chart.anchor {
+        from.row = Row::new(from.row.index() + 3).unwrap();
+        to.row = Row::new(to.row.index() + 3).unwrap();
+    }
+    let wanted = said(chart);
+
+    let back = cycle(&book);
+    let after = &back.sheet(0).unwrap().extended_charts[0];
+    assert_eq!(said(after), wanted);
+    assert_eq!(after.part, path, "the part is edited, not replaced");
+    let text = std::str::from_utf8(part(&back, &path)).unwrap();
+    assert!(text.contains("<cx:dataPt idx=\"7\">"), "point colours stay");
+    assert!(text.contains("<cx:subtotals>"), "subtotal bars stay");
+    // Every other sheet's waterfall is untouched.
+    for before in book.sheets()[1..].iter().flat_map(|s| &s.extended_charts) {
+        assert_eq!(part(&book, &before.part), part(&back, &before.part));
+    }
+}
+
+#[test]
+fn a_removed_waterfall_leaves_the_classic_charts() {
+    let mut book = open("chart1.xlsx");
+    book.sheet_mut(2).unwrap().extended_charts.clear();
+    let back = cycle(&book);
+    let sheet = back.sheet(2).unwrap();
+    assert!(sheet.extended_charts.is_empty());
+    assert_eq!(sheet.charts, book.sheet(2).unwrap().charts);
+}
+
+#[test]
+fn a_funnel_made_in_code_is_written() {
+    let mut book = open("chart2.xlsx");
+    let dimensions = vec![
+        Dimension {
+            role: DimensionRole::Categories,
+            numeric: false,
+            formula: Some("Sheet1!$A$2:$A$5".into()),
+            levels: vec![vec![(0, "Leads".into()), (1, "Calls".into())]],
+        },
+        Dimension {
+            role: DimensionRole::Values,
+            numeric: true,
+            formula: Some("Sheet1!$B$2:$B$5".into()),
+            levels: Vec::new(),
+        },
+    ];
+    let from = Marker {
+        col: Col::new(10).unwrap(),
+        row: Row::new(2).unwrap(),
+        ..Marker::default()
+    };
+    let to = Marker {
+        col: Col::new(16).unwrap(),
+        row: Row::new(18).unwrap(),
+        ..Marker::default()
+    };
+    let mut funnel = ChartEx::new(
+        SeriesLayout::Funnel,
+        dimensions,
+        Anchor::TwoCell {
+            from,
+            to,
+            edit_as: None,
+        },
+    );
+    funnel.name = "Pipeline".into();
+    funnel.title = Some(ChartText::text("Sales pipeline"));
+    let wanted = said(&funnel);
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.extended_charts.push(funnel);
+    let charts = sheet.charts.clone();
+
+    let back = cycle(&book);
+    let sheet = back.sheet(0).unwrap();
+    assert_eq!(sheet.extended_charts.len(), 1);
+    assert_eq!(said(&sheet.extended_charts[0]), wanted);
+    assert_eq!(sheet.charts, charts, "the classic chart beside it stays");
+    // And it is a fixed point from here.
+    let again = cycle(&back);
+    assert_eq!(
+        again.sheet(0).unwrap().extended_charts,
+        sheet.extended_charts
+    );
 }

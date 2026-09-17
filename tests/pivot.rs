@@ -6,7 +6,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use excelerate::coordinate::CellRef;
-use excelerate::model::pivot::{PivotAxis, Subtotal};
+use excelerate::model::Spreadsheet;
+use excelerate::model::pivot::{
+    CacheField, CacheSource, DataField, PivotAxis, PivotCache, PivotField, PivotTable, Subtotal,
+};
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
 use std::io::Cursor;
@@ -62,7 +65,7 @@ fn a_rewrite_keeps_the_report_whole() {
     write_xlsx_to(&book, Cursor::new(&mut bytes)).unwrap();
     let back = read_xlsx_from(Cursor::new(&bytes)).unwrap();
 
-    // Nothing here is written from the model: the parts travel whole, and the
+    // Nothing changed, so nothing is written from the model: the parts travel whole, and the
     // workbook has to keep naming the cache in `<pivotCaches>` or every report
     // in it is broken.
     assert_eq!(back.pivot_caches, book.pivot_caches);
@@ -148,8 +151,7 @@ fn a_rewrite_keeps_every_report_of_a_real_workbook() {
 /// The pivots are not read: in BIFF8 they are `SX*` records, an entirely
 /// different mechanism from the XML ones above, and the xls writer rebuilds a
 /// file from values rather than carrying what it did not parse - so they are
-/// lost on the way out. That is phase F in `docs/REFACTOR.md`. What this
-/// pins down is that the data underneath them reads correctly.
+/// lost on the way out. What this pins down is that the data underneath them reads correctly.
 #[test]
 fn the_data_under_a_biff8_pivot_still_reads() {
     let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pivot.xls");
@@ -175,4 +177,145 @@ fn the_data_under_a_biff8_pivot_still_reads() {
         book.sheets().iter().all(|s| s.pivot_tables.is_empty()),
         "BIFF8 pivots are not read"
     );
+}
+
+fn cycle(book: &Spreadsheet) -> (Spreadsheet, Vec<u8>) {
+    let mut bytes = Vec::new();
+    write_xlsx_to(book, Cursor::new(&mut bytes)).unwrap();
+    (read_xlsx_from(Cursor::new(bytes.clone())).unwrap(), bytes)
+}
+
+fn part<'a>(book: &'a Spreadsheet, path: &str) -> Option<&'a str> {
+    book.parts
+        .iter()
+        .find(|p| p.path == path)
+        .map(|p| std::str::from_utf8(&p.data).unwrap())
+}
+
+/// What a report says, without where it was read from.
+fn said(table: &PivotTable) -> PivotTable {
+    PivotTable {
+        origin: None,
+        ..table.clone()
+    }
+}
+
+#[test]
+fn a_changed_report_is_written_from_the_model() {
+    let mut book = read_xlsx_from(Cursor::new(fixture())).unwrap();
+    let table = &mut book.sheet_mut(0).unwrap().pivot_tables[0];
+    table.name = "Итоги".into();
+    table.column_fields.clear();
+    table.page_fields = vec![2];
+    table.fields[2].axis = PivotAxis::Page;
+    table.data_fields[0].subtotal = Subtotal::Average;
+    table.data_fields[0].name = Some("Средние продажи".into());
+    table.column_grand_totals = false;
+    let wanted = said(table);
+    let path = table.origin.as_ref().unwrap().part().to_owned();
+
+    let (back, _) = cycle(&book);
+    let after = &back.sheet(0).unwrap().pivot_tables[0];
+    assert_eq!(said(after), wanted);
+    assert_eq!(after.origin.as_ref().unwrap().part(), path);
+    assert_eq!(back.pivot_caches, book.pivot_caches, "the cache is kept");
+    let cache = part(&back, &book.pivot_caches[0].definition_part).unwrap();
+    assert!(cache.contains(r#"refreshOnLoad="1""#), "{cache}");
+}
+
+#[test]
+fn a_report_made_in_code_gets_a_cache_of_its_own() {
+    let mut book = read_xlsx_from(Cursor::new(fixture())).unwrap();
+    let cache = PivotCache {
+        id: 9,
+        source: CacheSource {
+            sheet: Some("Sheet1".into()),
+            range: Some(excelerate::Range::parse("A1:D7").unwrap()),
+            name: None,
+        },
+        fields: ["Регион", "Товар", "Год", "Продажи"]
+            .iter()
+            .map(|name| CacheField {
+                name: (*name).into(),
+                ..CacheField::default()
+            })
+            .collect(),
+        ..PivotCache::default()
+    };
+    let default = PivotField {
+        default_subtotal: true,
+        ..PivotField::default()
+    };
+    let table = PivotTable {
+        name: "Новая".into(),
+        cache_id: 9,
+        location: Some(excelerate::Range::parse("L1:P12").unwrap()),
+        fields: vec![
+            PivotField {
+                axis: PivotAxis::Row,
+                ..default.clone()
+            },
+            default.clone(),
+            PivotField {
+                axis: PivotAxis::Column,
+                ..default.clone()
+            },
+            PivotField {
+                data_field: true,
+                ..default
+            },
+        ],
+        row_fields: vec![0],
+        column_fields: vec![2],
+        data_fields: vec![DataField {
+            name: Some("Сумма".into()),
+            field: 3,
+            subtotal: Subtotal::Sum,
+            number_format: None,
+        }],
+        row_grand_totals: true,
+        column_grand_totals: true,
+        ..PivotTable::default()
+    };
+    book.pivot_caches.push(cache.clone());
+    book.sheet_mut(0).unwrap().pivot_tables.push(table.clone());
+
+    let (back, _) = cycle(&book);
+    let tables = &back.sheet(0).unwrap().pivot_tables;
+    assert_eq!(tables.len(), 2);
+    let made = tables.iter().find(|t| t.name == "Новая").unwrap();
+    assert_eq!(said(made), table);
+    let read = back.pivot_caches.iter().find(|c| c.id == 9).unwrap();
+    assert_eq!((&read.source, &read.fields), (&cache.source, &cache.fields));
+    // The report that was there is untouched.
+    let old = book.sheet(0).unwrap().pivot_tables[0]
+        .origin
+        .as_ref()
+        .unwrap()
+        .part()
+        .to_owned();
+    assert_eq!(part(&back, &old), part(&book, &old));
+    // And it is a fixed point from here.
+    let (again, _) = cycle(&back);
+    assert_eq!(
+        again.sheet(0).unwrap().pivot_tables,
+        back.sheet(0).unwrap().pivot_tables
+    );
+    assert_eq!(again.pivot_caches, back.pivot_caches);
+}
+
+#[test]
+fn a_removed_report_takes_its_part() {
+    let mut book = read_xlsx_from(Cursor::new(fixture())).unwrap();
+    let path = book.sheet(0).unwrap().pivot_tables[0]
+        .origin
+        .as_ref()
+        .unwrap()
+        .part()
+        .to_owned();
+    book.sheet_mut(0).unwrap().pivot_tables.clear();
+    let (back, _) = cycle(&book);
+    assert!(back.sheet(0).unwrap().pivot_tables.is_empty());
+    assert!(part(&back, &path).is_none());
+    assert_eq!(back.pivot_caches, book.pivot_caches);
 }

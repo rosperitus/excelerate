@@ -21,9 +21,10 @@
 //! forget.
 //!
 //! **`chartEx`** - waterfall, funnel, treemap, sunburst, histogram, box and
-//! whisker, region map - is a different schema from Office 2016 and is read
-//! into [`ChartEx`] on [`crate::model::Worksheet::extended_charts`], but not
-//! written from it: its parts travel whole.
+//! whisker, region map - is a different schema from Office 2016 and lands in
+//! [`ChartEx`] on [`crate::model::Worksheet::extended_charts`]. It is written
+//! the same way, by comparison, but edited in place rather than rendered: its
+//! part keeps the formatting the model does not name.
 
 use crate::coordinate::{Col, Row};
 use crate::model::DefinedName;
@@ -926,19 +927,91 @@ pub struct ChartMarkup {
 
 /// A chart of the 2016 schema: waterfall, funnel, treemap and the rest.
 ///
-/// Read, not written: the part travels whole, and this is a view of it.
+/// An untouched one goes back as the bytes it came in. A changed one has what
+/// the model names rewritten inside its part - the frame's name and anchor, the
+/// title, each series' layout, name, visibility and data - and keeps the rest.
+/// One made in code gets a part of its own with Excel's defaults.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ChartEx {
     /// The name the frame carries.
     pub name: String,
     /// Where the chart sits on the sheet.
     pub anchor: Anchor,
-    /// The chart part inside the package.
+    /// The chart part inside the package; empty for a chart made in code.
     pub part: String,
     /// The title, when it has one of its own.
     pub title: Option<ChartText>,
     /// The series, each with the data it reads.
     pub series: Vec<ExSeries>,
+    /// Where it was read from; `None` for a chart made in code.
+    pub origin: Option<ChartExOrigin>,
+}
+
+impl ChartEx {
+    /// A new chart with one series of `layout` reading `dimensions`.
+    #[must_use]
+    pub fn new(layout: SeriesLayout, dimensions: Vec<Dimension>, anchor: Anchor) -> Self {
+        Self {
+            anchor,
+            series: vec![ExSeries {
+                layout,
+                name: None,
+                hidden: false,
+                dimensions,
+            }],
+            ..Self::default()
+        }
+    }
+
+    /// Whether the chart still says what it said when it was read.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.origin
+            .as_ref()
+            .is_some_and(|o| self.same_placement(&o.read) && self.same_content(&o.read))
+    }
+
+    /// Whether the frame is where, and what, it was.
+    pub(crate) fn same_placement(&self, other: &Self) -> bool {
+        self.name == other.name && self.anchor == other.anchor
+    }
+
+    /// Whether the chart part would say the same thing.
+    pub(crate) fn same_content(&self, other: &Self) -> bool {
+        self.title == other.title && self.series == other.series
+    }
+
+    /// Takes the chart as it stands for what was read, for an edit that moved
+    /// the bytes and the model the same way.
+    pub(crate) fn settle(&mut self) {
+        if let Some(mut origin) = self.origin.take() {
+            origin.read = Box::new(self.clone());
+            self.origin = Some(origin);
+        }
+    }
+}
+
+/// Where a 2016 chart came from, so an untouched one goes back as it was.
+///
+/// Opaque on purpose: nothing in it is a property of the chart.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartExOrigin {
+    /// The drawing part holding the frame.
+    pub(crate) drawing: String,
+    /// The frame's drawing object id.
+    pub(crate) id: u32,
+    /// Whether the frame sits inside a group of shapes.
+    pub(crate) grouped: bool,
+    /// The chart as it was read.
+    pub(crate) read: Box<ChartEx>,
+}
+
+impl ChartExOrigin {
+    /// The drawing part the frame lives in.
+    #[must_use]
+    pub fn drawing(&self) -> &str {
+        &self.drawing
+    }
 }
 
 /// One series of a [`ChartEx`].
@@ -993,6 +1066,22 @@ impl SeriesLayout {
             "waterfall" => Self::Waterfall,
             _ => Self::Unknown,
         }
+    }
+
+    /// The attribute value; `None` for a layout this crate does not know.
+    #[must_use]
+    pub const fn as_str(self) -> Option<&'static str> {
+        Some(match self {
+            Self::BoxWhisker => "boxWhisker",
+            Self::ClusteredColumn => "clusteredColumn",
+            Self::Funnel => "funnel",
+            Self::ParetoLine => "paretoLine",
+            Self::RegionMap => "regionMap",
+            Self::Sunburst => "sunburst",
+            Self::Treemap => "treemap",
+            Self::Waterfall => "waterfall",
+            Self::Unknown => return None,
+        })
     }
 }
 
@@ -1062,5 +1151,20 @@ impl DimensionRole {
             "entityId" => Self::EntityIds,
             _ => return None,
         })
+    }
+
+    /// The attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Categories => "cat",
+            Self::Values => "val",
+            Self::Sizes => "size",
+            Self::X => "x",
+            Self::Y => "y",
+            Self::ColorValues => "colorVal",
+            Self::ColorStrings => "colorStr",
+            Self::EntityIds => "entityId",
+        }
     }
 }

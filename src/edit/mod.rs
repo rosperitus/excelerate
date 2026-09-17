@@ -374,7 +374,11 @@ fn move_drawn_objects(sheet: &mut Worksheet, shift: Shift) {
         }
     }
     for chart in &mut sheet.extended_charts {
+        let untouched = chart.is_unchanged();
         anchor::move_anchor(&mut chart.anchor, shift);
+        if untouched {
+            chart.settle();
+        }
     }
     // Pictures the same way: their drawing moved with the charts'.
     for image in &mut sheet.images {

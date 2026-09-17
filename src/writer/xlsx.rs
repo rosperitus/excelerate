@@ -61,9 +61,8 @@ pub fn write_xlsx_to_with<W: Write + Seek>(
     }
     // Charts and pictures are applied to the parts first; an untouched book
     // passes through.
-    let prepared = super::comment::prepare(super::shape::prepare(super::image::prepare(
-        super::chart::prepare(book)?,
-    )));
+    let charts = super::pivot::prepare(super::chart_ex::prepare(super::chart::prepare(book)?)?)?;
+    let prepared = super::comment::prepare(super::shape::prepare(super::image::prepare(charts)));
     let book: &Spreadsheet = &prepared;
     let mut zip = zip::ZipWriter::new(sink);
     let opts = zip::write::SimpleFileOptions::default()

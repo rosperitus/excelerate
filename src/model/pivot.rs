@@ -2,12 +2,14 @@
 //! came from.
 //!
 //!
-//! **Read only.** The parts still travel byte for byte, and nothing here is
-//! written back: a pivot is bound to its cache, its records and the versions
-//! that wrote them, and rebuilding one from a summary would be a worse file
-//! than the one that arrived. What this buys is the ability to *see* the
-//! report - its source, its fields and how they are laid out - without
-//! parsing XML by hand.
+//! **Written by comparison.** A report or cache the program did not touch
+//! goes back byte for byte: a pivot is bound to its cache, its records and the
+//! versions that wrote them, and nothing rebuilt from this summary is as good
+//! as what arrived. One that was changed or made in code is written from the
+//! model the way excelize writes a new pivot: the cache without its records
+//! and marked `refreshOnLoad`, so the application that opens the file lays
+//! the report out again from the source range. A report removed from a sheet
+//! takes its part with it; its cache stays for the reports still using it.
 
 use crate::coordinate::Range;
 
@@ -183,6 +185,39 @@ pub struct PivotTable {
     pub column_grand_totals: bool,
     /// How it is painted.
     pub style: PivotStyleInfo,
+    /// Where it was read from; `None` for a report made in code.
+    pub origin: Option<PivotOrigin>,
+}
+
+impl PivotTable {
+    /// Whether the report still says what it said when it was read.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.origin.as_ref().is_some_and(|o| {
+            let mut read = (*o.read).clone();
+            read.origin.clone_from(&self.origin);
+            read == *self
+        })
+    }
+}
+
+/// Where a report was read from, so an untouched one goes back as it was.
+///
+/// Opaque on purpose: nothing in it is a property of the report.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PivotOrigin {
+    /// The report's part.
+    pub(crate) part: String,
+    /// The report as it was read.
+    pub(crate) read: Box<PivotTable>,
+}
+
+impl PivotOrigin {
+    /// The part the report was read from.
+    #[must_use]
+    pub fn part(&self) -> &str {
+        &self.part
+    }
 }
 
 /// Where a cache took its data from.
@@ -218,10 +253,26 @@ pub struct PivotCache {
     pub source: CacheSource,
     /// The columns of that data.
     pub fields: Vec<CacheField>,
-    /// Package path of the definition part this was read from.
+    /// Package path of the definition part this was read from; empty for a
+    /// cache made in code.
     ///
     /// The workbook has to name its caches in `<pivotCaches>`, and each entry
-    /// points at a part; the part itself travels unparsed, so the path is what
-    /// ties the two together when the workbook is written again.
+    /// points at a part, so the path is what ties the two together when the
+    /// workbook is written again.
     pub definition_part: String,
+    /// The cache as it was read, to compare with; `None` for one made in code.
+    pub origin: Option<Box<PivotCache>>,
+}
+
+impl PivotCache {
+    /// Whether the cache still says what it said when it was read.
+    #[must_use]
+    pub fn is_unchanged(&self) -> bool {
+        self.origin.as_deref().is_some_and(|read| {
+            read.id == self.id
+                && read.source == self.source
+                && read.fields == self.fields
+                && read.definition_part == self.definition_part
+        })
+    }
 }

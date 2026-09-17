@@ -38,7 +38,9 @@ workbooks.
 
 Charts are modelled and written back: an untouched chart as its original bytes,
 a changed or new one from the model (see [model.md](model.md#charts)). The
-2016 chart types are read but only carried.
+2016 chart types are written the same way, a change spliced into their part.
+Pivot tables and their caches are written by comparison as well (see
+[model.md](model.md#pivot-tables)).
 
 Pictures and shapes are modelled the same way: an untouched one goes back as
 written, an edit is spliced into its drawing (see [model.md](model.md#pictures)

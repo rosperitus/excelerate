@@ -185,12 +185,52 @@ if let Some(sheet) = book.sheet_mut(0) {
 }
 ```
 
-Three limits. A chart inside a group of shapes is positioned by the group, so
-changing its anchor is not written; removing it is. The 2016 chart types
-(waterfall, funnel, treemap and the rest) are read into
-`Worksheet::extended_charts` and carried as bytes, not written from the model.
-A plot that needs axes and names fewer than two existing ones makes the write
-fail instead of producing a file Excel repairs.
+Two limits. A chart inside a group of shapes is positioned by the group, so
+changing its anchor is not written; removing it is. A plot that needs axes and
+names fewer than two existing ones makes the write fail instead of producing a
+file Excel repairs.
+
+### 2016 charts
+
+Waterfall, funnel, treemap, sunburst, histogram, box and whisker and region map
+are a different schema, read into `Worksheet::extended_charts` as `ChartEx`:
+name, anchor, title and series, each series with its layout, name, visibility
+and the data it reads (`Dimension`, one per role). Excel writes a hidden
+defined name such as `_xlchart.v1.0` in place of the range;
+`Dimension::reference` looks through it.
+
+These are written by comparison too, but a changed one is edited inside its
+part rather than rendered, because the part is mostly formatting the model does
+not name: a colour per data point, label styles, subtotal bars. The title, each
+series' layout, name, visibility and data are rewritten; the rest stays. A
+removed chart is cut from the drawing, and one built in code gets Excel's
+defaults for its kind.
+
+```rust
+# use excelerate::model::Spreadsheet;
+# use excelerate::model::chart::{Anchor, ChartEx, ChartText, Dimension, DimensionRole, Marker, SeriesLayout};
+let mut book = Spreadsheet::new();
+let dimension = |role, numeric, formula: &str| Dimension {
+    role,
+    numeric,
+    formula: Some(formula.into()),
+    levels: Vec::new(),
+};
+let data = vec![
+    dimension(DimensionRole::Categories, false, "Worksheet!$A$2:$A$5"),
+    dimension(DimensionRole::Values, true, "Worksheet!$B$2:$B$5"),
+];
+let anchor = Anchor::OneCell { from: Marker::default(), width: 4_572_000, height: 2_743_200 };
+let mut funnel = ChartEx::new(SeriesLayout::Funnel, data, anchor);
+funnel.title = Some(ChartText::text("Pipeline"));
+if let Some(sheet) = book.sheet_mut(0) {
+    sheet.extended_charts.push(funnel);
+}
+```
+
+A removed 2016 chart inside a group keeps its frame. What Excel draws for one
+built in code has not been checked against Excel itself: no other program on
+hand reads these charts.
 
 ## Pictures
 
@@ -265,6 +305,60 @@ if let Some(sheet) = book.sheet_mut(0) {
 Connectors (`<xdr:cxnSp>`) are not shapes here and stay in the drawing. A shape
 inside a group is placed by the group (`ShapeOrigin::grouped`), so moving it is
 not written; renaming, retexting or removing it is.
+
+## Pivot tables
+
+`Worksheet::pivot_tables` holds the reports on a sheet (`PivotTable`: name,
+location, the fields on each axis, the values area with its functions, style,
+grand totals), and `Spreadsheet::pivot_caches` the data they read
+(`PivotCache`: source sheet and range, or a name, and the columns).
+
+An untouched report or cache goes back byte for byte. One changed or built in
+code is written the way excelize writes a new pivot: fields on their axes, the
+values area and a placeholder for the laid-out rows, with the cache marked
+`refreshOnLoad` so the application that opens the file lays the report out
+from the source range. A changed cache is written without its records. A
+report removed from the sheet takes its part with it.
+
+```rust
+# use excelerate::Range;
+# use excelerate::model::Spreadsheet;
+# use excelerate::model::pivot::{CacheField, CacheSource, DataField, PivotCache, PivotTable, Subtotal};
+# fn main() -> Result<(), excelerate::Error> {
+let mut book = Spreadsheet::new();
+book.pivot_caches.push(PivotCache {
+    id: 1,
+    source: CacheSource {
+        sheet: Some("Worksheet".into()),
+        range: Some(Range::parse("A1:C100")?),
+        name: None,
+    },
+    fields: ["Region", "Product", "Sales"]
+        .iter()
+        .map(|name| CacheField { name: (*name).into(), ..CacheField::default() })
+        .collect(),
+    ..PivotCache::default()
+});
+if let Some(sheet) = book.sheet_mut(0) {
+    sheet.pivot_tables.push(PivotTable {
+        name: "Sales by region".into(),
+        cache_id: 1,
+        location: Some(Range::parse("E1:G20")?),
+        row_fields: vec![0],
+        data_fields: vec![DataField { field: 2, subtotal: Subtotal::Sum, ..DataField::default() }],
+        row_grand_totals: true,
+        column_grand_totals: true,
+        ..PivotTable::default()
+    });
+}
+# Ok(())
+# }
+```
+
+A report pointing at a cache the workbook does not have, or without a
+location, makes the write fail. The fields' items are written from the
+cache's shared items, so a hidden or reordered item of a changed report is
+shown again in cache order.
 
 ## Carried parts
 
