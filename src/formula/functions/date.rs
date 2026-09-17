@@ -303,8 +303,10 @@ pub fn datedif(epoch: Epoch, args: &[Arg]) -> Value {
         "M" => f64::from(months),
         "D" => end.floor() - start.floor(),
         "MD" => {
-            // Days since the same day of the previous month.
-            let (year, month) = roll_months(b.year, i32::try_from(b.month).unwrap_or(1) - 1);
+            // Days since the start's day of the month: in the end's own month
+            // when that day has come, in the month before when it has not.
+            let back = i32::from(b.day < a.day);
+            let (year, month) = roll_months(b.year, i32::try_from(b.month).unwrap_or(1) - back);
             let day = a.day.min(days_in_month(year, month));
             match to_serial(DateTime::date(year, month, day), epoch) {
                 Ok(anchor) if anchor <= end => end.floor() - anchor,

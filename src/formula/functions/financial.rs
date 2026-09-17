@@ -74,10 +74,12 @@ pub fn nper(args: &[Arg]) -> Value {
     if rate == 0.0 {
         return Value::Number((-pv - fv) / pmt);
     }
-    if pv == 0.0 {
+    // Saving up from nothing is a present value of zero, and a fine question:
+    // only a denominator of zero has no answer.
+    let shift = pmt * (1.0 + rate * timing) / rate;
+    if pv + shift == 0.0 {
         return Value::Error(CellError::Num);
     }
-    let shift = pmt * (1.0 + rate * timing) / rate;
     let ratio = (shift - fv) / (pv + shift);
     if ratio <= 0.0 {
         return Value::Error(CellError::Num);
@@ -310,7 +312,9 @@ pub fn xirr(args: &[Arg]) -> Value {
         _ => return Value::Error(CellError::Value),
     };
     let values = flat_numbers(core::slice::from_ref(values));
-    let dates = flat_numbers(core::slice::from_ref(dates));
+    let Ok(dates) = dates_of(dates) else {
+        return Value::Error(CellError::Value);
+    };
     if values.len() != dates.len() || values.is_empty() {
         return Value::Error(CellError::Num);
     }
@@ -329,7 +333,9 @@ pub fn xnpv(args: &[Arg]) -> Value {
         return Value::Error(CellError::Value);
     };
     let values = flat_numbers(core::slice::from_ref(values));
-    let dates = flat_numbers(core::slice::from_ref(dates));
+    let Ok(dates) = dates_of(dates) else {
+        return Value::Error(CellError::Value);
+    };
     if values.len() != dates.len() || values.is_empty() {
         return Value::Error(CellError::Num);
     }
@@ -813,6 +819,21 @@ fn numbers<const N: usize>(args: &[Arg]) -> Option<[f64; N]> {
 ///
 /// A cash flow series is read out of cells, where Excel skips text and blanks
 /// rather than counting them as zero.
+/// The dates of `XNPV` and `XIRR`. A date that is not a number - text, a
+/// logical - makes the whole call `#VALUE!` rather than being dropped, which
+/// would pair the remaining dates with the wrong cash flows.
+fn dates_of(arg: &Arg) -> Result<Vec<f64>, CellError> {
+    let mut flat = Vec::new();
+    arg.value.flatten(&mut flat);
+    flat.into_iter()
+        .filter(|v| !matches!(v, Value::Blank))
+        .map(|v| match v {
+            Value::Number(n) => Ok(*n),
+            _ => Err(CellError::Value),
+        })
+        .collect()
+}
+
 fn flat_numbers(args: &[Arg]) -> Vec<f64> {
     let mut out = Vec::new();
     for arg in args {
@@ -904,7 +925,10 @@ fn solve(guess: f64, f: impl Fn(f64) -> f64) -> Value {
         if value <= 0.0 {
             bound = middle;
         }
-        if value.abs() < PRECISION || step.abs() < PRECISION {
+        // Halved down to what a double can tell apart: a stop at 1e-8 left
+        // the rate off from Excel's in the ninth digit, where a cached result
+        // shows it.
+        if value == 0.0 || step.abs() <= f64::EPSILON * middle.abs().max(f64::MIN_POSITIVE) {
             return Value::Number(middle);
         }
     }

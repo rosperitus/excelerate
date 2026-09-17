@@ -571,7 +571,8 @@ pub fn tbilleq(epoch: Epoch, args: &[Arg]) -> Value {
     answer(args, || {
         let days = bill_days(epoch, args)?;
         let discount = num_at(args, 2)?;
-        if discount <= 0.0 {
+        // A discount that leaves the bill worth nothing has no yield.
+        if discount <= 0.0 || discount * days >= 360.0 {
             return Err(CellError::Num);
         }
         Ok((365.0 * discount) / (360.0 - discount * days))

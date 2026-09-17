@@ -546,11 +546,16 @@ fn the_a_forms_count_text_as_zero() {
         ("AVERAGEA(A1:B2)", "1"),
         ("MAXA(A1:B2)", "2"),
         ("MINA(A1:B2)", "0"),
-        ("MINA(1,\"x\")", "0"),
-        ("VARA(1,2,\"x\",TRUE)", "0.6666666666666666"),
-        ("VARPA(1,2,\"x\",TRUE)", "0.5"),
-        // STDEVA is the root of VARA, which excelize's pair are not.
-        ("STDEVA(1,2,\"x\",TRUE)", "0.816496580927726"),
+        // Text written as the argument itself is no cell: it has to be a
+        // number, and Excel's own cache has `MINA(10,55,"текст",89)` as
+        // #VALUE!. Numeric text converts.
+        ("MINA(1,\"x\")", "#VALUE!"),
+        ("VARA(1,2,\"x\",TRUE)", "#VALUE!"),
+        ("AVERAGEA(10,\"20\")", "15"),
+        ("VARPA(1,2,\"x\",TRUE)", "#VALUE!"),
+        ("STDEVA(1,2,\"x\",TRUE)", "#VALUE!"),
+        // Text read out of cells counts as zero: B1 holds text, B2 TRUE.
+        ("VARPA(1,2,B1,B2)", "0.5"),
         // Nothing matched is zero here, not an error.
         ("MAXIFS(D1:D3,A1:A3,\">1\")", "30"),
         ("MINIFS(D1:D3,A1:A3,\">1\")", "20"),
@@ -858,6 +863,34 @@ fn a_one_value_parameter_lifts_over_an_array() {
         // Inside an array, only numbers count, as inside a reference.
         ("SUM({1,\"2\",TRUE})", "1"),
         ("SUM(1,\"2\",TRUE)", "4"),
+    ]);
+}
+
+/// Cases where a workbook saved by Excel 2016 cached a different answer than
+/// the engine gave: `tests/corpus/Excel_Формулы_Справочник_676_формул.xlsx`.
+#[test]
+fn what_an_excel_formula_reference_cached() {
+    check(&[
+        // Approximate lookups halve the list as Excel does, so an unsorted
+        // one lands where Excel's answer does, not on the first fit.
+        ("MATCH(58000,{50000,60000,55000,70000,45000,65000},1)", "5"),
+        ("MATCH(3,{1,2,3,3,4},1)", "4"),
+        ("MATCH(3,{5,4,3,1},-1)", "3"),
+        ("MATCH(0,{1,2},1)", "#N/A"),
+        // Only values of the needle's kind are searched: blanks and numbers
+        // in a row of names are stepped over.
+        ("MATCH(\"b\",{\"a\",1,\"b\",2,\"c\"})", "3"),
+        // Saving up from nothing is a present value of zero.
+        ("ROUND(NPER(8%%/12,-10000,0,1829460.27),6)", "181.845436"),
+        // Days since the start's day of the month, in the end's own month.
+        ("DATEDIF(DATE(2020,1,1),DATE(2024,6,15),\"MD\")", "14"),
+        ("DATEDIF(DATE(2020,1,15),DATE(2024,3,10),\"MD\")", "24"),
+        // A date that is not a number fails the call instead of shifting
+        // the rest.
+        ("XNPV(0.1,{-100,50},{\"2020\",\"2021\"})", "#VALUE!"),
+        // A discount that leaves the bill worth nothing has no yield.
+        ("TBILLEQ(DATE(2024,1,1),DATE(2024,7,1),95)", "#NUM!"),
+        ("ROUND(IRR({-100,30,40,50}),15)", "0.08896339469335"),
     ]);
 }
 

@@ -6,7 +6,10 @@
 //! cargo run --release --example why -- book.xlsx 'Sheet!A1'
 //! ```
 
-#![allow(clippy::expect_used, reason = "a command-line tool: a bad argument ends it")]
+#![allow(
+    clippy::expect_used,
+    reason = "a command-line tool: a bad argument ends it"
+)]
 
 use excelerate::CellRef;
 use excelerate::formula::eval::Engine;

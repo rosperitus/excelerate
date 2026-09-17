@@ -228,25 +228,59 @@ pub fn match_(args: &[Arg]) -> Value {
         }
         return Value::Error(CellError::Na);
     }
-    let mut best = None;
-    for (i, v) in list.iter().enumerate() {
-        let ord = compare(v, needle.scalar());
-        let hit = match kind {
-            k if k > 0.0 => ord != Ordering::Greater,
-            k if k < 0.0 => ord != Ordering::Less,
-            _ => ord == Ordering::Equal,
-        };
-        if hit {
-            best = Some(i + 1);
-            if kind == 0.0 {
-                break;
-            }
-        } else if kind != 0.0 {
-            // The list is sorted, so the first miss ends the search.
+    let found = if kind == 0.0 {
+        list.iter()
+            .position(|v| compare(v, needle.scalar()) == Ordering::Equal)
+    } else {
+        sorted_position(&list, needle.scalar(), kind < 0.0)
+    };
+    found.map_or(Value::Error(CellError::Na), |i| count_value(i + 1))
+}
+
+/// Where an approximate lookup lands: the last entry not past the value, found
+/// by binary search the way Excel finds it.
+///
+/// The list is supposed to be sorted, and on one that is this is the last
+/// entry not greater (or, `descending`, not less) than the value. On one that
+/// is not, the answer is whatever the halving lands on - and a workbook that
+/// looks up an unsorted column shows exactly that answer, so a scan for the
+/// "right" one would disagree with every cell Excel computed.
+fn sorted_position(list: &[&Value], needle: &Value, descending: bool) -> Option<usize> {
+    // Excel searches only among values of the needle's kind: text among
+    // text, numbers among numbers. A blank or a number in a row of names is
+    // not where the halving may land, or `MATCH("si.01", r)` answers a blank.
+    let kind = |v: &Value| match v {
+        Value::Number(_) => 0,
+        Value::Text(_) => 1,
+        Value::Bool(_) => 2,
+        _ => 3,
+    };
+    let wanted = kind(needle);
+    let candidates: Vec<usize> = (0..list.len())
+        .filter(|&i| kind(list[i].scalar()) == wanted)
+        .collect();
+    let not_past = |v: &Value| {
+        let order = compare(v, needle);
+        if descending {
+            order != Ordering::Less
+        } else {
+            order != Ordering::Greater
+        }
+    };
+    let (mut low, mut high) = (0usize, candidates.len().checked_sub(1)?);
+    let mut found = None;
+    while low <= high {
+        let middle = low + (high - low) / 2;
+        if not_past(list[candidates[middle]]) {
+            found = Some(candidates[middle]);
+            low = middle + 1;
+        } else if middle == 0 {
             break;
+        } else {
+            high = middle - 1;
         }
     }
-    best.map_or(Value::Error(CellError::Na), count_value)
+    found
 }
 
 /// `VLOOKUP(value, table, column, [approximate])`
@@ -300,17 +334,12 @@ fn table_lookup(args: &[Arg], vertical: bool) -> Value {
             .unwrap_or_default()
     };
 
-    let mut found = None;
-    for (i, key) in keys.iter().enumerate() {
-        match compare(key, needle.scalar()) {
-            Ordering::Equal => {
-                found = Some(i);
-                break;
-            }
-            Ordering::Less if approximate => found = Some(i),
-            _ => {}
-        }
-    }
+    let found = if approximate {
+        sorted_position(&keys, needle.scalar(), false)
+    } else {
+        keys.iter()
+            .position(|key| compare(key, needle.scalar()) == Ordering::Equal)
+    };
     let Some(i) = found else {
         return Value::Error(CellError::Na);
     };
@@ -983,13 +1012,8 @@ pub fn lookup_vector(args: &[Arg]) -> Value {
         ),
     };
     let needle = needle.value.scalar();
-    let mut best = None;
-    for (i, value) in list.iter().enumerate() {
-        if compare(value, needle) != Ordering::Greater {
-            best = Some(i);
-        }
-    }
-    let Some(at) = best else {
+    let refs: Vec<&Value> = list.iter().collect();
+    let Some(at) = sorted_position(&refs, needle, false) else {
         return Value::Error(CellError::Na);
     };
     match results {

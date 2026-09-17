@@ -951,6 +951,10 @@ pub fn varpa(args: &[Arg]) -> Value {
 fn with_text_as_zero(args: &[Arg], body: impl Fn(&[f64]) -> Value) -> Value {
     let mut ns = Vec::new();
     for arg in args {
+        // Text read out of cells or an array counts as zero; text written as
+        // the argument itself has to be a number, as `AVERAGEA(1,"x")` is
+        // `#VALUE!` in Excel.
+        let written = !arg.reference && !matches!(arg.value, Value::Array(_));
         let mut flat = Vec::new();
         arg.value.flatten(&mut flat);
         for v in flat {
@@ -958,6 +962,10 @@ fn with_text_as_zero(args: &[Arg], body: impl Fn(&[f64]) -> Value) -> Value {
                 Value::Error(e) => return Value::Error(*e),
                 Value::Number(n) => ns.push(*n),
                 Value::Bool(b) => ns.push(f64::from(u8::from(*b))),
+                Value::Text(_) if written => match v.number() {
+                    Ok(n) => ns.push(n),
+                    Err(e) => return Value::Error(e),
+                },
                 Value::Text(_) => ns.push(0.0),
                 Value::Blank | Value::Array(_) | Value::Lambda(_) => {}
             }
