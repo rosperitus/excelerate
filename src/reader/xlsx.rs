@@ -148,6 +148,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
         // comment is reached only through them.
         let links = read_relationships(&mut zip, &rels_path_for(&path)).unwrap_or_default();
         let mut sheet = read_sheet(&mut zip, &path, &name, &shared, &links)?;
+        sheet.shrink_to_fit();
         sheet.visibility = visibility;
         let sheet_base = path.rsplit_once('/').map_or("", |(dir, _)| dir);
         // The notes are modelled, so their part is read rather than carried;

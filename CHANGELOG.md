@@ -14,11 +14,21 @@
 
 ### Performance
 
-- Reading a 70 MB xlsx of nine million cells takes 5.2 s and 1.1 GB. Before,
-  it was refused, and with the cap raised took 7.3 s and 2.7 GB. Shared
-  strings are no longer copied into each cell, the sheet and the shared
-  string table are parsed as they inflate instead of being held as text,
-  and attributes are looked up in place instead of collected.
+- Reading a 70 MB xlsx of nine million cells takes 5.4 s and 770 MB (Excel
+  2016: 7 s and 900 MB). Before, it was refused, and with the cap raised took
+  7.3 s and 2.7 GB. Shared strings are no longer copied into each cell; the
+  sheet and the shared string table are parsed as they inflate instead of
+  being held as text; attributes are looked up in place instead of
+  collected; and a sheet stores its cells as a sorted vector per row instead
+  of one tree keyed by cell, each new row reserving the width of the one
+  before. Walking every cell and computing the used range take a quarter of
+  the time.
+
+### Fixed
+
+- The styles reader took the differential formats of slicer styles inside
+  `<extLst>` for the book's own, and each save added them again: `chart1.xlsx`
+  went from 50 to 98 to 146.
 
 ## 0.8.0
 

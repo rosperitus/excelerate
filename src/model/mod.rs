@@ -1381,7 +1381,16 @@ pub struct Worksheet {
     title: String,
     /// Whether the sheet has a tab, and whether that tab can be unhidden.
     pub visibility: SheetVisibility,
-    cells: BTreeMap<(Row, Col), Cell>,
+    /// The cells, by row, and inside a row sorted by column.
+    ///
+    /// A map of rows holding dense vectors rather than one map keyed by the
+    /// cell: a tree node carries its keys, its values and the slack left for
+    /// inserts, and over nine million cells that was most of what the sheet
+    /// cost in memory. A row is read and written in column order, so appending
+    /// is the common insert.
+    cells: BTreeMap<Row, Vec<(Col, Cell)>>,
+    /// How many cells `cells` holds, kept rather than counted.
+    count: usize,
     /// Merged areas.
     pub merges: Vec<Range>,
     /// Column runs, in the order the file lists them.
@@ -1482,56 +1491,95 @@ impl Worksheet {
     /// The cell at `at`. A missing cell is indistinguishable from an empty one.
     #[must_use]
     pub fn get(&self, at: CellRef) -> Option<&Cell> {
-        self.cells.get(&(at.row, at.col))
+        let line = self.cells.get(&at.row)?;
+        line.binary_search_by_key(&at.col, |(col, _)| *col)
+            .ok()
+            .map(|i| &line[i].1)
     }
 
     /// Writes a value, keeping the style of an existing cell.
     pub fn set(&mut self, at: CellRef, value: impl Into<CellValue>) {
-        self.cells.entry((at.row, at.col)).or_default().value = value.into();
+        self.entry(at).value = value.into();
     }
 
     /// The cell at `at` for modification, created empty if absent.
     pub fn entry(&mut self, at: CellRef) -> &mut Cell {
-        self.cells.entry((at.row, at.col)).or_default()
+        // A new row reserves room for as many cells as the row before it
+        // holds: rows of one sheet tend to be alike, and a row grown by pushes
+        // to nine cells holds room for sixteen, which over a million rows was
+        // most of the memory reading a sheet peaked at.
+        if !self.cells.contains_key(&at.row) {
+            let width = self
+                .cells
+                .last_key_value()
+                .map_or(0, |(_, line)| line.len());
+            self.cells.insert(at.row, Vec::with_capacity(width));
+        }
+        let line = self.cells.entry(at.row).or_default();
+        // Cells arrive in column order when a sheet is read, so the end of
+        // the row is checked before a search.
+        let index = match line.last() {
+            Some((col, _)) if *col < at.col => Err(line.len()),
+            _ => line.binary_search_by_key(&at.col, |(col, _)| *col),
+        };
+        let index = match index {
+            Ok(i) => i,
+            Err(i) => {
+                line.insert(i, (at.col, Cell::default()));
+                self.count += 1;
+                i
+            }
+        };
+        &mut line[index].1
     }
 
-    /// Removes a cell.
+    /// Removes the cell at `at`, returning it.
     pub fn remove(&mut self, at: CellRef) -> Option<Cell> {
-        self.cells.remove(&(at.row, at.col))
+        let line = self.cells.get_mut(&at.row)?;
+        let index = line.binary_search_by_key(&at.col, |(col, _)| *col).ok()?;
+        let (_, cell) = line.remove(index);
+        if line.is_empty() {
+            self.cells.remove(&at.row);
+        }
+        self.count -= 1;
+        Some(cell)
     }
 
-    /// How many non-empty cells the sheet holds.
+    /// Number of cells stored.
     #[must_use]
-    pub fn len(&self) -> usize {
-        self.cells.len()
+    pub const fn len(&self) -> usize {
+        self.count
     }
 
-    /// Whether the sheet holds no cells at all.
+    /// Whether the sheet stores no cells.
     #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.cells.is_empty()
+    pub const fn is_empty(&self) -> bool {
+        self.count == 0
     }
 
-    /// Walks the cells row by row, left to right - the order xlsx requires them
-    /// to be written in.
+    /// Every stored cell in row-major order.
     pub fn iter(&self) -> impl Iterator<Item = (CellRef, &Cell)> {
-        self.cells
-            .iter()
-            .map(|(&(row, col), cell)| (CellRef::new(col, row), cell))
+        self.cells.iter().flat_map(|(&row, line)| {
+            line.iter()
+                .map(move |(col, cell)| (CellRef::new(*col, row), cell))
+        })
     }
 
-    /// The cells of one row, left to right.
-    ///
-    /// A range over the map rather than a filter over every cell: a sheet of
-    /// half a million rows makes the difference between a lookup and a scan.
+    /// The cells of one row, in column order.
     pub fn row_cells(&self, row: Row) -> impl Iterator<Item = (Col, &Cell)> {
-        let first = Col::new(0);
-        let last = Col::new(crate::coordinate::MAX_COL - 1);
-        first
-            .zip(last)
+        self.cells
+            .get(&row)
             .into_iter()
-            .flat_map(move |(first, last)| self.cells.range((row, first)..=(row, last)))
-            .map(|(&(_, col), cell)| (col, cell))
+            .flat_map(|line| line.iter().map(|(col, cell)| (*col, cell)))
+    }
+
+    /// Gives back the room rows took while they grew. A reader calls this
+    /// once a sheet is complete: a row grown to nine cells by pushes holds
+    /// room for sixteen.
+    pub fn shrink_to_fit(&mut self) {
+        for line in self.cells.values_mut() {
+            line.shrink_to_fit();
+        }
     }
 
     /// The run of columns covering `col`, if the sheet describes one.
@@ -1579,16 +1627,18 @@ impl Worksheet {
     /// empty sheet.
     #[must_use]
     pub fn dimension(&self) -> Option<Range> {
-        let mut cells = self.cells.keys();
-        let &(first_row, first_col) = cells.next()?;
-        let (mut min_col, mut max_col) = (first_col, first_col);
-        // Keys are sorted by row, so the extreme rows are the first and last
-        // key; only the columns need a full scan.
-        let mut last_row = first_row;
-        for &(row, col) in cells {
-            min_col = min_col.min(col);
-            max_col = max_col.max(col);
-            last_row = row;
+        let (&first_row, _) = self.cells.first_key_value()?;
+        let (&last_row, _) = self.cells.last_key_value()?;
+        // Rows are sorted by column, so each gives its extremes at its ends:
+        // a walk of the rows, not of the cells.
+        let mut columns = self
+            .cells
+            .values()
+            .filter_map(|line| Some((line.first()?.0, line.last()?.0)));
+        let (mut min_col, mut max_col) = columns.next()?;
+        for (first, last) in columns {
+            min_col = min_col.min(first);
+            max_col = max_col.max(last);
         }
         Some(Range::new(
             CellRef::new(min_col, first_row),
@@ -1796,6 +1846,31 @@ fn validate_sheet_title(title: String) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
+    /// Cells land in their row in column order whatever order they are
+    /// written in, and a row with nothing left in it is gone.
+    #[test]
+    fn cells_keep_row_and_column_order_however_they_arrive() {
+        let mut sheet = Worksheet::new("S").unwrap();
+        let at = |a: &str| CellRef::parse(a).unwrap();
+        for a in ["C2", "A2", "B5", "B2", "A1"] {
+            sheet.set(at(a), a);
+        }
+        sheet.set(at("B2"), "again");
+        let order: Vec<String> = sheet.iter().map(|(a, _)| a.to_string()).collect();
+        assert_eq!(order, ["A1", "A2", "B2", "C2", "B5"]);
+        assert_eq!(sheet.len(), 5);
+        assert_eq!(sheet.dimension(), Some(Range::parse("A1:C5").unwrap()));
+        assert!(sheet.remove(at("B5")).is_some());
+        assert!(sheet.remove(at("B5")).is_none());
+        assert_eq!(sheet.len(), 4);
+        assert_eq!(sheet.dimension(), Some(Range::parse("A1:C2").unwrap()));
+        let row: Vec<crate::Col> = sheet
+            .row_cells(Row::new(1).unwrap())
+            .map(|(c, _)| c)
+            .collect();
+        assert_eq!(row.len(), 3);
+    }
+
     use super::{CellValue, MAX_STRING_LENGTH, Spreadsheet, Worksheet};
     use crate::coordinate::{CellRef, Range, Row};
     use crate::style::StyleId;
