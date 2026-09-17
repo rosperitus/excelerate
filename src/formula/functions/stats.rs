@@ -231,6 +231,15 @@ fn conditional(
     let Some(first) = pairs.first() else {
         return Value::Error(CellError::Value);
     };
+    // A range that is itself an error - `INDIRECT` of a name that does not
+    // exist - is no range to count in. An error inside a range is a cell like
+    // any other and only fails the criteria.
+    let ranges = pairs.iter().step_by(2).copied().chain(values);
+    for range in ranges {
+        if let Value::Error(e) = range.value {
+            return Value::Error(e);
+        }
+    }
     let len = cells(first).len();
     let keep = match selected(pairs, len) {
         Ok(keep) => keep,

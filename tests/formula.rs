@@ -877,6 +877,19 @@ fn what_an_excel_formula_reference_cached() {
         ("MATCH(3,{1,2,3,3,4},1)", "4"),
         ("MATCH(3,{5,4,3,1},-1)", "3"),
         ("MATCH(0,{1,2},1)", "#N/A"),
+        // A range that is an error fails the count; an error in a range does
+        // not.
+        ("COUNTIF(INDIRECT(\"OD-\"),\"<5\")", "#REF!"),
+        ("SUMIF({1,2},\">0\",INDIRECT(\"OD-\"))", "#REF!"),
+        // An error handed to a function is its answer, whichever error it
+        // is - not a #VALUE! for failing to be a number.
+        ("RANDBETWEEN(1/0,5)", "#DIV/0!"),
+        ("ROUND(#REF!,2)", "#REF!"),
+        ("COUNTIF(INDIRECT(\"OD-\"),SQRT(-1))", "#REF!"),
+        // The functions that look at errors still do; the counts skip them.
+        ("ISERROR(1/0)", "TRUE"),
+        ("ERROR.TYPE(#REF!)", "4"),
+        ("COUNT(1,#REF!)", "1"),
         // Only values of the needle's kind are searched: blanks and numbers
         // in a row of names are stepped over.
         ("MATCH(\"b\",{\"a\",1,\"b\",2,\"c\"})", "3"),

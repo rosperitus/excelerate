@@ -35,7 +35,7 @@ use std::path::Path;
 /// cache, and number and date text follows that locale.
 const AGREEMENT: &[(&str, usize)] = &[
     ("test1.xlsx", 13_270),
-    ("COIN_Tool_v1_LITE_exampledata.xlsm", 568_349),
+    ("COIN_Tool_v1_LITE_exampledata.xlsm", 568_772),
     ("Excel_Формулы_Справочник_676_формул.xlsx", 558),
 ];
 

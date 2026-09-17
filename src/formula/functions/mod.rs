@@ -143,15 +143,69 @@ pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) 
         let values: Vec<Value> = args.into_iter().map(|a| a.value).collect();
         return f(&values);
     }
-    let run = |args: &[Arg]| match (eager, dated) {
-        (Some(f), _) => f(args),
-        (_, Some(f)) => f(epoch, args),
-        _ => Value::Error(CellError::Name),
+    let signature = crate::shared::biff_functions::by_name(name);
+    let run = |args: &[Arg]| {
+        if let Some(e) = passed_error(name, signature, args) {
+            return Value::Error(e);
+        }
+        match (eager, dated) {
+            (Some(f), _) => f(args),
+            (_, Some(f)) => f(epoch, args),
+            _ => Value::Error(CellError::Name),
+        }
     };
     match lifted(name, &args) {
         Some(positions) => lift(&args, &positions, run),
         None => run(&args),
     }
+}
+
+/// The error a call answers without looking further: one handed to a
+/// parameter that takes a value.
+///
+/// Excel's rule is that such an error is the answer, whichever it is. A body
+/// that reads its numbers with `let (Ok(a), Ok(b)) = ... else { #VALUE! }`
+/// would otherwise turn `RANDBETWEEN(#REF!, 1)` into `#VALUE!`, and every
+/// formula reading it would disagree with Excel on which error it shows.
+/// The functions that exist to look at an error are left to do so. An error
+/// inside a range is a cell among others and is not looked at here.
+fn passed_error(
+    name: &str,
+    signature: Option<&crate::shared::biff_functions::Function>,
+    args: &[Arg],
+) -> Option<CellError> {
+    const INSPECTING: [&str; 11] = [
+        "ISERROR",
+        "ISERR",
+        "ISNA",
+        "ISBLANK",
+        "ISTEXT",
+        "ISNONTEXT",
+        "ISNUMBER",
+        "ISLOGICAL",
+        "ISREF",
+        "ERROR.TYPE",
+        "TYPE",
+    ];
+    // These count what they are given, errors included or skipped, rather
+    // than failing on one.
+    const COUNTING: [&str; 4] = ["COUNT", "COUNTA", "COUNTBLANK", "AGGREGATE"];
+    if INSPECTING.contains(&name) {
+        return None;
+    }
+    // A function newer than the signature table - or one from the analysis
+    // add-in, as `RANDBETWEEN` is - takes values in every parameter as far as
+    // an error goes.
+    let class = |i: usize| signature.map_or(b'V', |s| s.arg_class(i));
+    // The first error in argument order wins: `COUNTIF(#REF!, #NUM!)` is
+    // `#REF!`. One standing where a reference goes is as much an answer as
+    // one where a value goes - an error is no range - except to the counts.
+    args.iter()
+        .enumerate()
+        .find_map(|(i, arg)| match arg.value {
+            Value::Error(e) if class(i) == b'V' || !COUNTING.contains(&name) => Some(e),
+            _ => None,
+        })
 }
 
 /// The positions of the arguments a call has to be repeated over: an array
