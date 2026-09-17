@@ -1,0 +1,119 @@
+# Changelog
+
+## 0.8.0
+
+### Breaking changes
+
+- `Value::Array` holds `Rc<Vec<Vec<Value>>>` instead of `Vec<Vec<Value>>`, so
+  a range read once is shared by every formula that reads it. Build one with
+  `Value::array(rows)`; take the rows out with `Rc::unwrap_or_clone`.
+- `Expr::Range` has a new field, `anchors`, recording which parts of the
+  reference were written with `$`. Patterns that list the fields need `..`.
+- A reference to a cell whose formula computed an array reads the cell's
+  top-left value, as Excel shows it. `Engine::spilled` (and `A1#` in a
+  formula) returns the whole array.
+- An error in a function argument is the function's answer, whichever error
+  it is. `RANDBETWEEN(#REF!, 1)` is `#REF!`, where it was `#VALUE!`.
+- `AVERAGEA`, `MAXA`, `MINA`, `STDEVA`, `STDEVPA`, `VARA` and `VARPA` return
+  `#VALUE!` for text written directly as an argument, as Excel 2016 does.
+  Text read from cells still counts as zero.
+- Approximate `MATCH`, `VLOOKUP`, `HLOOKUP` and `LOOKUP` search by halving,
+  among values of the looked-up value's type. On an unsorted list the answer
+  is the one Excel gives, which can differ from the first match a linear scan
+  found.
+- Financial functions that walk a schedule period by period (`DB`, `DDB`,
+  `VDB`, `IPMT`, `PPMT`, `CUMIPMT`, `CUMPRINC`, `AMORDEGRC`) return `#NUM!`
+  past one million periods.
+- Arrays a formula builds are capped at four million cells, the cap a
+  reference already had. `EXPAND`, `RANDARRAY`, element-wise operators and
+  lifted functions return `#NUM!` beyond it.
+- Dates past 31 December 9999 or before the start of the calendar are
+  `#NUM!` in every function that reads a date.
+
+### Added
+
+- xls formulas are read as text, beside their cached results: relative and
+  absolute references, 3D references, add-in and newer functions, array
+  constants, shared formulas expanded per cell, array formulas on their first
+  cell, and defined names.
+- xls formulas are written as BIFF8 tokens with their results, and defined
+  names as `NAME` records. What BIFF8 cannot hold (a structured reference, a
+  reference past row 65536 or column IV) is written as its value.
+- The whole xls cell format is read and written: fonts, fills, borders,
+  alignment and protection. Palette colours resolve to RGB on reading; the
+  writer lays out its own palette, and resolves theme colours through the
+  workbook's theme.
+- Pictures: `Worksheet::images` models each embedded picture of a sheet's
+  drawing (bytes, format, anchor, name, alt text). An untouched picture is
+  written back byte for byte; a moved, renamed, replaced, removed or new one
+  is spliced into the drawing. Inserting rows moves pictures with the grid.
+- Functions with a value parameter are lifted over arrays, the way array
+  formulas need: `ISNUMBER(A1:A3)` returns three answers. `IF`, `IFERROR` and
+  `IFNA` work element by element on arrays.
+- `INDIRECT` follows a defined name that stands for a reference.
+- `examples/why.rs` follows a formula that disagrees with its cached result
+  to the cells it reads, down to the ones whose inputs agree.
+- `tests/corpus.rs`, an ignored test over the workbooks in `tests/corpus/`
+  (kept out of git), with floors for how many formulas agree with the cache.
+- `fuzz/`, three `cargo-fuzz` targets: any bytes through format detection,
+  an xls stream, and formula text.
+
+### Fixed
+
+- Functions stored under the `_xlfn.` prefix, which Excel writes for every
+  function added after 2007, answered `#NAME?`.
+- An `.xlsm` was written with the content type of a plain workbook, which
+  Excel refuses to open.
+- Conditional formats and validations inside a sheet's `<extLst>` were read
+  as the sheet's own, and written back as a rule with `sqref=""`.
+- xls files over 7 MB were written without DIFAT sectors, losing everything
+  past the first 7 MB.
+- A reference to a cell holding an array formula counted the whole array
+  again: `COUNTIF` over such a column returned 110 for 49 cells.
+- A leading `+` converted text to a number: `=+Sheet!A1` on text was
+  `#VALUE!`.
+- Aggregates skip text inside computed arrays, as inside references:
+  `SUM({1,"2",TRUE})` is 1.
+- `NPER` refused a present value of zero.
+- `DATEDIF` with `"MD"` counted from the previous month when the day had
+  already come.
+- `XNPV` and `XIRR` dropped a non-numeric date and paired the rest with the
+  wrong cash flows; they return `#VALUE!`.
+- `TBILLEQ` returned a negative yield for a discount that makes the bill
+  worthless; it returns `#NUM!`.
+- `IRR` and `XIRR` stopped at a tolerance of 1e-8; they now agree with
+  Excel to the sixteenth digit.
+- `COUNTIF` and its family counted nothing, instead of failing, when the
+  range itself was an error.
+- xls writing took `GETPIVOTDATA` and `RTD` to have at most 2 and 5
+  arguments, and wrote a formula calling them with more as its value.
+- Crashes and hangs found by fuzzing: a CSV whose first line has a
+  multi-byte character in its first four bytes; an xls run of cells starting
+  near the last column; a stray `]` in a structured reference, which looped
+  forever; `INDEX` with a fractional position below one; `OFFSET` and
+  `EDATE` with counts near the integer limits.
+- A CSV cell holding an uncached array formula was written as the debug form
+  of its value, `Number(1.0)`.
+
+### Performance
+
+- Full recalculation of a workbook with 650,000 formulas takes 16 s and
+  1.4 GB. Before, it did not finish, and used 12 GB. The dependency order goes
+  through one node per distinct range; ranges read are cached; names are
+  indexed and their formulas parsed once; recalculation reuses the trees
+  parsed for the index; text compares without allocating.
+- Reading a 30 MB xls took 8.7 s and takes 0.4 s: a record break inside a
+  shared string is found by binary search.
+- CSV writing visits only the cells each row has, instead of looking up every
+  field of the used range.
+- `CUMIPMT` and `CUMPRINC` walk the schedule once instead of once per period.
+- `BINOM.INV` and `CRITBINOM` search for the count, and
+  `BINOM.DIST.RANGE` subtracts two distribution values, instead of summing
+  millions of terms.
+
+## 0.1.0
+
+First version: reading and writing xlsx, xls, ods, csv and html; reading
+SYLK, Gnumeric and SpreadsheetML 2003; the formula engine; styles, charts,
+tables, protection, autofilters and comments; pivot tables on read; the
+WebAssembly packages.
