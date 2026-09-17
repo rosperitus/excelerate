@@ -45,6 +45,11 @@
 
 ### Fixed
 
+- A chain of formulas longer than 500 links, reached from one cell rather
+  than in dependency order (`recalculate_cell`, a reference built by
+  `INDIRECT`), was `#VALUE!` past the 500th link. The engine now sets the
+  deepest link aside, computes it from the top and resumes, so any length
+  adds up in bounded stack; a cycle longer than that still ends as a cycle.
 - Array formulas keep their flag through an xlsx round trip:
   `<f t="array" ref="…">` is read into `Worksheet::array_formulas` and
   written back. Before, `{=…}` came back as a plain formula.

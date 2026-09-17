@@ -46,17 +46,17 @@ impl Origin {
 /// lifted over two arrays.
 pub(crate) const MAX_RANGE_CELLS: usize = 4_000_000;
 
-/// How long a chain of formulas reading formulas may be.
+/// How deep a chain of formulas reading formulas is followed in one go.
 ///
 /// A cell is computed when something reads it, so `A1=A2+1, A2=A3+1, ...` down
-/// a whole column recurses once per link. A few thousand links overflow the
-/// stack of a normal thread, and a workbook is untrusted input. Excel does not
-/// document a limit of its own here; a chain this long is a generated
-/// workbook, not one a person laid out.
-///
-/// ponytail: a ceiling, not a fix. Lifting it means evaluating iteratively
-/// from a worklist instead of recursing, which is a rewrite of `cell`.
-const MAX_CHAIN_DEPTH: usize = 500;
+/// a whole column recurses once per link, and a few thousand links overflow
+/// the stack of a normal thread. So the chain is cut here: the cell at this
+/// depth is set aside ([`Engine::deferred`]), everything above it unwinds
+/// without being cached, the cell is computed from the top, and the read that
+/// needed it is tried again. A chain of any length costs its length in work
+/// and this much in stack. A hundred links fit the two megabytes of a test
+/// thread in a debug build with room to spare; five hundred did not.
+const MAX_CHAIN_DEPTH: usize = 100;
 
 /// Evaluates formulas against a workbook.
 pub struct Engine<'a> {
@@ -88,6 +88,12 @@ pub struct Engine<'a> {
     /// rectangle read across such a moment holds a stand-in error, not the
     /// cell's value, and must not be kept.
     cycle_hits: u64,
+    /// A cell too deep in a chain to compute where it was asked for, to be
+    /// computed from the top first. While it is set, nothing computed is
+    /// cached: those values stand on its stand-in error.
+    deferred: Option<(usize, CellRef)>,
+    /// Cells set aside for a deeper one they read, still to be finished.
+    waiting: HashSet<(usize, CellRef)>,
     /// The defined names by their lower-cased name, built on first use. A
     /// book with seven hundred names and formulas naming them on every row
     /// cannot afford a walk of the list per mention.
@@ -118,6 +124,8 @@ impl<'a> Engine<'a> {
             dims: vec![None; book.sheets().len()],
             ranges: HashMap::new(),
             cycle_hits: 0,
+            deferred: None,
+            waiting: HashSet::new(),
             name_index: None,
             parsed: HashMap::new(),
             implicit: false,
@@ -350,6 +358,35 @@ impl<'a> Engine<'a> {
     /// What a cell's formula works out to, an array included, which is what
     /// `A1#` asks for.
     pub fn spilled(&mut self, sheet: usize, at: CellRef) -> Value {
+        if !self.running.is_empty() {
+            return self.spilled_once(sheet, at);
+        }
+        // From the top, cells set aside by a chain too deep are computed
+        // first, deepest last in, and the read that needed each is tried again.
+        // A cell waiting on the one being computed reads it, so reading the
+        // waiting cell again from there is a cycle (`Engine::waiting`).
+        let mut pending = vec![(sheet, at)];
+        loop {
+            let Some(&(s, a)) = pending.last() else {
+                return Value::Blank;
+            };
+            let value = self.spilled_once(s, a);
+            if let Some(cell) = self.deferred.take() {
+                self.waiting.insert((s, a));
+                pending.push(cell);
+                continue;
+            }
+            pending.pop();
+            match pending.last() {
+                Some(below) => {
+                    self.waiting.remove(below);
+                }
+                None => return value,
+            }
+        }
+    }
+
+    fn spilled_once(&mut self, sheet: usize, at: CellRef) -> Value {
         if let Some(v) = self.cache.get(&(sheet, at)) {
             return v.clone();
         }
@@ -372,12 +409,15 @@ impl<'a> Engine<'a> {
                 // A formula that refers back to its own cell would recurse for
                 // ever. Excel answers 0 and warns; making it visible is more
                 // use than a silent zero.
-                if !self.running.insert((sheet, at)) {
+                if self.waiting.contains(&(sheet, at)) || !self.running.insert((sheet, at)) {
                     self.cycle_hits += 1;
                     return Value::Error(CellError::Ref);
                 }
                 if self.running.len() > MAX_CHAIN_DEPTH {
                     self.running.remove(&(sheet, at));
+                    self.deferred.get_or_insert((sheet, at));
+                    // Keeps a rectangle read across this from being cached.
+                    self.cycle_hits += 1;
                     return Value::Error(CellError::Value);
                 }
                 let value = self.eval(Origin::new(sheet, at), &formula);
@@ -385,7 +425,9 @@ impl<'a> Engine<'a> {
                 value
             }
         };
-        self.cache.insert((sheet, at), value.clone());
+        if self.deferred.is_none() {
+            self.cache.insert((sheet, at), value.clone());
+        }
         value
     }
 

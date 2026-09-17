@@ -255,30 +255,53 @@ fn volatile_formulas_recompute_on_any_edit() {
     assert_eq!(computed, 2);
 }
 
-/// A chain of formulas is computed by recursion, so an untrusted workbook must
-/// not be able to drive it off the stack: past the ceiling the cell is
-/// `#VALUE!` and the pass finishes.
-#[test]
-fn a_long_chain_of_formulas_stops_at_the_ceiling() {
+fn chain(deep: u32, last: CellValue) -> Spreadsheet {
     use excelerate::coordinate::{Col, Row};
 
-    let deep: u32 = 5_000;
     let mut book = Spreadsheet::empty();
     let mut sheet = Worksheet::new("S").unwrap();
     let cell = |row: u32| CellRef::new(Col::new(0).unwrap(), Row::new(row - 1).unwrap());
-    sheet.set(cell(deep + 1), CellValue::Number(1.0));
+    sheet.set(cell(deep + 1), last);
     for row in 1..=deep {
         sheet.set(cell(row), formula(&format!("A{}+1", row + 1)));
     }
     book.add_sheet(sheet).unwrap();
+    book
+}
 
-    // Computed in dependency order, so the chain costs no recursion at all
-    // and every link of it adds up.
+/// A chain of formulas is computed by recursion, so an untrusted workbook must
+/// not be able to drive it off the stack - and a long one must still add up.
+#[test]
+fn a_long_chain_of_formulas_adds_up() {
+    let deep: u32 = 5_000;
+    let mut book = chain(deep, CellValue::Number(1.0));
+    // Computed in dependency order, so the chain costs no recursion at all.
     assert_eq!(
         recalculate(&mut book, None, &Options::default()),
         deep as usize
     );
     assert_eq!(cached(&book, 0, "A1"), Some(f64::from(deep) + 1.0));
+
+    // Asked for one cell, the engine follows the chain itself, a stretch at
+    // a time.
+    let mut book = chain(50_000, CellValue::Number(1.0));
+    assert!(recalculate_cell(&mut book, 0, at("A1")));
+    assert_eq!(cached(&book, 0, "A1"), Some(50_001.0));
+}
+
+/// A cycle longer than the stretch followed in one go ends as a cycle does.
+#[test]
+fn a_long_cycle_ends() {
+    let mut book = chain(3_000, formula("A1+1"));
+    assert!(recalculate_cell(&mut book, 0, at("A1")));
+    let CellValue::Formula { cached, .. } = &book.sheet(0).unwrap().get(at("A1")).unwrap().value
+    else {
+        panic!("not a formula")
+    };
+    assert!(
+        matches!(cached.as_deref(), Some(CellValue::Error(_))),
+        "{cached:?}"
+    );
 }
 
 /// The same for one formula nested into itself: the parser refuses it rather
