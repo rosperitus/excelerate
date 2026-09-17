@@ -196,16 +196,57 @@ fn render_text(section: &str, text: &str) -> String {
                 out.push(' ');
             }
             '[' => {
-                for b in chars.by_ref() {
-                    if b == ']' {
-                        break;
-                    }
-                }
+                let inner: String = chars.by_ref().take_while(|b| *b != ']').collect();
+                out.push_str(currency(&inner));
             }
             c => out.push(c),
         }
     }
     out
+}
+
+/// The symbol a `[$...]` tag shows: `[$₽-419]` is a rouble sign under the
+/// Russian locale, `[$-419]` the locale alone. Colours and conditions show
+/// nothing.
+fn currency(inner: &str) -> &str {
+    inner
+        .strip_prefix('$')
+        .map_or("", |rest| rest.split('-').next().unwrap_or_default())
+}
+
+/// The language a section's locale tag names, for month and weekday names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Language {
+    English,
+    Russian,
+}
+
+impl Language {
+    /// Reads `[$-419]`, `[$₽-419]` or `[$-ru-RU]` wherever it stands.
+    ///
+    /// ponytail: English and Russian only; another language's names come
+    /// out in English until a table for it is added.
+    fn of(section: &str) -> Self {
+        let mut rest = section;
+        while let Some(open) = rest.find("[$") {
+            let tail = &rest[open + 2..];
+            let Some(close) = tail.find(']') else {
+                break;
+            };
+            let tag = tail[..close].split_once('-').map_or("", |(_, t)| t);
+            // The low bits of the id are the language: 0x19 is Russian,
+            // whatever the country and calendar bits above it say.
+            let russian = u32::from_str_radix(tag, 16).map_or_else(
+                |_| tag.to_ascii_lowercase().starts_with("ru"),
+                |id| id & 0x3FF == 0x19,
+            );
+            if russian {
+                return Self::Russian;
+            }
+            rest = &tail[close..];
+        }
+        Self::English
+    }
 }
 
 /// What a section asks for.
@@ -239,6 +280,9 @@ fn render_number(section: &str, value: f64, epoch: Epoch) -> String {
         return render_datetime(section, value, epoch);
     }
 
+    if let Some(text) = render_fraction(section, value) {
+        return text;
+    }
     let spec = scan(section);
     let mut n = value;
     for _ in 0..spec.percent {
@@ -301,11 +345,8 @@ fn render_number(section: &str, value: f64, epoch: Epoch) -> String {
                 out.push(' ');
             }
             '[' => {
-                for b in chars.by_ref() {
-                    if b == ']' {
-                        break;
-                    }
-                }
+                let inner: String = chars.by_ref().take_while(|b| *b != ']').collect();
+                out.push_str(currency(&inner));
             }
             // `@` in a section applied to a number renders the number as it
             // would appear under General.
@@ -320,6 +361,216 @@ fn render_number(section: &str, value: f64, epoch: Epoch) -> String {
         in_run = run_char;
     }
     out
+}
+
+/// Renders a fraction format: `# ?/?`, `# ??/100`, `?/???`.
+///
+/// `None` when the section has no fraction in it. With an integer part the
+/// whole number goes there and the rest into the fraction; without one the
+/// fraction holds it all. A `?` pads with a space, `0` with a zero and `#`
+/// with nothing: the numerator is aligned right, the denominator left, so
+/// fractions in a column line up on the slash. A fraction that comes out
+/// zero is blanked to spaces as wide as it would have been.
+fn render_fraction(section: &str, value: f64) -> Option<String> {
+    let chars: Vec<char> = section.chars().collect();
+    let code = code_mask(&chars);
+    let is = |i: usize, set: &str| code[i] && set.contains(chars[i]);
+    let slash = (0..chars.len()).find(|&i| is(i, "/"))?;
+    let mut num_start = slash;
+    while num_start > 0 && is(num_start - 1, "0#?") {
+        num_start -= 1;
+    }
+    let mut den_end = slash + 1;
+    while den_end < chars.len() && is(den_end, "0123456789#?") {
+        den_end += 1;
+    }
+    if num_start == slash || den_end == slash + 1 {
+        return None;
+    }
+    let numerator = &chars[num_start..slash];
+    let denominator = &chars[slash + 1..den_end];
+    // An integer part is the nearest run of placeholders before, past the
+    // literal text between them.
+    let mut int_end = num_start;
+    while int_end > 0 && !is(int_end - 1, "0#?") {
+        int_end -= 1;
+    }
+    let mut int_start = int_end;
+    while int_start > 0 && is(int_start - 1, "0#?,") {
+        int_start -= 1;
+    }
+    let integer = (int_start < int_end).then(|| &chars[int_start..int_end]);
+
+    let abs = value.abs();
+    let (mut whole, frac) = if integer.is_some() {
+        (abs.floor(), abs - abs.floor())
+    } else {
+        (0.0, abs)
+    };
+    let fixed: Option<f64> = denominator
+        .iter()
+        .collect::<String>()
+        .parse::<u32>()
+        .ok()
+        .filter(|d| *d > 0)
+        .map(f64::from);
+    let (mut n, d) = fixed.map_or_else(
+        || closest_fraction(frac, denominator.len()),
+        |d| ((frac * d).round(), d),
+    );
+    if integer.is_some() && n >= d {
+        whole += 1.0;
+        n = 0.0;
+    }
+    let blank = integer.is_some() && n == 0.0;
+    let whole_text = if whole == 0.0 && !blank {
+        String::new()
+    } else {
+        format!("{whole:.0}")
+    };
+
+    let mut out = String::new();
+    let negative = value < 0.0 && (whole > 0.0 || n > 0.0);
+    let mut signed = false;
+    let mut i = 0;
+    while i < chars.len() {
+        if integer.is_some() && i == int_start {
+            if negative {
+                out.push('-');
+                signed = true;
+            }
+            let run: Vec<char> = chars[int_start..int_end]
+                .iter()
+                .copied()
+                .filter(|c| *c != ',')
+                .collect();
+            out.push_str(&fill(&whole_text, &run, true));
+            i = int_end;
+        } else if i == num_start {
+            if negative && !signed {
+                out.push('-');
+            }
+            if blank {
+                out.push_str(&" ".repeat(den_end - num_start));
+                i = den_end;
+            } else {
+                out.push_str(&fill(&format!("{n:.0}"), numerator, true));
+                out.push('/');
+                let den = format!("{d:.0}");
+                if fixed.is_some() {
+                    out.push_str(&den);
+                } else {
+                    out.push_str(&fill(&den, denominator, false));
+                }
+                i = den_end;
+            }
+        } else {
+            i = push_literal(&mut out, &chars, i);
+        }
+    }
+    Some(out)
+}
+
+/// The fraction closest to `frac` whose denominator has at most `digits`
+/// digits: numerator and denominator.
+fn closest_fraction(frac: f64, digits: usize) -> (f64, f64) {
+    let digits = u32::try_from(digits.min(5)).unwrap_or(5);
+    let most = 10_u32.pow(digits) - 1;
+    let mut best = (frac.round(), 1.0, (frac - frac.round()).abs());
+    for d in 2..=most {
+        let d = f64::from(d);
+        let n = (frac * d).round();
+        let error = (frac - n / d).abs();
+        if error < best.2 {
+            best = (n, d, error);
+        }
+    }
+    (best.0, best.1)
+}
+
+/// Which characters of a section are format codes rather than quoted,
+/// escaped or inside a `[...]` tag.
+fn code_mask(chars: &[char]) -> Vec<bool> {
+    let mut code = vec![false; chars.len()];
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '"' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    i += 1;
+                }
+            }
+            '\\' | '_' | '*' => i += 1,
+            '[' => {
+                while i < chars.len() && chars[i] != ']' {
+                    i += 1;
+                }
+            }
+            _ => code[i] = true,
+        }
+        i += 1;
+    }
+    code
+}
+
+/// Writes the literal at `i` - quoted text, an escaped character, padding or
+/// a tag - and answers where the next character is.
+fn push_literal(out: &mut String, chars: &[char], mut i: usize) -> usize {
+    match chars[i] {
+        '"' => {
+            i += 1;
+            while i < chars.len() && chars[i] != '"' {
+                out.push(chars[i]);
+                i += 1;
+            }
+        }
+        '\\' => {
+            if let Some(c) = chars.get(i + 1) {
+                out.push(*c);
+            }
+            i += 1;
+        }
+        '_' | '*' => {
+            out.push(' ');
+            i += 1;
+        }
+        '[' => {
+            let start = i + 1;
+            while i < chars.len() && chars[i] != ']' {
+                i += 1;
+            }
+            let inner: String = chars[start..i.min(chars.len())].iter().collect();
+            out.push_str(currency(&inner));
+        }
+        c => out.push(c),
+    }
+    i + 1
+}
+
+/// Digits placed into a run of placeholders: the ones the digits do not
+/// cover pad with a space (`?`), a zero (`0`) or nothing (`#`), on the left
+/// when the digits align right and on the right otherwise.
+fn fill(digits: &str, run: &[char], right: bool) -> String {
+    let missing = run.len().saturating_sub(digits.len());
+    let pads: &[char] = if right {
+        &run[..missing]
+    } else {
+        &run[run.len() - missing..]
+    };
+    let pad: String = pads
+        .iter()
+        .filter_map(|c| match c {
+            '?' => Some(' '),
+            '0' => Some('0'),
+            _ => None,
+        })
+        .collect();
+    if right {
+        pad + digits
+    } else {
+        format!("{digits}{pad}")
+    }
 }
 
 /// Reads what a numeric section asks for.
@@ -593,6 +844,7 @@ fn render_datetime(section: &str, serial: f64, epoch: Epoch) -> String {
     let has_ampm =
         lower.windows(2).any(|w| w == ['a', 'm']) && lower.windows(2).any(|w| w == ['p', 'm']);
 
+    let language = Language::of(section);
     let mut i = 0;
     let mut after_hour = false;
     while i < bytes.len() {
@@ -622,14 +874,14 @@ fn render_datetime(section: &str, serial: f64, epoch: Epoch) -> String {
                 if is_minute {
                     let _ = write!(out, "{:0width$}", dt.minute, width = n.min(2));
                 } else {
-                    out.push_str(&month(dt.month, n));
+                    out.push_str(&month(dt.month, n, language));
                 }
                 i += n;
                 after_hour = false;
             }
             'd' => {
                 let n = run_length(&lower, i, 'd');
-                out.push_str(&day(dt, n, epoch));
+                out.push_str(&day(dt, n, epoch, language));
                 i += n;
             }
             'h' => {
@@ -705,6 +957,8 @@ fn write_non_code(
                 end += 1;
             }
             let inner: String = lower[inner_start..end.min(lower.len())].iter().collect();
+            let written: String = bytes[inner_start..end.min(bytes.len())].iter().collect();
+            out.push_str(currency(&written));
             write_elapsed(out, &inner, serial);
             end + 1 - start
         }
@@ -796,7 +1050,7 @@ fn next_code(chars: &[char], from: usize) -> Option<char> {
 }
 
 /// Month names for the `m` codes.
-fn month(month: u32, width: usize) -> String {
+fn month(month: u32, width: usize, language: Language) -> String {
     const NAMES: [&str; 12] = [
         "January",
         "February",
@@ -811,22 +1065,48 @@ fn month(month: u32, width: usize) -> String {
         "November",
         "December",
     ];
-    let name = NAMES
-        .get((month.max(1) - 1) as usize % 12)
-        .copied()
-        .unwrap_or("January");
+    // The names excelize gives the Russian locale; no Excel was at hand to
+    // check them against.
+    const RUSSIAN: [&str; 12] = [
+        "январь",
+        "февраль",
+        "март",
+        "апрель",
+        "май",
+        "июнь",
+        "июль",
+        "август",
+        "сентябрь",
+        "октябрь",
+        "ноябрь",
+        "декабрь",
+    ];
+    const RUSSIAN_SHORT: [&str; 12] = [
+        "янв.", "фев.", "март", "апр.", "май", "июнь", "июль", "авг.", "сен.", "окт.", "ноя.",
+        "дек.",
+    ];
+    let index = (month.max(1) - 1) as usize % 12;
+    let (name, short) = match language {
+        Language::English => (NAMES[index], &NAMES[index][..3]),
+        Language::Russian => (RUSSIAN[index], RUSSIAN_SHORT[index]),
+    };
     match width {
         1 => month.to_string(),
         2 => format!("{month:02}"),
-        3 => name[..3].to_owned(),
+        3 => short.to_owned(),
         4 => name.to_owned(),
         // `mmmmm` is the single-letter form.
-        _ => name[..1].to_owned(),
+        _ => name.chars().take(1).collect(),
     }
 }
 
 /// Day of month, or weekday name for `ddd` and `dddd`.
-fn day(dt: crate::shared::date::DateTime, width: usize, epoch: Epoch) -> String {
+fn day(
+    dt: crate::shared::date::DateTime,
+    width: usize,
+    epoch: Epoch,
+    language: Language,
+) -> String {
     const NAMES: [&str; 7] = [
         "Sunday",
         "Monday",
@@ -836,6 +1116,16 @@ fn day(dt: crate::shared::date::DateTime, width: usize, epoch: Epoch) -> String 
         "Friday",
         "Saturday",
     ];
+    const RUSSIAN: [&str; 7] = [
+        "воскресенье",
+        "понедельник",
+        "вторник",
+        "среда",
+        "четверг",
+        "пятница",
+        "суббота",
+    ];
+    const RUSSIAN_SHORT: [&str; 7] = ["Вс", "Пн", "Вт", "Ср", "Чт", "Пт", "Сб"];
     match width {
         1 => dt.day.to_string(),
         2 => format!("{:02}", dt.day),
@@ -853,11 +1143,12 @@ fn day(dt: crate::shared::date::DateTime, width: usize, epoch: Epoch) -> String 
                 Epoch::Windows1900 => (serial as u64 + 6) % 7,
                 Epoch::Mac1904 => (serial as u64 + 5) % 7,
             };
-            let name = NAMES[usize::try_from(index).unwrap_or(0)];
-            if width == 3 {
-                name[..3].to_owned()
-            } else {
-                name.to_owned()
+            let index = usize::try_from(index).unwrap_or(0);
+            match (language, width) {
+                (Language::English, 3) => NAMES[index][..3].to_owned(),
+                (Language::English, _) => NAMES[index].to_owned(),
+                (Language::Russian, 3) => RUSSIAN_SHORT[index].to_owned(),
+                (Language::Russian, _) => RUSSIAN[index].to_owned(),
             }
         }
     }
@@ -987,6 +1278,34 @@ mod tests {
         // Locale-dependent ids are left as General, as does.
         assert_eq!(builtin_code(5), "General");
         assert_eq!(builtin_code(999), "General");
+    }
+
+    #[test]
+    fn fractions_line_up_on_the_slash() {
+        assert_eq!(render(1.25, "# ?/?"), "1 1/4");
+        assert_eq!(render(0.5, "# ?/?"), " 1/2");
+        assert_eq!(render(-1.75, "# ?/?"), "-1 3/4");
+        // A whole number blanks the fraction, and so does one that rounds up.
+        assert_eq!(render(2.0, "# ?/?"), "2    ");
+        assert_eq!(render(0.99, "# ?/?"), "1    ");
+        assert_eq!(render(0.0, "# ?/?"), "0    ");
+        assert_eq!(render(5.25, "# ???/???"), "5   1/4  ");
+        // The closest fraction with that many digits, not the first near one.
+        assert_eq!(render(10.0 / 7.0, "?/???"), "10/7  ");
+        assert_eq!(render(5.2381, "# ?/???"), "5 5/21 ");
+        assert_eq!(render(1.3, "# ?/8"), "1 2/8");
+        assert_eq!(render(0.37, "0 ??/100"), "0 37/100");
+    }
+
+    #[test]
+    fn locale_tags_show_their_symbol_and_language() {
+        assert_eq!(render(1234.5, "#,##0.00 [$₽-419]"), "1,234.50 ₽");
+        assert_eq!(render(5.0, "[$€-407] 0.00"), "€ 5.00");
+        assert_eq!(render(45_658.0, "[$-409]mmmm"), "January");
+        // Checked against excelize: 1 January 2025 was a Wednesday.
+        assert_eq!(render(45_658.0, "[$-419]d mmmm yyyy"), "1 январь 2025");
+        assert_eq!(render(45_658.0, "[$-419]mmm dddd ddd"), "янв. среда Ср");
+        assert_eq!(render(45_658.0, "[$-ru-RU]mmmmm"), "я");
     }
 
     #[test]

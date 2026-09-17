@@ -74,9 +74,11 @@ assert_eq!(format(Value::Number(45000.0), "yyyy-mm-dd", Epoch::Windows1900), "20
 
 The engine covers sections (positive; negative; zero; text), thousands
 separators, percentages, scientific notation, dates and times, colour prefixes
-and conditions. Fractions (`# ?/?`) and locale prefixes (`[$-409]`) are ignored
-when rendering - but they survive a round trip, so nothing is lost from the
-file.
+and conditions, and fractions: `# ?/?` renders 1.25 as `1 1/4`, with the
+closest fraction whose denominator fits the placeholders, or a fixed
+denominator as in `# ??/100`. A locale tag shows its symbol (`[$₽-419]` is
+`₽`), and a Russian one (`[$-419]`) names months and weekdays in Russian, taken
+from excelize's tables. Other languages still name them in English.
 
 The epoch matters only for dates: a workbook saved on a Mac counts from 1904,
 and reading it as 1900 shifts every date by 1462 days. It is read from the file

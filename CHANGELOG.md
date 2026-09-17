@@ -36,6 +36,9 @@
   writes one, with the cache marked `refreshOnLoad`; a removed report takes
   its part with it. excelize reads the changed and the new report with the
   same fields.
+- Number formats render fractions (`# ?/?`, `?/???`, `# ??/100`) and the
+  symbol in a locale tag (`[$₽-419]`); a Russian locale tag names months and
+  weekdays in Russian. Before, all three were dropped from the output.
 - A comment added to a sheet gets the VML box Excel draws it in, and a sheet
   with no VML part gets one; the box of a removed comment is cut out. Before,
   a new comment was written without a box and Excel did not show it.
