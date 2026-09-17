@@ -1389,7 +1389,12 @@ pub struct Worksheet {
     /// inserts, and over nine million cells that was most of what the sheet
     /// cost in memory. A row is read and written in column order, so appending
     /// is the common insert.
-    cells: BTreeMap<Row, Vec<(Col, Cell)>>,
+    ///
+    /// Shared, and copied on the first change: the xlsx writer clones the
+    /// workbook to rewrite a changed chart's parts, and on a sheet of a
+    /// million cells a copy of them was hundreds of megabytes it never
+    /// touched.
+    cells: Arc<BTreeMap<Row, Vec<(Col, Cell)>>>,
     /// How many cells `cells` holds, kept rather than counted.
     count: usize,
     /// Merged areas.
@@ -1520,14 +1525,12 @@ impl Worksheet {
         // holds: rows of one sheet tend to be alike, and a row grown by pushes
         // to nine cells holds room for sixteen, which over a million rows was
         // most of the memory reading a sheet peaked at.
-        if !self.cells.contains_key(&at.row) {
-            let width = self
-                .cells
-                .last_key_value()
-                .map_or(0, |(_, line)| line.len());
-            self.cells.insert(at.row, Vec::with_capacity(width));
+        let cells = Arc::make_mut(&mut self.cells);
+        if !cells.contains_key(&at.row) {
+            let width = cells.last_key_value().map_or(0, |(_, line)| line.len());
+            cells.insert(at.row, Vec::with_capacity(width));
         }
-        let line = self.cells.entry(at.row).or_default();
+        let line = cells.entry(at.row).or_default();
         // Cells arrive in column order when a sheet is read, so the end of
         // the row is checked before a search.
         let index = match line.last() {
@@ -1547,11 +1550,13 @@ impl Worksheet {
 
     /// Removes the cell at `at`, returning it.
     pub fn remove(&mut self, at: CellRef) -> Option<Cell> {
-        let line = self.cells.get_mut(&at.row)?;
+        let line = self.cells.get(&at.row)?;
         let index = line.binary_search_by_key(&at.col, |(col, _)| *col).ok()?;
+        let cells = Arc::make_mut(&mut self.cells);
+        let line = cells.get_mut(&at.row)?;
         let (_, cell) = line.remove(index);
         if line.is_empty() {
-            self.cells.remove(&at.row);
+            cells.remove(&at.row);
         }
         self.count -= 1;
         Some(cell)
@@ -1589,7 +1594,7 @@ impl Worksheet {
     /// once a sheet is complete: a row grown to nine cells by pushes holds
     /// room for sixteen.
     pub fn shrink_to_fit(&mut self) {
-        for line in self.cells.values_mut() {
+        for line in Arc::make_mut(&mut self.cells).values_mut() {
             line.shrink_to_fit();
         }
     }

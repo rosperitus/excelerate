@@ -45,6 +45,10 @@
 
 ### Fixed
 
+- Writing a workbook with a changed chart, picture, shape, comment or pivot
+  copied every cell of it first. The cells of a sheet are now shared by a
+  clone until one of them changes: saving a million-cell export with one new
+  shape peaks at 1.18 GB instead of 1.68 GB.
 - A chain of formulas longer than 500 links, reached from one cell rather
   than in dependency order (`recalculate_cell`, a reference built by
   `INDIRECT`), was `#VALUE!` past the 500th link. The engine now sets the

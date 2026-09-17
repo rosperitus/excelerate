@@ -57,9 +57,8 @@ pub(super) fn prepare(book: &Spreadsheet) -> Result<Cow<'_, Spreadsheet>> {
             check(chart)?;
         }
     }
-    // ponytail: the whole workbook is cloned to change a few parts; a writer
-    // that takes replacements alongside the book avoids it if a large book
-    // with an edited chart turns out slow to save.
+    // A clone shares the cells of every sheet (`Worksheet::cells`), so what
+    // it copies is the parts and the furniture, not the grid.
     let mut out = book.clone();
     for index in dirty {
         apply_sheet(&mut out, index);
