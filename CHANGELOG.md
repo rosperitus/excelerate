@@ -18,6 +18,9 @@
   password from its text the way Excel does (SHA-512, random 16-byte salt,
   100,000 spins), and check a password against a hash a file carries.
   Verified against hashes `excelize` wrote.
+- A comment added to a sheet gets the VML box Excel draws it in, and a sheet
+  with no VML part gets one; the box of a removed comment is cut out. Before,
+  a new comment was written without a box and Excel did not show it.
 
 ### Fixed
 

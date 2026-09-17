@@ -1200,9 +1200,12 @@ fn notes_on_cells_survive_the_cycle() {
     );
     book.add_sheet(sheet).unwrap();
 
+    // The first write adds the VML boxes a note needs, which a book built in
+    // memory does not have; from there the cycle is a fixed point.
     let back = cycle(&book);
-    assert_same(&book, &back);
+    assert_same(&back, &cycle(&back));
     let sheet = back.sheet(0).unwrap();
+    assert_eq!(sheet.comments, book.sheet(0).unwrap().comments);
     assert_eq!(sheet.comments.len(), 2);
     let note = &sheet.comments[&at("B2")];
     assert_eq!(note.author, "Юрий");
@@ -1372,4 +1375,68 @@ fn a_style_extension_does_not_add_to_the_differential_formats() {
     assert_eq!(book.styles.differential.len(), 50);
     let back = cycle(&book);
     assert_eq!(back.styles.differential, book.styles.differential);
+}
+
+/// A comment is drawn in a VML box. One added here gets a box, one removed
+/// loses it, and the part is created when the sheet had none.
+#[test]
+fn comment_boxes_follow_the_comments() {
+    use excelerate::model::{Comment, TextRun};
+
+    let note = |text: &str| Comment {
+        author: "a".into(),
+        text: vec![TextRun {
+            text: text.into(),
+            font: None,
+        }],
+    };
+    let cycle = |book: &Spreadsheet| {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        excelerate::writer::xlsx::write_xlsx_to(book, &mut bytes).unwrap();
+        excelerate::reader::xlsx::read_xlsx_from(std::io::Cursor::new(bytes.into_inner())).unwrap()
+    };
+    let boxes = |book: &Spreadsheet| -> Vec<(String, String)> {
+        let sheet = book.sheet(0).unwrap();
+        let path = &sheet
+            .attachments
+            .iter()
+            .find(|a| a.role() == "vmlDrawing")
+            .expect("a VML part")
+            .target;
+        let part = book.parts.iter().find(|p| &p.path == path).unwrap();
+        let xml = String::from_utf8(part.data.clone()).unwrap();
+        let value = |from: &str, tag: &str| {
+            let open = format!("<x:{tag}>");
+            let at = from.find(&open).unwrap() + open.len();
+            from[at..at + from[at..].find('<').unwrap()].to_owned()
+        };
+        xml.split("<v:shape ")
+            .skip(1)
+            .map(|shape| (value(shape, "Row"), value(shape, "Column")))
+            .collect()
+    };
+
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    sheet.comments.insert(at("C5"), note("one"));
+    sheet.comments.insert(at("A1"), note("two"));
+    book.add_sheet(sheet).unwrap();
+
+    let mut book = cycle(&book);
+    assert_eq!(book.sheet(0).unwrap().comments.len(), 2);
+    let mut got = boxes(&book);
+    got.sort();
+    assert_eq!(got, [("0".into(), "0".into()), ("4".into(), "2".into())]);
+
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.comments.remove(&at("A1"));
+    sheet.comments.insert(at("B2"), note("three"));
+    let book = cycle(&book);
+    let mut got = boxes(&book);
+    got.sort();
+    assert_eq!(got, [("1".into(), "1".into()), ("4".into(), "2".into())]);
+
+    // Unchanged, the part travels as it came.
+    let again = cycle(&book);
+    assert_eq!(boxes(&again), boxes(&book));
 }
