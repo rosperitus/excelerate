@@ -24,7 +24,7 @@ numbers came from.
 
 ```rust
 # use excelerate::reader;
-# let book = reader::read("tests/test1.xlsx")?;
+# let book = reader::read("tests/corpus/test1.xlsx")?;
 for (i, linked) in book.external.iter().enumerate() {
     println!("[{}] {:?}", i + 1, linked.path);
     for sheet in &linked.sheets {
@@ -46,7 +46,7 @@ use excelerate::formula::eval::recalculate;
 use excelerate::progress::Options;
 # use excelerate::reader;
 
-# let mut book = reader::read("tests/test1.xlsx")?;
+# let mut book = reader::read("tests/corpus/test1.xlsx")?;
 recalculate(&mut book, None, &Options::default());   // formulas using [1]Sheet!A1 get real numbers
 # Ok::<(), excelerate::Error>(())
 ```

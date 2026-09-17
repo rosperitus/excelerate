@@ -9,3 +9,7 @@
 
 # Third-party sources kept alongside for comparison (BetterOffice).
 tmp/
+
+# Real workbooks for the corpus test: large, and not all of them ours to
+# publish. See tests/corpus.rs.
+tests/corpus/

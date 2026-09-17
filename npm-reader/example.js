@@ -2,7 +2,7 @@
 const { readFileSync } = require("node:fs");
 const { Book } = require("excelerate-reader");
 
-const path = process.argv[2] ?? "../tests/test1.xlsx";
+const path = process.argv[2] ?? "../tests/corpus/test1.xlsx";
 const book = Book.read(readFileSync(path), path);
 
 console.log("sheets:", book.sheetNames().join(", "));

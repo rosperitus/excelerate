@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const { readFileSync } = require("node:fs");
 const { Book } = require("excelerate-reader");
 
-const bytes = readFileSync(`${__dirname}/../tests/test1.xlsx`);
+const bytes = readFileSync(`${__dirname}/../tests/corpus/test1.xlsx`);
 
 test("reads a workbook and its sheets", () => {
   const book = Book.read(bytes, "test1.xlsx");

@@ -31,7 +31,7 @@ Got bytes instead of a path - an upload, an S3 object, a blob from JS?
 ```rust
 use excelerate::reader::read_bytes;
 
-# let bytes: Vec<u8> = std::fs::read("tests/test1.xlsx").unwrap();
+# let bytes: Vec<u8> = std::fs::read("tests/corpus/test1.xlsx").unwrap();
 let book = read_bytes(&bytes, Some("upload.xlsx"))?;
 # Ok::<(), excelerate::Error>(())
 ```
@@ -50,7 +50,7 @@ use excelerate::CellRef;
 use excelerate::model::CellValue;
 # use excelerate::reader;
 
-# let book = reader::read("tests/test1.xlsx")?;
+# let book = reader::read("tests/corpus/test1.xlsx")?;
 let sheet = book.sheet(0).unwrap();
 
 match &sheet.get(CellRef::parse("B4")?).map(|c| &c.value) {
@@ -71,7 +71,7 @@ nothing:
 
 ```rust
 # use excelerate::reader;
-# let book = reader::read("tests/test1.xlsx")?;
+# let book = reader::read("tests/corpus/test1.xlsx")?;
 # let sheet = book.sheet(0).unwrap();
 for (at, cell) in sheet.iter() {
     // Row by row, left to right.
@@ -138,7 +138,7 @@ package can expand to 560 MB - so raise it explicitly when you need to:
 ```rust
 use excelerate::reader::read_bytes_limited;
 
-# let bytes: Vec<u8> = std::fs::read("tests/test1.xlsx").unwrap();
+# let bytes: Vec<u8> = std::fs::read("tests/corpus/test1.xlsx").unwrap();
 let book = read_bytes_limited(&bytes, Some("big.xlsx"), 4 << 30)?;
 # Ok::<(), excelerate::Error>(())
 ```

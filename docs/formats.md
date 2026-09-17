@@ -23,7 +23,7 @@ really HTML.
 ```rust
 use excelerate::reader::{Format, format_of};
 
-assert_eq!(format_of("tests/test1.xlsx")?, Format::Xlsx);
+assert_eq!(format_of("tests/corpus/test1.xlsx")?, Format::Xlsx);
 # Ok::<(), excelerate::Error>(())
 ```
 
@@ -139,7 +139,7 @@ heights, hyperlinks and rich text:
 use excelerate::writer::{HtmlOptions, write_html_to};
 # use excelerate::reader;
 
-# let book = reader::read("tests/test1.xlsx")?;
+# let book = reader::read("tests/corpus/test1.xlsx")?;
 let mut out = Vec::new();
 write_html_to(&book, &mut out, &HtmlOptions {
     sheet: Some(0),      // None writes every sheet
