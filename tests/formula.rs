@@ -900,6 +900,12 @@ fn what_an_excel_formula_reference_cached() {
         // Found by fuzzing: a fractional position under one is the whole row.
         ("SUM(INDEX({1,2;3,4},0.2,1))", "4"),
         ("INDEX({1,2;3,4},1.9,2.7)", "2"),
+        // Found by fuzzing: an array a formula asks for is capped at what a
+        // reference may pull in, four million cells, rather than allocated.
+        ("EXPAND(1,50001,20250)", "#NUM!"),
+        ("ROWS(RANDARRAY(1E+6,1E+6))", "#NUM!"),
+        ("SUM(SEQUENCE(1,5000)*SEQUENCE(5000,1))", "#NUM!"),
+        ("ROWS(EXPAND(1,3,2))", "3"),
         // Only values of the needle's kind are searched: blanks and numbers
         // in a row of names are stepped over.
         ("MATCH(\"b\",{\"a\",1,\"b\",2,\"c\"})", "3"),

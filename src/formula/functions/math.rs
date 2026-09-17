@@ -1396,6 +1396,9 @@ pub fn randarray(args: &[Arg]) -> Value {
     let (Some(rows), Some(columns)) = (size(rows), size(columns)) else {
         return Value::Error(CellError::Value);
     };
+    if rows.saturating_mul(columns) > crate::formula::eval::MAX_RANGE_CELLS {
+        return Value::Error(CellError::Num);
+    }
     Value::array(
         (0..rows)
             .map(|_| {

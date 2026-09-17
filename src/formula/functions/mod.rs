@@ -248,6 +248,9 @@ fn lift(args: &[Arg], positions: &[usize], run: impl Fn(&[Arg]) -> Value) -> Val
         .iter()
         .map(|&i| crate::formula::eval::shape(&args[i].value))
         .fold((0, 0), |(r, c), (ar, ac)| (r.max(ar), c.max(ac)));
+    if rows.saturating_mul(cols) > crate::formula::eval::MAX_RANGE_CELLS {
+        return Value::Error(CellError::Num);
+    }
     let mut call = args.to_vec();
     let out = (0..rows)
         .map(|r| {

@@ -41,8 +41,10 @@ impl Origin {
 ///
 /// `A:A` is a million cells and `1:1` sixteen thousand; the reference is
 /// clipped to the part of the sheet that holds anything, but a workbook is
-/// untrusted input, so there is a hard ceiling as well.
-const MAX_RANGE_CELLS: usize = 4_000_000;
+/// untrusted input, so there is a hard ceiling as well. The same ceiling holds
+/// for an array a formula builds: `EXPAND`, a row times a column, a function
+/// lifted over two arrays.
+pub(crate) const MAX_RANGE_CELLS: usize = 4_000_000;
 
 /// How long a chain of formulas reading formulas may be.
 ///
@@ -790,6 +792,9 @@ fn broadcast(op: BinaryOp, a: &Value, b: &Value) -> Value {
     let (ar, ac) = shape(a);
     let (br, bc) = shape(b);
     let (rows, cols) = (ar.max(br), ac.max(bc));
+    if rows.saturating_mul(cols) > MAX_RANGE_CELLS {
+        return Value::Error(CellError::Num);
+    }
     let out = (0..rows)
         .map(|r| {
             (0..cols)

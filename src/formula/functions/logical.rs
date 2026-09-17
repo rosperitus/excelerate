@@ -98,6 +98,9 @@ fn elementwise(values: &[&Value], pick: impl Fn(&[Value]) -> Value) -> Value {
         .iter()
         .map(|v| shape(v))
         .fold((0, 0), |(r, c), (vr, vc)| (r.max(vr), c.max(vc)));
+    if rows.saturating_mul(cols) > crate::formula::eval::MAX_RANGE_CELLS {
+        return Value::Error(crate::error::CellError::Num);
+    }
     let out = (0..rows)
         .map(|r| {
             (0..cols)

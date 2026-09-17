@@ -1256,6 +1256,9 @@ pub fn expand(args: &[Arg]) -> Value {
     if rows < grid.len() || columns < width {
         return Value::Error(CellError::Value);
     }
+    if rows.saturating_mul(columns) > crate::formula::eval::MAX_RANGE_CELLS {
+        return Value::Error(CellError::Num);
+    }
     let filler = rest
         .get(2)
         .filter(|a| !a.missing())
