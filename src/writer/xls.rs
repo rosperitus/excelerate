@@ -382,7 +382,7 @@ fn plan_format(formats: &mut Vec<(u16, String)>, style: &Style) -> u16 {
 fn from_formula(value: FormulaValue) -> CellValue {
     match value {
         FormulaValue::Number(n) => CellValue::Number(n),
-        FormulaValue::Text(t) => CellValue::Text(t),
+        FormulaValue::Text(t) => CellValue::Text(t.into()),
         FormulaValue::Bool(b) => CellValue::Bool(b),
         FormulaValue::Error(e) => CellValue::Error(e),
         // A cell cannot hold a function; Excel shows `#CALC!`.
@@ -403,7 +403,7 @@ fn from_formula(value: FormulaValue) -> CellValue {
 /// keeps them on the cell.
 fn string_of(value: &CellValue) -> Option<String> {
     match value {
-        CellValue::Text(text) => Some(text.clone()),
+        CellValue::Text(text) => Some(text.to_string()),
         CellValue::RichText(runs) => Some(runs.iter().map(|run| run.text.as_str()).collect()),
         _ => None,
     }
@@ -564,7 +564,7 @@ fn cell_record(
         }
         CellValue::Text(text) => {
             head(&mut data);
-            let index = plan.string_index.get(text.as_str()).copied().unwrap_or(0);
+            let index = plan.string_index.get(text.as_ref()).copied().unwrap_or(0);
             data.extend_from_slice(&index.to_le_bytes());
             record(out, 0x00FD, &data);
         }

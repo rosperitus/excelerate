@@ -274,10 +274,10 @@ fn collect_shared_strings(book: &Spreadsheet) -> StringPool<'_> {
             match &cell.value {
                 CellValue::Text(s) => {
                     if let std::collections::hash_map::Entry::Vacant(slot) =
-                        pool.plain.entry(s.as_str())
+                        pool.plain.entry(s.as_ref())
                     {
                         slot.insert(next);
-                        pool.entries.push(Pooled::Plain(s.as_str()));
+                        pool.entries.push(Pooled::Plain(s.as_ref()));
                     }
                 }
                 CellValue::RichText(runs) => {
@@ -2210,7 +2210,7 @@ fn cell_xml(
             Some(i) => format!(r#"<c{attrs} t="s"><v>{i}</v></c>"#),
             None => format!("<c{attrs}/>"),
         },
-        CellValue::Text(text) => match pool.plain.get(text.as_str()) {
+        CellValue::Text(text) => match pool.plain.get(text.as_ref()) {
             Some(i) => format!(r#"<c{attrs} t="s"><v>{i}</v></c>"#),
             // A string missing from the pool would be a bug in the pool builder;
             // write it inline rather than silently emit a dangling index.

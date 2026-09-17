@@ -60,7 +60,7 @@ fn disagrees(book: &Spreadsheet, engine: &mut Engine<'_>, (sheet, at): (usize, C
     let got = engine.cell(sheet, at);
     !match (&got, cached.as_ref()) {
         (Value::Number(a), CellValue::Number(b)) => (a - b).abs() <= b.abs() * 1e-9 + 1e-9,
-        (Value::Text(a), CellValue::Text(b)) => a == b,
+        (Value::Text(a), CellValue::Text(b)) => a.as_str() == &**b,
         (Value::Bool(a), CellValue::Bool(b)) => a == b,
         (Value::Error(a), CellValue::Error(b)) => a == b,
         (Value::Number(a), CellValue::Text(b)) => *a == 0.0 && b.is_empty(),

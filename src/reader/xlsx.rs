@@ -95,9 +95,12 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
     let mut zip = zip::ZipArchive::new(source).map_err(|e| Error::Xlsx(e.to_string()))?;
 
     let total = uncompressed_size(&mut zip);
-    if total > max_expanded {
+    let compressed = super::zipxml::compressed_size(&mut zip);
+    if !super::zipxml::expansion_allowed(total, compressed, max_expanded) {
         return Err(Error::Xlsx(format!(
-            "package expands to {total} bytes, over the {max_expanded} limit"
+            "package expands to {total} bytes from {compressed}, over the {max_expanded} limit \
+             and more than {} times its compressed size",
+            super::zipxml::MAX_COMPRESSION_RATIO
         )));
     }
 
@@ -1061,20 +1064,29 @@ fn read_comments<R: Read + Seek>(
 /// A `<si>` may be a single `<t>` or a run of `<r><t>` fragments with different
 /// formatting; the text is the concatenation either way. Formatting runs are
 /// rich text, which belongs to a later phase.
+///
+/// Each entry is kept as the value a cell holding it gets, so a cell takes a
+/// clone of a shared `Arc<str>` rather than a copy of the text: a sheet of
+/// seven million text cells over eight hundred thousand distinct strings
+/// held 728 MB of copies.
 fn read_shared_strings<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     path: &str,
-) -> Result<Vec<Vec<TextRun>>> {
-    let xml = read_part(zip, path)?;
-    let mut reader = Reader::from_str(&xml);
-    let mut out: Vec<Vec<TextRun>> = Vec::new();
+) -> Result<Vec<CellValue>> {
+    // Streamed as it inflates: the table of a large export is a quarter of a
+    // gigabyte of XML, and none of it is needed once its strings are taken.
+    let part = super::zipxml::open_part(zip, path).map_err(Error::Xlsx)?;
+    let mut reader = Reader::from_reader(std::io::BufReader::with_capacity(1 << 16, part));
+    let mut buf = Vec::new();
+    let mut out: Vec<CellValue> = Vec::new();
     let mut runs: Vec<TextRun> = Vec::new();
     let mut run = TextRun::default();
     let mut in_si = false;
     let mut in_text = false;
     let mut in_rpr = false;
     loop {
-        match reader.read_event() {
+        buf.clear();
+        match reader.read_event_into(&mut buf) {
             Ok(Event::Start(ref e) | Event::Empty(ref e)) => match e.local_name().as_ref() {
                 "si" => {
                     in_si = true;
@@ -1104,7 +1116,8 @@ fn read_shared_strings<R: Read + Seek>(
                     if runs.is_empty() {
                         runs.push(std::mem::take(&mut run));
                     }
-                    out.push(std::mem::take(&mut runs));
+                    out.push(pooled(&runs));
+                    runs.clear();
                 }
                 "r" => runs.push(std::mem::take(&mut run)),
                 "rPr" => in_rpr = false,
@@ -1698,12 +1711,11 @@ fn read_sheet<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     path: &str,
     name: &str,
-    shared: &[Vec<TextRun>],
+    shared: &[CellValue],
     links: &HashMap<String, Relationship>,
 ) -> Result<Worksheet> {
-    let xml = read_part(zip, path)?;
-    let mut sheet = Worksheet::new(name)?;
-    sheet.extensions = trailing_extensions(&xml);
+    let part = super::zipxml::open_part(zip, path).map_err(Error::Xlsx)?;
+    let sheet = Worksheet::new(name)?;
     let mut state = SheetReader {
         sheet,
         sheet_dir: path.rsplit_once('/').map_or("", |(dir, _)| dir),
@@ -1729,24 +1741,121 @@ fn read_sheet<R: Read + Seek>(
         ext_depth: 0,
     };
 
-    let mut reader = Reader::from_str(&xml);
+    // The part is parsed as it is inflated rather than read into memory
+    // first. The one stretch kept as text is the sheet's own `<extLst>`, which
+    // travels as written: the recorder holds the bytes from a mark on, the
+    // mark follows the parser, and it stays put while that element is read.
+    let mut reader = Reader::from_reader(std::io::BufReader::with_capacity(
+        1 << 16,
+        Recorder::new(part),
+    ));
+    let mut buf = Vec::new();
+    let mut depth = 0u32;
+    let mut extension_start: Option<u64> = None;
     loop {
-        let event = match reader.read_event() {
+        buf.clear();
+        let before = reader.buffer_position();
+        let event = match reader.read_event_into(&mut buf) {
             Ok(e) => e,
             Err(e) => return Err(Error::Xlsx(format!("{path}: {e}"))),
         };
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
-                state.start(e, matches!(event, Event::Empty(_)));
+                let empty = matches!(event, Event::Empty(_));
+                if depth == 1 && e.local_name().as_ref() == "extLst" {
+                    if empty {
+                        state.sheet.extensions = Some(
+                            String::from_utf8_lossy(
+                                &reader
+                                    .get_ref()
+                                    .get_ref()
+                                    .since(before, reader.buffer_position()),
+                            )
+                            .trim_start()
+                            .to_owned(),
+                        );
+                    } else {
+                        extension_start = Some(before);
+                    }
+                }
+                state.start(e, empty);
+                if !empty {
+                    depth += 1;
+                }
             }
             Event::Text(ref t) => state.text(&t.borrow().into_inner()),
             Event::GeneralRef(ref r) => state.entity(r),
-            Event::End(ref e) => state.end(e.local_name().as_ref()),
+            Event::End(ref e) => {
+                depth = depth.saturating_sub(1);
+                state.end(e.local_name().as_ref());
+                if depth == 1
+                    && e.local_name().as_ref() == "extLst"
+                    && let Some(start) = extension_start.take()
+                {
+                    let bytes = reader
+                        .get_ref()
+                        .get_ref()
+                        .since(start, reader.buffer_position());
+                    state.sheet.extensions =
+                        Some(String::from_utf8_lossy(&bytes).trim_start().to_owned());
+                }
+            }
             Event::Eof => break,
             _ => {}
         }
+        if extension_start.is_none() {
+            let at = reader.buffer_position();
+            reader.get_mut().get_mut().forget_before(at);
+        }
     }
     Ok(state.sheet)
+}
+
+/// A reader that keeps what passed through it from a mark on, so a stretch of
+/// a stream a parser has already consumed can still be copied out whole.
+struct Recorder<R> {
+    inner: R,
+    /// Where in the stream `kept` begins.
+    base: u64,
+    kept: Vec<u8>,
+}
+
+impl<R: Read> Recorder<R> {
+    const fn new(inner: R) -> Self {
+        Self {
+            inner,
+            base: 0,
+            kept: Vec::new(),
+        }
+    }
+
+    /// Drops what lies before `at`. Only now and then, so dropping stays
+    /// cheaper than keeping.
+    fn forget_before(&mut self, at: u64) {
+        let drop = usize::try_from(at.saturating_sub(self.base)).unwrap_or(usize::MAX);
+        if drop >= 1 << 20 && drop <= self.kept.len() {
+            self.kept.drain(..drop);
+            self.base = at;
+        }
+    }
+
+    /// The bytes from `start` to `end`, positions in the stream.
+    fn since(&self, start: u64, end: u64) -> Vec<u8> {
+        let from = usize::try_from(start.saturating_sub(self.base)).unwrap_or(usize::MAX);
+        let to = usize::try_from(end.saturating_sub(self.base)).unwrap_or(usize::MAX);
+        self.kept
+            .get(from..to.min(self.kept.len()))
+            .unwrap_or_default()
+            .to_vec()
+    }
+}
+
+impl<R: Read> Read for Recorder<R> {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(out)?;
+        self.kept.extend_from_slice(&out[..n]);
+        Ok(n)
+    }
 }
 
 /// The sheet being built and everything the event loop threads through it.
@@ -1763,7 +1872,7 @@ fn read_sheet<R: Read + Seek>(
 struct SheetReader<'a> {
     sheet: Worksheet,
     sheet_dir: &'a str,
-    shared: &'a [Vec<TextRun>],
+    shared: &'a [CellValue],
     links: &'a HashMap<String, Relationship>,
 
     /// The cell being read, and what has been gathered for it so far.
@@ -2774,7 +2883,7 @@ impl CellKind {
 }
 
 /// Turns the raw text of a cell into a value.
-fn build_value(kind: CellKind, raw: &str, formula: &str, shared: &[Vec<TextRun>]) -> CellValue {
+fn build_value(kind: CellKind, raw: &str, formula: &str, shared: &[CellValue]) -> CellValue {
     if !formula.is_empty() {
         // The stored `<v>` is the last result Excel computed. Keeping it is what
         // lets a workbook be read without a formula engine.
@@ -2798,7 +2907,7 @@ fn pooled(runs: &[TextRun]) -> CellValue {
 }
 
 /// Reads a non-formula value.
-fn scalar(kind: CellKind, raw: &str, shared: &[Vec<TextRun>]) -> CellValue {
+fn scalar(kind: CellKind, raw: &str, shared: &[CellValue]) -> CellValue {
     if raw.is_empty() {
         return CellValue::Empty;
     }
@@ -2807,7 +2916,8 @@ fn scalar(kind: CellKind, raw: &str, shared: &[Vec<TextRun>]) -> CellValue {
             .parse::<usize>()
             .ok()
             .and_then(|i| shared.get(i))
-            .map_or(CellValue::Empty, |runs| pooled(runs)),
+            .cloned()
+            .unwrap_or(CellValue::Empty),
         CellKind::FormulaString | CellKind::InlineString | CellKind::IsoDate => {
             CellValue::text(raw)
         }

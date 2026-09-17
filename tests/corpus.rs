@@ -55,6 +55,10 @@ fn every_workbook_of_the_corpus() {
     let mut failures = Vec::new();
     for path in paths.iter().filter(|p| p.is_file()) {
         let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        // The lock files an office suite leaves beside an open document.
+        if name.starts_with(".~") || name.starts_with("~$") {
+            continue;
+        }
         if let Err(problem) = check(path, &name) {
             println!("FAIL {name}: {problem}");
             failures.push(name);
@@ -184,7 +188,7 @@ fn agreement(book: &Spreadsheet) -> (usize, usize) {
 fn same(got: &Value, cached: &CellValue) -> bool {
     match (got, cached) {
         (Value::Number(a), CellValue::Number(b)) => (a - b).abs() <= b.abs() * 1e-9 + 1e-9,
-        (Value::Text(a), CellValue::Text(b)) => a == b,
+        (Value::Text(a), CellValue::Text(b)) => a.as_str() == &**b,
         (Value::Bool(a), CellValue::Bool(b)) => a == b,
         (Value::Error(a), CellValue::Error(b)) => a == b,
         // Excel writes an empty result as an empty string.

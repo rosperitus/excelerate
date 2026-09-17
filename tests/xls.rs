@@ -167,7 +167,7 @@ fn formulas_decompile_to_the_text_they_were_compiled_from() {
     for row in 4..=31 {
         let at = |col: &str| CellRef::parse(&format!("{col}{row}")).unwrap();
         let source = match sheet.get(at("A")).map(|c| &c.value) {
-            Some(excelerate::model::CellValue::Text(text)) => text.clone(),
+            Some(excelerate::model::CellValue::Text(text)) => text.to_string(),
             other => panic!("A{row} holds {other:?}"),
         };
         match sheet.get(at("B")).map(|c| &c.value) {

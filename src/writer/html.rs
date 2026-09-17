@@ -275,7 +275,7 @@ fn displayed(engine: &mut Engine<'_>, sheet: usize, at: CellRef, value: &CellVal
             Some(cached) => (**cached).clone(),
             None => match engine.eval(Origin::new(sheet, at), formula) {
                 FormulaValue::Number(n) => CellValue::Number(n),
-                FormulaValue::Text(t) => CellValue::Text(t),
+                FormulaValue::Text(t) => CellValue::Text(t.into()),
                 FormulaValue::Bool(b) => CellValue::Bool(b),
                 FormulaValue::Error(e) => CellValue::Error(e),
                 FormulaValue::Blank => CellValue::Empty,
@@ -289,7 +289,7 @@ fn displayed(engine: &mut Engine<'_>, sheet: usize, at: CellRef, value: &CellVal
                         .and_then(|line| line.first())
                         .map_or(CellValue::Empty, |value| match value {
                             FormulaValue::Number(n) => CellValue::Number(*n),
-                            FormulaValue::Text(t) => CellValue::Text(t.clone()),
+                            FormulaValue::Text(t) => CellValue::Text(t.as_str().into()),
                             FormulaValue::Bool(b) => CellValue::Bool(*b),
                             FormulaValue::Error(e) => CellValue::Error(*e),
                             FormulaValue::Lambda(_) => {

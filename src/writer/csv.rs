@@ -95,7 +95,7 @@ fn render(engine: &mut Engine<'_>, sheet: usize, at: CellRef, value: &CellValue)
     match value {
         CellValue::Empty => String::new(),
         CellValue::Number(n) => number(*n),
-        CellValue::Text(t) => t.clone(),
+        CellValue::Text(t) => t.to_string(),
         CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_owned(),
         CellValue::Error(e) => e.as_str().to_owned(),
         CellValue::RichText(runs) => runs.iter().map(|r| r.text.as_str()).collect(),

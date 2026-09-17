@@ -13,14 +13,22 @@ use std::io::{Read, Seek};
 /// is what stops a malicious file from exhausting memory.
 pub const MAX_UNCOMPRESSED_SIZE: u64 = 512 * 1024 * 1024;
 
-/// Largest single XML part accepted, for the same reason.
+/// How many times its compressed size a package may expand to past
+/// [`MAX_UNCOMPRESSED_SIZE`].
 ///
-/// A part is not more dangerous than the package holding it, and the package
-/// is checked before any part is read, so this is the same number: it caps how
-/// much one part may hold in memory at once, not how far a file may expand.
-/// A real workbook does reach it - a hundred-megabyte package can carry a
-/// third of a gigabyte of sheet XML.
-pub const MAX_PART_SIZE: u64 = MAX_UNCOMPRESSED_SIZE;
+/// The absolute cap alone cannot tell a zip bomb from a big workbook: a 70 MB
+/// export of nine million cells expands to 634 MB, and Excel opens it. What
+/// tells them apart is the ratio. Sheet XML deflates five to twenty times; a
+/// bomb is built to deflate hundreds or thousands of times, the format's own
+/// limit being about a thousand.
+pub const MAX_COMPRESSION_RATIO: u64 = 100;
+
+/// Largest single part accepted: what a `String` of it can sensibly be.
+///
+/// A part is read up to the size its entry declares, and those sizes are what
+/// the package check added up, so a part is bounded by the package; this is a
+/// ceiling for a header that claims four gigabytes of XML in one piece.
+pub const MAX_PART_SIZE: u64 = 4 << 30;
 
 /// The name a part is stored under, matched without regard to case.
 ///
@@ -34,6 +42,24 @@ pub fn resolve<R: Read + Seek>(zip: &zip::ZipArchive<R>, path: &str) -> Option<S
     zip.file_names()
         .find(|name| name.eq_ignore_ascii_case(path))
         .map(ToOwned::to_owned)
+}
+
+/// Whether a package may be read: under the absolute cap, or over it but
+/// compressed no harder than a real workbook is.
+#[must_use]
+pub fn expansion_allowed(expanded: u64, compressed: u64, max_expanded: u64) -> bool {
+    expanded <= max_expanded || expanded <= compressed.saturating_mul(MAX_COMPRESSION_RATIO)
+}
+
+/// The total size the archive's entries take compressed.
+pub fn compressed_size<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) -> u64 {
+    let mut total: u64 = 0;
+    for i in 0..zip.len() {
+        if let Ok(entry) = zip.by_index_raw(i) {
+            total = total.saturating_add(entry.compressed_size());
+        }
+    }
+    total
 }
 
 /// The total size the archive expands to, saturating rather than overflowing.
@@ -63,11 +89,37 @@ pub fn read_bytes<R: Read + Seek>(
         return Err(format!("part {path:?} is too large"));
     }
     let mut out = Vec::with_capacity(usize::try_from(file.size()).unwrap_or(0));
+    // No further than the entry says: that size is what the package check
+    // counted, and a stream that runs past it is lying about itself.
+    let declared = file.size();
     file.by_ref()
-        .take(MAX_PART_SIZE)
+        .take(declared)
         .read_to_end(&mut out)
         .map_err(|e| format!("part {path:?}: {e}"))?;
     Ok(out)
+}
+
+/// Opens a part for reading as a stream, refusing anything oversized.
+///
+/// For the parts too large to hold as text while they are parsed: a sheet of
+/// nine million cells is 377 MB of XML, all of it in memory beside the cells
+/// built from it when the part is read whole.
+///
+/// # Errors
+/// A message naming the part; the caller wraps it in the error of its format.
+pub fn open_part<'a, R: Read + Seek>(
+    zip: &'a mut zip::ZipArchive<R>,
+    path: &str,
+) -> Result<impl Read + 'a, String> {
+    let name = resolve(zip, path).ok_or_else(|| format!("package has no part {path:?}"))?;
+    let file = zip
+        .by_name(&name)
+        .map_err(|_| format!("package has no part {path:?}"))?;
+    if file.size() > MAX_PART_SIZE {
+        return Err(format!("part {path:?} is too large"));
+    }
+    let declared = file.size();
+    Ok(file.take(declared))
 }
 
 /// Reads a part fully as text, refusing anything oversized.
@@ -88,8 +140,9 @@ pub fn read_part<R: Read + Seek>(
     // Reserve by the declared size only after checking it, and cap the read so
     // a lying header cannot make us grow past the limit either.
     let mut text = String::with_capacity(usize::try_from(file.size()).unwrap_or(0));
+    let declared = file.size();
     file.by_ref()
-        .take(MAX_PART_SIZE)
+        .take(declared)
         .read_to_string(&mut text)
         .map_err(|e| format!("part {path:?}: {e}"))?;
     Ok(text)
@@ -102,10 +155,17 @@ pub fn is_true(value: &str) -> bool {
 
 /// One attribute by local name, ignoring its namespace prefix.
 pub fn attr(e: &quick_xml::events::BytesStart<'_>, name: &str) -> Option<String> {
-    attrs(e)
-        .into_iter()
-        .find(|(k, _)| k == name)
-        .map(|(_, v)| v)
+    // Looked up in place: collecting every attribute into owned strings to
+    // find one cost a fifth of reading a sheet of nine million cells, where
+    // each `<c>` asks for three.
+    e.attributes()
+        .flatten()
+        .find(|a| a.key.local_name().as_ref() == name)
+        .map(|a| {
+            a.normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .unwrap_or_default()
+                .into_owned()
+        })
 }
 
 /// Every attribute as (local name, value).

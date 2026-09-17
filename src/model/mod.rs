@@ -18,6 +18,7 @@ use crate::error::{CellError, Error, Result};
 use crate::shared::date::Epoch;
 use crate::style::{Color, DiffFont, StyleId, StyleTable};
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 pub use autofilter::{
     AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator,
@@ -48,7 +49,12 @@ pub enum CellValue {
     /// A string. `TYPE_STRING`, `TYPE_STRING2` and `TYPE_INLINE` differ only in
     /// how they are written to a file, which is the writer's business, not the
     /// model's.
-    Text(String),
+    ///
+    /// Shared rather than owned: a sheet of seven million text cells holds
+    /// perhaps eight hundred thousand distinct strings, and a copy per cell
+    /// was most of the memory a large workbook took. Cells read from the
+    /// same shared string point at one allocation.
+    Text(Arc<str>),
     /// A boolean.
     Bool(bool),
     /// An error code held as the cell's value.
@@ -76,7 +82,15 @@ impl CellValue {
             Some((byte_idx, _)) => s[..byte_idx].to_owned(),
             None => s,
         };
-        Self::Text(s)
+        Self::Text(s.into())
+    }
+
+    /// Text already shared with other cells, as a reader hands out the
+    /// entries of a shared string table. The caller has kept it to Excel's
+    /// length.
+    #[must_use]
+    pub const fn shared_text(value: Arc<str>) -> Self {
+        Self::Text(value)
     }
 
     /// Whether the cell holds nothing.
@@ -90,7 +104,7 @@ impl CellValue {
     #[must_use]
     pub fn plain_text(&self) -> Option<String> {
         match self {
-            Self::Text(t) => Some(t.clone()),
+            Self::Text(t) => Some(t.to_string()),
             Self::RichText(runs) => Some(runs.iter().map(|r| r.text.as_str()).collect()),
             _ => None,
         }

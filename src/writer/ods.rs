@@ -474,7 +474,7 @@ fn typed_value(
         }
         CellValue::Text(t) => {
             out.push_str(r#" office:value-type="string""#);
-            Some(t.clone())
+            Some(t.to_string())
         }
         CellValue::RichText(runs) => {
             out.push_str(r#" office:value-type="string""#);

@@ -137,8 +137,32 @@ fn the_expansion_cap_can_be_raised() {
     use excelerate::reader::read_bytes_limited;
 
     let bytes = std::fs::read("tests/fixtures/sample.xlsx").unwrap();
-    // A cap below what the package expands to is what stops a zip bomb.
-    let err = read_bytes_limited(&bytes, None, 16).unwrap_err();
-    assert!(format!("{err}").contains("over the 16 limit"), "{err}");
+    // A real package compresses a few times over, so past the cap it is still
+    // read; the cap alone cannot tell a bomb from a big workbook.
+    assert!(read_bytes_limited(&bytes, None, 16).is_ok());
     assert!(read_bytes_limited(&bytes, None, u64::MAX).is_ok());
+}
+
+/// What stops a zip bomb is how hard it compresses: past the cap, a package
+/// that expands more than a hundred times its size is refused.
+#[test]
+fn a_package_that_expands_like_a_bomb_is_refused() {
+    use excelerate::reader::read_bytes_limited;
+    use std::io::Write;
+
+    let mut bytes = Vec::new();
+    {
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(&mut bytes));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        zip.start_file("[Content_Types].xml", options).unwrap();
+        zip.write_all(&vec![b' '; 50 << 20]).unwrap();
+        zip.finish().unwrap();
+    }
+    // Fifty megabytes of spaces deflate to well under half a megabyte.
+    let err = read_bytes_limited(&bytes, Some("bomb.xlsx"), 1 << 20).unwrap_err();
+    assert!(
+        format!("{err}").contains("times its compressed size"),
+        "{err}"
+    );
 }

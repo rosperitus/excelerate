@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- `CellValue::Text` holds `Arc<str>` instead of `String`. Cells read from the
+  same shared string share one allocation. `CellValue::text` still builds one
+  from any string; `CellValue::shared_text` takes an `Arc<str>` as it is.
+- A zip package larger than the expansion cap is read when it expands no more
+  than 100 times its compressed size. The cap alone refused a 70 MB export
+  that expands to 634 MB and that Excel opens; the ratio is what tells such a
+  workbook from a zip bomb.
+
+### Performance
+
+- Reading a 70 MB xlsx of nine million cells takes 5.2 s and 1.1 GB. Before,
+  it was refused, and with the cap raised took 7.3 s and 2.7 GB. Shared
+  strings are no longer copied into each cell, the sheet and the shared
+  string table are parsed as they inflate instead of being held as text,
+  and attributes are looked up in place instead of collected.
+
 ## 0.8.0
 
 ### Breaking changes

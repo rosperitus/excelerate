@@ -205,7 +205,7 @@ impl<'a> Engine<'a> {
         let value = match stored {
             None | Some(CellValue::Empty) => Value::Blank,
             Some(CellValue::Number(n)) => Value::Number(n),
-            Some(CellValue::Text(t)) => Value::Text(t),
+            Some(CellValue::Text(t)) => Value::Text(t.to_string()),
             // Formatting inside the cell is presentation; a formula reads the
             // text it spells.
             Some(rich @ CellValue::RichText(_)) => {
@@ -587,7 +587,7 @@ impl<'a> Engine<'a> {
         let at = |row, col| match cells.get(&(row, col)) {
             None | Some(CellValue::Empty) => Value::Blank,
             Some(CellValue::Number(n)) => Value::Number(*n),
-            Some(CellValue::Text(t)) => Value::Text(t.clone()),
+            Some(CellValue::Text(t)) => Value::Text(t.to_string()),
             Some(CellValue::Bool(b)) => Value::Bool(*b),
             Some(CellValue::Error(e)) => Value::Error(*e),
             // The cache never holds a formula or rich text: it is values only.
@@ -980,7 +980,7 @@ pub(crate) fn stored(value: &Value) -> CellValue {
     match value {
         Value::Blank => CellValue::Empty,
         Value::Number(n) => CellValue::Number(*n),
-        Value::Text(t) => CellValue::Text(t.clone()),
+        Value::Text(t) => CellValue::Text(t.as_str().into()),
         Value::Bool(b) => CellValue::Bool(*b),
         Value::Error(e) => CellValue::Error(*e),
         // A lambda is not something a cell can hold, so what is stored is the
