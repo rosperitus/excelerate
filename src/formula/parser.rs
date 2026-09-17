@@ -456,7 +456,10 @@ fn lex_structured(c: &[char], i: &mut usize, table: Option<String>) -> Result<To
     let mut at = 0;
     while at < body.len() {
         match body[at] {
-            ',' => at += 1,
+            // A separator, or a closing bracket nothing opened. Stepping over
+            // the stray bracket is what keeps the loop moving: the arm below
+            // stops *at* one, and would stop at it again for ever.
+            ',' | ']' => at += 1,
             ':' => {
                 spans = true;
                 at += 1;
@@ -1163,6 +1166,14 @@ mod tests {
         shows("SUM((A1,B2))", "(SUM (union A1:A1 B2:B2))");
         // Inside a call a comma separates arguments and never unions.
         shows("SUM(A1,B2)", "(SUM A1:A1 B2:B2)");
+    }
+
+    /// Found by fuzzing: a stray closing bracket inside a structured
+    /// reference kept the lexer on the same character for ever.
+    #[test]
+    fn a_stray_bracket_in_a_structured_reference_ends() {
+        let _ = parse("[Q[]]");
+        let _ = parse("Sales[[a]]]");
     }
 
     #[test]

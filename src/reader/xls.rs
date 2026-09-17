@@ -407,8 +407,12 @@ impl<'a> Reader<'a> {
                 let count = data.len().saturating_sub(6) / 2;
                 for i in 0..count {
                     let xf = u16_at(data, 4 + i * 2);
-                    #[expect(clippy::cast_possible_truncation)]
-                    self.put(sheet, r, c + i as u16, xf, CellValue::Empty);
+                    // A run that starts near the last column would wrap round
+                    // to the first; the file says nothing past the edge.
+                    let Some(col) = u16::try_from(i).ok().and_then(|i| c.checked_add(i)) else {
+                        break;
+                    };
+                    self.put(sheet, r, col, xf, CellValue::Empty);
                 }
             }
             record::NUMBER => self.put(
@@ -429,11 +433,13 @@ impl<'a> Reader<'a> {
                 let count = data.len().saturating_sub(6) / 6;
                 for i in 0..count {
                     let at = 4 + i * 6;
-                    #[expect(clippy::cast_possible_truncation)]
+                    let Some(col) = u16::try_from(i).ok().and_then(|i| c.checked_add(i)) else {
+                        break;
+                    };
                     self.put(
                         sheet,
                         r,
-                        c + i as u16,
+                        col,
                         u16_at(data, at),
                         CellValue::Number(rk(u32_at(data, at + 2))),
                     );
@@ -1121,6 +1127,36 @@ fn take_byte(data: &[u8], pos: &mut usize, breaks: &[usize], wide: &mut bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Found by fuzzing: a run of numbers starting at the last column
+    /// overflowed the column counter.
+    #[test]
+    fn a_run_of_cells_past_the_last_column_stops_at_the_edge() {
+        let mut globals = Vec::new();
+        push(&mut globals, record::BOF, &[0x00, 0x06, 0x05, 0x00]);
+        let boundsheet_at = globals.len() + 4;
+        push(
+            &mut globals,
+            record::BOUNDSHEET,
+            &[0, 0, 0, 0, 0, 0, 1, 0, b'S'],
+        );
+        push(&mut globals, record::EOF, &[]);
+        let start = u32::try_from(globals.len()).unwrap();
+        globals[boundsheet_at..boundsheet_at + 4].copy_from_slice(&start.to_le_bytes());
+        push(&mut globals, record::BOF, &[0x00, 0x06, 0x10, 0x00]);
+        // MULRK on row 0 from column 0xFFFE, three values, then the last column.
+        let mut mulrk = vec![0, 0, 0xFE, 0xFF];
+        for _ in 0..3 {
+            mulrk.extend_from_slice(&[0, 0, 0x02, 0x01, 0, 0]);
+        }
+        mulrk.extend_from_slice(&[0x00, 0x01]);
+        push(&mut globals, record::MULRK, &mulrk);
+        let mut mulblank = vec![1, 0, 0xFE, 0xFF, 0, 0, 0, 0, 0, 0];
+        mulblank.extend_from_slice(&[0x00, 0x01]);
+        push(&mut globals, record::MULBLANK, &mulblank);
+        push(&mut globals, record::EOF, &[]);
+        assert!(Reader::new(&globals).read().is_ok());
+    }
 
     #[test]
     fn rk_numbers_decode_all_four_ways() {

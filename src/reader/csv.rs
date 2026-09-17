@@ -189,7 +189,11 @@ fn strip_separator_line(text: &str) -> (&str, Option<char>) {
         None => (text, ""),
     };
     let line = line.strip_suffix('\r').unwrap_or(line);
-    if line.len() >= 4 && line[..4].eq_ignore_ascii_case("sep=") {
+    // `get`, not an index: the fourth byte may fall inside a character, as it
+    // does in a file that opens with `abcö`, and slicing there panics.
+    if let Some(head) = line.get(..4)
+        && head.eq_ignore_ascii_case("sep=")
+    {
         let mut chars = line[4..].chars();
         if let (Some(c), None) = (chars.next(), chars.next()) {
             return (rest, Some(c));
@@ -425,6 +429,14 @@ fn numeric(field: &str) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_first_line_with_a_wide_character_near_its_start_reads() {
+        // Found by fuzzing: slicing four bytes cut the `ö` in half.
+        let book = read_csv_str("abcö;1\nx;2", &CsvOptions::default());
+        assert_eq!(book.sheets().len(), 1);
+        assert_eq!(strip_separator_line("sep=;\nrest").1, Some(';'));
+    }
+
     use super::*;
 
     fn fields(text: &str, delimiter: char) -> Vec<Vec<String>> {
