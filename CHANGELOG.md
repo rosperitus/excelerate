@@ -12,6 +12,17 @@
   that expands to 634 MB and that Excel opens; the ratio is what tells such a
   workbook from a zip bomb.
 
+### Fixed
+
+- Array formulas keep their flag through an xlsx round trip:
+  `<f t="array" ref="…">` is read into `Worksheet::array_formulas` and
+  written back. Before, `{=…}` came back as a plain formula.
+- Implicit intersection: a formula stored in a cell that answers with a range
+  shows the cell of that range in its own row or column (`=A1:A9` in B5 is
+  A5; `INDEX(A1:D6,2,0)` in column C is C2), and `#VALUE!` when its row
+  misses the range. Array formulas keep the range whole. Only the formula's
+  final answer is intersected, not a range handed to an operator.
+
 ### Performance
 
 - Reading a 70 MB xlsx of nine million cells takes 5.4 s and 770 MB (Excel

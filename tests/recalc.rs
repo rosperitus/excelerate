@@ -344,3 +344,40 @@ fn an_array_formula_is_one_value_when_its_cell_is_read() {
     assert_eq!(cached(&book, 0, "B2"), Some(6.0));
     assert_eq!(cached(&book, 0, "B3"), Some(10.0));
 }
+
+/// A formula answering with a range shows the cell of that range in its own
+/// row or column; an array formula keeps the range and shows its top left.
+#[test]
+fn implicit_intersection_picks_the_formula_row() {
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    for (i, n) in [10.0, 20.0, 30.0].into_iter().enumerate() {
+        sheet.set(at(&format!("A{}", i + 1)), n);
+        sheet.set(at(&format!("B{}", i + 1)), n + 1.0);
+    }
+    sheet.set(at("C2"), formula("A1:A3"));
+    sheet.set(at("C9"), formula("A1:A3"));
+    // Excel's own example: the second row of a 2D range, taken in column B.
+    sheet.set(at("B7"), formula("INDEX(A1:B3,2,0)"));
+    sheet.set(at("D3"), formula("A1:A3"));
+    sheet
+        .array_formulas
+        .push(excelerate::coordinate::Range::parse("D3:D5").unwrap());
+    book.add_sheet(sheet).unwrap();
+    recalculate(&mut book, None, &Options::default());
+
+    // Round trip keeps the array flag.
+    let mut bytes = Cursor::new(Vec::new());
+    write_xlsx_to(&book, &mut bytes).unwrap();
+    let mut book = read_xlsx_from(Cursor::new(bytes.into_inner())).unwrap();
+    recalculate(&mut book, None, &Options::default());
+
+    assert_eq!(cached(&book, 0, "C2"), Some(20.0));
+    assert!(matches!(
+        book.sheet(0).unwrap().get(at("C9")).map(|c| &c.value),
+        Some(CellValue::Formula { cached: Some(v), .. })
+            if **v == CellValue::Error(excelerate::error::CellError::Value)
+    ));
+    assert_eq!(cached(&book, 0, "B7"), Some(21.0));
+    assert_eq!(cached(&book, 0, "D3"), Some(10.0));
+}

@@ -1393,6 +1393,14 @@ pub struct Worksheet {
     count: usize,
     /// Merged areas.
     pub merges: Vec<Range>,
+    /// Areas of the array formulas entered with Ctrl+Shift+Enter (and the
+    /// dynamic arrays Excel 365 stores the same way). The formula sits in the
+    /// top left cell; the rest of the area holds its values.
+    ///
+    /// A formula outside these areas takes one value where it is given a
+    /// range, the cell in its own row or column: Excel calls this implicit
+    /// intersection.
+    pub array_formulas: Vec<Range>,
     /// Column runs, in the order the file lists them.
     pub columns: Vec<ColumnRun>,
     /// Per-row properties, for rows that have any.

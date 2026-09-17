@@ -263,6 +263,11 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
         .iter()
         .filter_map(|&r| shift.range(r))
         .collect();
+    sheet.array_formulas = sheet
+        .array_formulas
+        .iter()
+        .filter_map(|&r| shift.range(r))
+        .collect();
     sheet
         .hyperlinks
         .retain_mut(|link| match shift.range(link.range) {

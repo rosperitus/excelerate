@@ -1134,7 +1134,7 @@ fn worksheet(
             s.push_str(&row_open_tag(at.row, sheet.rows.get(&at.row)));
             open_row = Some(row);
         }
-        s.push_str(&cell_xml(at, cell, pool));
+        s.push_str(&cell_xml(at, cell, pool, &sheet.array_formulas));
     }
     if open_row.is_some() {
         s.push_str("</row>");
@@ -2193,6 +2193,7 @@ fn cell_xml(
     at: crate::coordinate::CellRef,
     cell: &crate::model::Cell,
     pool: &StringPool<'_>,
+    array_formulas: &[crate::coordinate::Range],
 ) -> String {
     let style = cell.style.index();
     let attrs = if style == 0 {
@@ -2235,7 +2236,11 @@ fn cell_xml(
                 Some(CellValue::Error(_)) => r#" t="e""#,
                 _ => "",
             };
-            format!("<c{attrs}{t}><f>{}</f>{value}</c>", escape(formula))
+            let f = match array_formulas.iter().find(|r| r.start == at) {
+                Some(r) => format!(r#"<f t="array" ref="{r}">"#),
+                None => "<f>".to_owned(),
+            };
+            format!("<c{attrs}{t}>{f}{}</f>{value}</c>", escape(formula))
         }
     }
 }

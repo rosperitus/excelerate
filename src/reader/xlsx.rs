@@ -2007,6 +2007,11 @@ impl SheetReader<'_> {
             "f" => {
                 self.in_formula = !empty;
                 self.shared_index = attr(e, "si");
+                if attr(e, "t").as_deref() == Some("array")
+                    && let Some(r) = attr(e, "ref").and_then(|r| Range::parse(&r).ok())
+                {
+                    self.sheet.array_formulas.push(r);
+                }
             }
             _ => return false,
         }

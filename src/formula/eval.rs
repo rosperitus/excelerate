@@ -159,7 +159,11 @@ impl<'a> Engine<'a> {
 
     /// The same for a formula already parsed.
     pub fn eval_tree(&mut self, origin: Origin, expr: &Expr) -> Value {
-        let value = self.eval_expr(origin, expr);
+        let value = match self.implicit_intersection(origin, expr) {
+            Some(Ok(cell)) => self.eval_expr(origin, &cell),
+            Some(Err(e)) => Value::Error(e),
+            None => self.eval_expr(origin, expr),
+        };
         // A result of one cell is that cell: `INDEX(A1:A3,2)` is a number, not
         // a one-element array, and neither is `{5}`.
         let value = match value {
@@ -172,6 +176,60 @@ impl<'a> Engine<'a> {
             Some(Value::Blank) | None => Value::Number(0.0),
             Some(other) => other,
         }
+    }
+
+    /// The one cell a formula answering with a range shows, unless it is an
+    /// array formula: the cell of that range in the formula's own row, or
+    /// column. `=A1:A9` in B5 is A5, and a range the formula's row misses
+    /// is `#VALUE!`. `None` when the answer is not a range of several cells
+    /// or the formula is an array formula, which keeps the range whole.
+    ///
+    /// ponytail: only at the top of the formula and only for a range written
+    /// out or narrowed by `INDEX`; Excel also intersects a range handed to an
+    /// operator or a value parameter (`=A1:A9*2`), which here still lifts.
+    /// Doing that means carrying "array context" down through the evaluator.
+    fn implicit_intersection(
+        &self,
+        origin: Origin,
+        expr: &Expr,
+    ) -> Option<std::result::Result<Expr, CellError>> {
+        let (sheet, area) = area_of(expr)?;
+        let ws = self.book.sheet(origin.sheet)?;
+        // A formula asked about from outside any cell - `Book.evaluate` - has
+        // no row to intersect with and answers whole.
+        if area.start == area.end
+            || !matches!(
+                ws.get(origin.at).map(|c| &c.value),
+                Some(CellValue::Formula { .. })
+            )
+            || ws.array_formulas.iter().any(|r| r.contains(origin.at))
+        {
+            return None;
+        }
+        let at = origin.at;
+        let col = if area.width() == 1 {
+            area.start.col
+        } else if (area.start.col..=area.end.col).contains(&at.col) {
+            at.col
+        } else {
+            return Some(Err(CellError::Value));
+        };
+        let row = if area.height() == 1 {
+            area.start.row
+        } else if (area.start.row..=area.end.row).contains(&at.row) {
+            at.row
+        } else {
+            return Some(Err(CellError::Value));
+        };
+        let cell = CellRef::new(col, row);
+        Some(Ok(Expr::Range {
+            sheet,
+            range: Range {
+                start: cell,
+                end: cell,
+            },
+            anchors: crate::formula::parser::Anchors::default(),
+        }))
     }
 
     /// The value of one cell, computing its formula if it holds one.
@@ -686,6 +744,48 @@ impl<'a> Engine<'a> {
             }
         }
         Value::array(rows)
+    }
+}
+
+/// The area an expression refers to, where that can be told without
+/// reading cells: a range, or `INDEX` over one with literal positions.
+fn area_of(expr: &Expr) -> Option<(Option<String>, Range)> {
+    match expr {
+        Expr::Range { sheet, range, .. } => Some((sheet.clone(), *range)),
+        Expr::Call { name, args } if name == "INDEX" => {
+            let (sheet, area) = area_of(args.first()?)?;
+            let position = |e: Option<&Expr>| match e {
+                None | Some(Expr::Missing) => Some(0),
+                // Excel truncates a fractional position.
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "the guard keeps it within a sheet's rows"
+                )]
+                Some(Expr::Number(n)) if (0.0..1_048_577.0).contains(n) => Some(n.trunc() as u32),
+                _ => None,
+            };
+            let (mut row, mut col) = (position(args.get(1))?, position(args.get(2))?);
+            // `INDEX(B5:F5, 3)` picks the column, as the function does.
+            if args.len() == 2 && area.height() == 1 {
+                (row, col) = (1, row);
+            }
+            let pick = |from: u32, len: u32, at: u32| match at {
+                0 => Some((from, from + len - 1)),
+                k if k <= len => Some((from + k - 1, from + k - 1)),
+                _ => None,
+            };
+            let (r1, r2) = pick(area.start.row.index(), area.height(), row)?;
+            let (c1, c2) = pick(area.start.col.index(), area.width(), col)?;
+            Some((
+                sheet,
+                Range {
+                    start: CellRef::new(Col::new(c1)?, Row::new(r1)?),
+                    end: CellRef::new(Col::new(c2)?, Row::new(r2)?),
+                },
+            ))
+        }
+        _ => None,
     }
 }
 
