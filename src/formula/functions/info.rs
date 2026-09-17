@@ -341,3 +341,35 @@ pub fn isomitted(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Valu
     let value = engine.eval_expr(origin, arg);
     Value::Bool(matches!(value, Value::Blank))
 }
+
+/// `INFO(type_text)`: about the environment the workbook is open in.
+///
+/// There is no Excel around this engine, so the answers are the ones a
+/// current Excel on Windows gives, the sheet count is the workbook's own, and
+/// the directory, which a workbook read from bytes does not have, is `#N/A`.
+pub fn info(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
+    let [kind] = args else {
+        return Value::Error(CellError::Value);
+    };
+    let kind = match engine.eval_expr(origin, kind).scalar().text() {
+        Ok(text) => text.to_lowercase(),
+        Err(e) => return Value::Error(e),
+    };
+    match kind.as_str() {
+        "numfile" => {
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "a workbook holds far fewer sheets than f64 counts"
+            )]
+            let count = engine.book().sheets().len() as f64;
+            Value::Number(count)
+        }
+        "origin" => Value::Text("$A:$A$1".into()),
+        "osversion" => Value::Text("Windows (32-bit) NT 10.00".into()),
+        "recalc" => Value::Text("Automatic".into()),
+        "release" => Value::Text("16.0".into()),
+        "system" => Value::Text("pcdos".into()),
+        "directory" => Value::Error(CellError::Na),
+        _ => Value::Error(CellError::Value),
+    }
+}

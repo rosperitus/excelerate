@@ -1606,3 +1606,61 @@ fn structured_references_parse_in_every_form() {
     // And an unterminated bracket is an error rather than a silent guess.
     assert!(parse("Sales[Amount").is_err());
 }
+
+#[test]
+fn summaries_of_a_table_in_one_formula() {
+    check(&[
+        (
+            r#"GROUPBY({"b";"a";"b"},{1;2;3},SUM)"#,
+            r#"{"a" 2; "b" 4; "Total" 6}"#,
+        ),
+        (
+            r#"GROUPBY({"b";"a";"b"},{1;2;3},LAMBDA(x,MAX(x)),,0,-2)"#,
+            r#"{"b" 3; "a" 2}"#,
+        ),
+        // Headers found in the data and shown on request.
+        (
+            r#"GROUPBY({"Region";"b";"a";"b"},{"Sales";1;2;3},SUM,3,0)"#,
+            r#"{"Region" "Sales"; "a" 2; "b" 4}"#,
+        ),
+        (
+            r#"GROUPBY({"b";"a";"b"},{1;2;3},COUNT,,1,1,{TRUE;TRUE;FALSE})"#,
+            r#"{"a" 1; "b" 1; "Total" 2}"#,
+        ),
+        // Two fields, with a subtotal under each outer group.
+        (
+            r#"GROUPBY({"x","p";"x","q";"y","p"},{1;2;4},SUM,,2)"#,
+            r#"{"x" "p" 1; "x" "q" 2; "x" (blank) 3; "y" "p" 4; "y" (blank) 4; "Total" (blank) 7}"#,
+        ),
+        (
+            r#"PIVOTBY({"a";"a";"b"},{"Q1";"Q2";"Q1"},{1;2;4},SUM)"#,
+            r#"{(blank) "Q1" "Q2" "Total"; "a" 1 2 3; "b" 4 (blank) 4; "Total" 5 2 7}"#,
+        ),
+        // As a file stores it.
+        (
+            r#"_xlfn.GROUPBY({"b";"a"},{1;2},_xleta.SUM,,0)"#,
+            r#"{"a" 2; "b" 1}"#,
+        ),
+        ("PERCENTOF({1;3},{1;3;4})", "0.5"),
+        ("PERCENTOF(1,0)", "#DIV/0!"),
+        (
+            "TRIMRANGE(A1:D9)",
+            "{1 \"x\" #DIV/0! 10; 2 TRUE (blank) 20; 3 (blank) (blank) 30}",
+        ),
+        (r#"INFO("numfile")"#, "2"),
+        (r#"INFO("nonsense")"#, "#VALUE!"),
+        (r#"PHONETIC("東京")"#, "\"東京\""),
+        (r#"EUROCONVERT(1.2,"DEM","EUR")"#, "0.61"),
+        (
+            r#"ROUND(EUROCONVERT(1,"FRF","DEM",TRUE,3),12)"#,
+            "0.29728616",
+        ),
+        (r#"EUROCONVERT(1,"FRF","DEM",FALSE,3)"#, "0.3"),
+        (
+            r#"REGEXEXTRACT("ИНН 7707083893","\d{10}")"#,
+            "\"7707083893\"",
+        ),
+        (r##"REGEXREPLACE("a1b2","\d","#")"##, "\"a#b#\""),
+        (r#"REGEXTEST("abc","[")"#, "#VALUE!"),
+    ]);
+}

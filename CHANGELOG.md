@@ -39,6 +39,12 @@
 - Number formats render fractions (`# ?/?`, `?/???`, `# ??/100`) and the
   symbol in a locale tag (`[$₽-419]`); a Russian locale tag names months and
   weekdays in Russian. Before, all three were dropped from the output.
+- Ten more functions: `GROUPBY` and `PIVOTBY` (the summarising function a
+  lambda or a bare name such as `SUM`, stored in files as `_xleta.SUM`),
+  `PERCENTOF`, `TRIMRANGE`, `REGEXTEST`, `REGEXEXTRACT`, `REGEXREPLACE`,
+  `INFO`, `EUROCONVERT` and `PHONETIC`. The regular expressions run on the
+  `regex` crate, a new dependency of the `formulas` feature: no lookaround or
+  backreferences, and 550 KB more wasm.
 - A comment added to a sheet gets the VML box Excel draws it in, and a sheet
   with no VML part gets one; the box of a removed comment is cut out. Before,
   a new comment was written without a box and Excel did not show it.

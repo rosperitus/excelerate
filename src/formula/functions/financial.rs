@@ -970,3 +970,83 @@ fn solve(guess: f64, f: impl Fn(f64) -> f64) -> Value {
     }
     Value::Error(CellError::Value)
 }
+
+/// The currencies the euro replaced, with the fixed rate to one euro and the
+/// decimals an amount in each is computed to.
+const EURO_RATES: [(&str, f64, i32); 20] = [
+    ("EUR", 1.0, 2),
+    ("BEF", 40.3399, 0),
+    ("LUF", 40.3399, 0),
+    ("DEM", 1.955_83, 2),
+    ("ESP", 166.386, 0),
+    ("FRF", 6.559_57, 2),
+    ("IEP", 0.787_564, 2),
+    ("ITL", 1936.27, 0),
+    ("NLG", 2.203_71, 2),
+    ("ATS", 13.7603, 2),
+    ("PTE", 200.482, 2),
+    ("FIM", 5.945_73, 2),
+    ("GRD", 340.75, 0),
+    ("SIT", 239.64, 2),
+    ("CYP", 0.585_274, 2),
+    ("MTL", 0.4293, 2),
+    ("SKK", 30.126, 2),
+    ("EEK", 15.6466, 2),
+    ("LVL", 0.702_804, 2),
+    ("LTL", 3.4528, 2),
+];
+
+/// `EUROCONVERT(number, source, target, [full_precision], [triangulation_precision])`
+///
+/// Between two national currencies the amount goes through the euro, rounded
+/// there to `triangulation_precision` decimals when that is given (3 or
+/// more). The result is rounded to the target's decimals unless
+/// `full_precision` is true.
+pub fn euroconvert(args: &[Arg]) -> Value {
+    if !(3..=5).contains(&args.len()) {
+        return Value::Error(CellError::Value);
+    }
+    if let Some(e) = super::first_error(args) {
+        return Value::Error(e);
+    }
+    let rate = |arg: &Arg| {
+        let code = arg.text().ok()?.to_ascii_uppercase();
+        EURO_RATES.iter().find(|(c, _, _)| *c == code).copied()
+    };
+    let (Ok(amount), Some(source), Some(target)) =
+        (args[0].number(), rate(&args[1]), rate(&args[2]))
+    else {
+        return Value::Error(CellError::Value);
+    };
+    let full = match args.get(3).filter(|a| !a.missing()) {
+        None => false,
+        Some(a) => match a.value.boolean() {
+            Ok(b) => b,
+            Err(e) => return Value::Error(e),
+        },
+    };
+    let triangulation = match args.get(4).filter(|a| !a.missing()) {
+        None => None,
+        Some(a) => match a.number() {
+            Ok(n) if n >= 3.0 => Some(n.trunc()),
+            _ => return Value::Error(CellError::Value),
+        },
+    };
+    let round = |value: f64, decimals: f64| {
+        let factor = 10f64.powf(decimals);
+        (value * factor).round() / factor
+    };
+    let mut euros = amount / source.1;
+    if let Some(decimals) = triangulation
+        && source.0 != "EUR"
+        && target.0 != "EUR"
+    {
+        euros = round(euros, decimals);
+    }
+    let result = euros * target.1;
+    Value::Number(if full {
+        result
+    } else {
+        round(result, f64::from(target.2))
+    })
+}

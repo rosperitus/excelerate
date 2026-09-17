@@ -25,11 +25,13 @@ pub mod distributions;
 pub mod engineering;
 pub mod ets;
 pub mod financial;
+pub mod group;
 pub mod info;
 pub mod lambda;
 pub mod logical;
 pub mod lookup;
 pub mod math;
+pub mod pattern;
 pub mod regression;
 pub mod securities;
 pub mod stats;
@@ -353,6 +355,9 @@ fn lazy(name: &str) -> Option<Lazy> {
         "SHEET" => info::sheet,
         "SHEETS" => info::sheets,
         "CELL" => info::cell_info,
+        "INFO" => info::info,
+        "GROUPBY" => group::groupby,
+        "PIVOTBY" => group::pivotby,
         "ANCHORARRAY" => lookup::anchorarray,
         "INDIRECT" => lookup::indirect,
         "SINGLE" => lookup::single,
@@ -572,6 +577,7 @@ fn eager_finance(name: &str) -> Option<Eager> {
         "PDURATION" => financial::pduration,
         "DOLLARDE" => financial::dollarde,
         "DOLLARFR" => financial::dollarfr,
+        "EUROCONVERT" => financial::euroconvert,
         _ => return None,
     })
 }
@@ -867,6 +873,12 @@ fn eager_lookup(name: &str) -> Option<Eager> {
         "TOROW" => lookup::torow,
         "TOCOL" => lookup::tocol,
         "HYPERLINK" => lookup::hyperlink,
+        "TRIMRANGE" => group::trimrange,
+        "PERCENTOF" => group::percentof,
+        "PHONETIC" => text::phonetic,
+        "REGEXTEST" => pattern::regextest,
+        "REGEXEXTRACT" => pattern::regexextract,
+        "REGEXREPLACE" => pattern::regexreplace,
         "XLOOKUP" => lookup::xlookup,
         "XMATCH" => lookup::xmatch,
         "LOOKUP" => lookup::lookup_vector,

@@ -1183,3 +1183,17 @@ fn thai_block(block: &str) -> String {
     }
     out
 }
+
+/// `PHONETIC(reference)`: the phonetic guide of Japanese text. Guides are not
+/// read from files, so this is the text itself, as Excel shows it for text
+/// that has none.
+pub fn phonetic(args: &[Arg]) -> Value {
+    let [reference] = args else {
+        return Value::Error(CellError::Value);
+    };
+    match reference.value.scalar() {
+        Value::Blank => Value::Text(String::new()),
+        Value::Error(e) => Value::Error(*e),
+        other => other.text().map_or_else(Value::Error, Value::Text),
+    }
+}

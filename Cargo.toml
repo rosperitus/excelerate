@@ -2,7 +2,7 @@
 name = "excelerate"
 version = "0.8.0"
 edition = "2024"
-description = "Read, write and recalculate spreadsheets: xlsx, xls, ods, csv, html, and a 507-function formula engine"
+description = "Read, write and recalculate spreadsheets: xlsx, xls, ods, csv, html, and a 517-function formula engine"
 license = "MIT"
 repository = "https://github.com/rosperitus/excelerate"
 homepage = "https://github.com/rosperitus/excelerate"
@@ -13,9 +13,9 @@ categories = ["parser-implementations", "encoding", "wasm"]
 
 [features]
 default = ["formulas", "write"]
-# The formula engine: parser, evaluator and the 443 builtins. The bulk of the
+# The formula engine: parser, evaluator and the builtins. The bulk of the
 # crate by volume, and what a reader-only build drops first.
-formulas = []
+formulas = ["dep:regex"]
 # Writing files back out, in every format that has a writer.
 write = []
 
@@ -27,6 +27,15 @@ flate2 = "1.1.9"
 # sheet or workbook (SHA-512, SHA-1 for older files) and its random salt.
 getrandom = "0.4"
 quick-xml = "0.42.0"
+# `REGEXTEST`, `REGEXEXTRACT`, `REGEXREPLACE`: a pattern engine is not twenty
+# lines. Without lookaround or backreferences, which Excel's PCRE2 has. The
+# speed-ups and the Unicode tables beyond `\w`, `\d`, `\s` and case are left
+# out: with them the wasm grew by 1.1 MB.
+regex = { version = "1", optional = true, default-features = false, features = [
+    "std",
+    "unicode-case",
+    "unicode-perl",
+] }
 sha1 = "0.11"
 sha2 = "0.11"
 thiserror = "2.0.20"
