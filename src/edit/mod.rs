@@ -362,7 +362,7 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
     }
 }
 
-/// Moves the charts and pictures of the model with the grid.
+/// Moves the charts, pictures and shapes of the model with the grid.
 fn move_drawn_objects(sheet: &mut Worksheet, shift: Shift) {
     // A chart's frame is anchored to cells like any drawing. The bytes of the
     // drawing were moved by `anchor`, so an untouched chart stays untouched.
@@ -382,6 +382,13 @@ fn move_drawn_objects(sheet: &mut Worksheet, shift: Shift) {
         anchor::move_anchor(&mut image.anchor, shift);
         if untouched {
             image.settle();
+        }
+    }
+    for shape in &mut sheet.shapes {
+        let untouched = shape.is_unchanged();
+        anchor::move_anchor(&mut shape.anchor, shift);
+        if untouched {
+            shape.settle();
         }
     }
 }

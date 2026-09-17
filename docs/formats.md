@@ -40,9 +40,15 @@ Charts are modelled and written back: an untouched chart as its original bytes,
 a changed or new one from the model (see [model.md](model.md#charts)). The
 2016 chart types are read but only carried.
 
+Pictures and shapes are modelled the same way: an untouched one goes back as
+written, an edit is spliced into its drawing (see [model.md](model.md#pictures)
+and [model.md](model.md#shapes)). A comment's box lives in a VML part that is
+carried as bytes and brought in line with the comments on write: a new comment
+gets a box, a removed one loses it.
+
 Not modelled, but carried through byte for byte with their relationships:
-pictures and shapes, comments and their VML, document properties, links to
-other workbooks.
+connectors and other drawing objects, document properties, links to other
+workbooks.
 
 Two deliberate calls:
 

@@ -230,6 +230,42 @@ would not show. A picture inside a group of shapes is placed by the group
 linked to a file outside the package has no bytes and is not in the list; it
 stays in the drawing as written.
 
+## Shapes
+
+`Worksheet::shapes` holds one `Shape` per `<xdr:sp>` in the sheet's drawing -
+boxes, arrows, callouts, text boxes: its name, alt text, anchor, preset outline
+(`geometry`, such as `rect` or `rightArrow`; `None` for a freeform one) and the
+text inside, a line per paragraph. Fill, line, effects and the formatting of the
+text stay in the drawing as written.
+
+Writing works as it does for pictures. An untouched shape goes back byte for
+byte; a moved one gets a new anchor around the same element; a new outline is
+one attribute; new text replaces the paragraphs and keeps the first run's
+formatting, so it looks like the old. A shape removed from the list is removed
+from the drawing, and one built in code is added with Excel's default look.
+
+```rust
+# use excelerate::model::Spreadsheet;
+# use excelerate::model::chart::{Anchor, Marker};
+# use excelerate::model::shape::Shape;
+let mut book = Spreadsheet::new();
+let marker = |col, row| Marker {
+    col: excelerate::Col::new(col).unwrap_or_default(),
+    row: excelerate::Row::new(row).unwrap_or_default(),
+    ..Marker::default()
+};
+let anchor = Anchor::TwoCell { from: marker(1, 1), to: marker(4, 4), edit_as: None };
+let mut note = Shape::new("wedgeRectCallout", anchor);
+note.text = "Check the totals\nbefore sending".into();
+if let Some(sheet) = book.sheet_mut(0) {
+    sheet.shapes.push(note);
+}
+```
+
+Connectors (`<xdr:cxnSp>`) are not shapes here and stay in the drawing. A shape
+inside a group is placed by the group (`ShapeOrigin::grouped`), so moving it is
+not written; renaming, retexting or removing it is.
+
 ## Carried parts
 
 `OpaquePart` and `Attachment` are the escape hatch. Anything the crate does not

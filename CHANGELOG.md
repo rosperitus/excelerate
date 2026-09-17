@@ -18,6 +18,11 @@
   password from its text the way Excel does (SHA-512, random 16-byte salt,
   100,000 spins), and check a password against a hash a file carries.
   Verified against hashes `excelize` wrote.
+- `Worksheet::shapes`: boxes, arrows, callouts and text boxes are read into
+  `Shape` (name, alt text, anchor, preset outline, text) and written back. An
+  untouched shape keeps its bytes; a rename, new outline, new text or move is
+  spliced into the drawing; a removed shape is cut and a new one added.
+  Inserting rows and columns moves shapes with the grid.
 - A comment added to a sheet gets the VML box Excel draws it in, and a sheet
   with no VML part gets one; the box of a removed comment is cut out. Before,
   a new comment was written without a box and Excel did not show it.

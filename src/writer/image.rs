@@ -113,7 +113,7 @@ fn apply_sheet(book: &mut Spreadsheet, index: usize) {
 }
 
 /// A part path `{stem}{n}.{extension}` no part uses yet.
-fn free_path(book: &Spreadsheet, stem: &str, extension: &str) -> String {
+pub(super) fn free_path(book: &Spreadsheet, stem: &str, extension: &str) -> String {
     (1..=u32::MAX)
         .map(|n| format!("{stem}{n}.{extension}"))
         .find(|p| !book.parts.iter().any(|part| &part.path == p))
@@ -231,7 +231,7 @@ fn rewrite_object(
         };
         let mut text = original[local.clone()].to_owned();
         if image.name != origin.name || image.description != origin.description {
-            text = rename(&text, image);
+            text = rename(&text, &image.name, &image.description);
         }
         if origin.data_changed(&image.data) {
             let rel = edits.media(image);
@@ -257,7 +257,7 @@ fn rewrite_object(
 
 /// The object's children other than its anchor markers, placed by a new
 /// anchor.
-fn reanchor(object: &str, anchor: crate::model::chart::Anchor) -> String {
+pub(super) fn reanchor(object: &str, anchor: crate::model::chart::Anchor) -> String {
     let Some(node) = children(object).into_iter().next() else {
         return object.to_owned();
     };
@@ -270,22 +270,22 @@ fn reanchor(object: &str, anchor: crate::model::chart::Anchor) -> String {
     render_anchor(anchor, &body)
 }
 
-/// A picture element with its `cNvPr` name and description replaced.
-fn rename(picture: &str, image: &Image) -> String {
-    let Some(start) = picture.find("cNvPr ") else {
-        return picture.to_owned();
+/// A drawing element with its `cNvPr` name and description replaced.
+pub(super) fn rename(element: &str, name: &str, description: &str) -> String {
+    let Some(start) = element.find("cNvPr ") else {
+        return element.to_owned();
     };
-    let Some(end) = picture[start..].find('>').map(|e| start + e) else {
-        return picture.to_owned();
+    let Some(end) = element[start..].find('>').map(|e| start + e) else {
+        return element.to_owned();
     };
-    let tag = &picture[start..end];
-    let tag = set_attribute(tag, "name", &image.name);
-    let tag = set_attribute(&tag, "descr", &image.description);
-    format!("{}{tag}{}", &picture[..start], &picture[end..])
+    let tag = &element[start..end];
+    let tag = set_attribute(tag, "name", name);
+    let tag = set_attribute(&tag, "descr", description);
+    format!("{}{tag}{}", &element[..start], &element[end..])
 }
 
 /// A tag with one attribute set, added before the tag closes if absent.
-fn set_attribute(tag: &str, name: &str, value: &str) -> String {
+pub(super) fn set_attribute(tag: &str, name: &str, value: &str) -> String {
     let key = format!(" {name}=\"");
     let value = escape(value);
     if let Some(at) = tag.find(&key) {
@@ -352,7 +352,7 @@ fn render_picture(image: &Image, id: u32, rel: &str) -> String {
 
 /// Text with stretches replaced, in order; a stretch overlapping one already
 /// replaced is skipped.
-fn splice(text: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
+pub(super) fn splice(text: &str, mut edits: Vec<(Range<usize>, String)>) -> String {
     edits.sort_by_key(|(span, _)| span.start);
     let mut out = String::with_capacity(text.len());
     let mut at = 0;

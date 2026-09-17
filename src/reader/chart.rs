@@ -17,7 +17,7 @@ use core::ops::Range;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 
-use super::zipxml::{attrs, is_true};
+use super::zipxml::is_true;
 
 /// One element of a part, as the slices of the source it spans.
 #[derive(Debug)]
@@ -26,8 +26,12 @@ pub(crate) struct Node<'a> {
     pub name: &'a str,
     /// The prefix, empty when there is none.
     pub prefix: &'a str,
-    /// The attributes, by local name.
-    pub attributes: Vec<(String, String)>,
+    /// The start tag, from `<` to `>`, where [`Node::attr`] looks.
+    ///
+    /// Attributes are read on demand: a drawing of two thousand shapes has
+    /// tens of thousands of elements, and copying every attribute of every
+    /// one of them into strings was most of what reading it cost.
+    pub tag: &'a str,
     /// The whole element, tags included.
     pub outer: &'a str,
     /// What is between the tags; empty for `<x/>`.
@@ -40,11 +44,17 @@ pub(crate) struct Node<'a> {
 
 impl<'a> Node<'a> {
     /// An attribute by local name.
-    pub fn attr(&self, name: &str) -> Option<&str> {
-        self.attributes
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
+    ///
+    /// The value as written, entities and all: right for ids, numbers and
+    /// names from a fixed list. Free text goes through [`Node::attr_text`].
+    pub fn attr(&self, name: &str) -> Option<&'a str> {
+        tag_attr(self.tag, name)
+    }
+
+    /// An attribute holding free text, with its entities resolved.
+    pub fn attr_text(&self, name: &str) -> Option<String> {
+        self.attr(name)
+            .map(|raw| quick_xml::escape::unescape(raw).map_or_else(|_| raw.to_owned(), Into::into))
     }
 
     /// The `val` attribute, which is how nearly every chart element states
@@ -68,7 +78,7 @@ impl<'a> Node<'a> {
     }
 
     /// The text inside, with the entities resolved.
-    fn text(&self) -> String {
+    pub fn text(&self) -> String {
         quick_xml::escape::unescape(self.inner).map_or_else(|_| self.inner.to_owned(), Into::into)
     }
 }
@@ -85,6 +95,7 @@ pub(crate) fn children(xml: &str) -> Vec<Node<'_>> {
         let start = position(&reader);
         match reader.read_event() {
             Ok(Event::Start(e)) => {
+                let tag_end = position(&reader);
                 let name = e.name();
                 let Ok(inner) = reader.read_to_end(name) else {
                     break;
@@ -94,11 +105,11 @@ pub(crate) fn children(xml: &str) -> Vec<Node<'_>> {
                 else {
                     break;
                 };
-                out.push(node(xml, &e, start..end, from..to));
+                out.push(node(xml, start..tag_end, start..end, from..to));
             }
-            Ok(Event::Empty(e)) => {
+            Ok(Event::Empty(_)) => {
                 let end = position(&reader);
-                out.push(node(xml, &e, start..end, end..end));
+                out.push(node(xml, start..end, start..end, end..end));
             }
             Ok(Event::Eof) | Err(_) => break,
             Ok(_) => {}
@@ -107,16 +118,45 @@ pub(crate) fn children(xml: &str) -> Vec<Node<'_>> {
     out
 }
 
+/// An attribute of a start tag by local name: `embed` finds `r:embed`.
+pub(crate) fn tag_attr<'a>(tag: &'a str, name: &str) -> Option<&'a str> {
+    let bytes = tag.as_bytes();
+    let mut from = 0;
+    while let Some(found) = tag[from..].find(name) {
+        let at = from + found;
+        from = at + name.len();
+        // The name starts after whitespace or a prefix's colon.
+        let start_ok = match at.checked_sub(1).map(|i| bytes[i]) {
+            Some(b' ' | b'\t' | b'\r' | b'\n') => true,
+            Some(b':') => tag[..at - 1]
+                .rfind([' ', '\t', '\r', '\n'])
+                .is_some_and(|ws| {
+                    tag[ws + 1..at - 1]
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric())
+                }),
+            _ => false,
+        };
+        let rest = tag[from..].trim_start();
+        let Some(rest) = rest.strip_prefix('=') else {
+            continue;
+        };
+        if !start_ok {
+            continue;
+        }
+        let rest = rest.trim_start();
+        let quote = rest.chars().next().filter(|q| matches!(q, '"' | '\''))?;
+        let value = &rest[1..];
+        return Some(&value[..value.find(quote)?]);
+    }
+    None
+}
+
 fn position(reader: &Reader<&[u8]>) -> usize {
     usize::try_from(reader.buffer_position()).unwrap_or(usize::MAX)
 }
 
-fn node<'a>(
-    xml: &'a str,
-    e: &quick_xml::events::BytesStart<'_>,
-    span: Range<usize>,
-    inner: Range<usize>,
-) -> Node<'a> {
+fn node(xml: &str, tag: Range<usize>, span: Range<usize>, inner: Range<usize>) -> Node<'_> {
     let qname = &xml[span.start..span.end];
     // The tag name runs from after `<` to the first space, `/` or `>`.
     let full = qname[1..]
@@ -127,7 +167,7 @@ fn node<'a>(
     Node {
         name,
         prefix,
-        attributes: attrs(e),
+        tag: xml.get(tag).unwrap_or_default(),
         outer: xml.get(span.clone()).unwrap_or_default(),
         inner: xml.get(inner.clone()).unwrap_or_default(),
         inner_start: inner.start,
@@ -290,9 +330,8 @@ fn find_frames(kids: &[Node<'_>], base: usize, grouped: bool, out: &mut Vec<Fram
                     rel,
                     name: props
                         .as_ref()
-                        .and_then(|p| p.attr("name"))
-                        .unwrap_or_default()
-                        .to_owned(),
+                        .and_then(|p| p.attr_text("name"))
+                        .unwrap_or_default(),
                     id: props
                         .as_ref()
                         .and_then(|p| p.attr("id"))
@@ -645,7 +684,7 @@ fn read_axis(node: &Node<'_>) -> Option<ChartAxis> {
             "title" => out.title = Some(read_title(&child)),
             "numFmt" => {
                 out.number_format = Some((
-                    child.attr("formatCode").unwrap_or_default().to_owned(),
+                    child.attr_text("formatCode").unwrap_or_default(),
                     child.attr("sourceLinked").is_some_and(is_true),
                 ));
             }

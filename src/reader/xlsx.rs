@@ -167,8 +167,12 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
         sheet.tables = read_sheet_tables(&mut zip, &links, sheet_base);
         // The charts are modelled and their parts carried as well: an
         // untouched chart goes back as the bytes it came in.
-        (sheet.charts, sheet.extended_charts) = read_sheet_charts(&mut zip, &links, sheet_base);
-        sheet.images = read_sheet_images(&mut zip, &links, sheet_base);
+        // Charts, pictures and shapes all live in the drawings, which are
+        // inflated once for the three.
+        let drawings = sheet_drawings(&mut zip, &links, sheet_base);
+        (sheet.charts, sheet.extended_charts) = read_sheet_charts(&mut zip, &drawings);
+        sheet.images = read_sheet_images(&mut zip, &drawings);
+        sheet.shapes = read_sheet_shapes(&drawings);
         sheet.attachments = attachments(&links, sheet_base, &["hyperlink", "comments", "table"]);
         book.add_sheet(sheet)?;
     }
@@ -609,27 +613,35 @@ fn read_pivot_caches<R: Read + Seek>(
     out
 }
 
-/// The charts drawn on one sheet, classic and 2016, in drawing order.
-fn read_sheet_charts<R: Read + Seek>(
+/// The drawing parts of one sheet with their text, in path order.
+fn sheet_drawings<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     links: &HashMap<String, Relationship>,
     base: &str,
-) -> (Vec<Chart>, Vec<ChartEx>) {
-    let mut charts = Vec::new();
-    let mut extended = Vec::new();
-    let mut drawings: Vec<String> = links
+) -> Vec<(String, String)> {
+    let mut paths: Vec<String> = links
         .values()
         .filter(|r| !r.external && r.kind.ends_with("/drawing"))
         .map(|r| resolve(base, &r.target))
         .collect();
-    drawings.sort();
-    for drawing in drawings {
-        let Ok(xml) = read_part(zip, &drawing) else {
-            continue;
-        };
-        let rels = read_relationships(zip, &rels_path_for(&drawing)).unwrap_or_default();
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|path| read_part(zip, &path).ok().map(|xml| (path, xml)))
+        .collect()
+}
+
+/// The charts drawn on one sheet, classic and 2016, in drawing order.
+fn read_sheet_charts<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    drawings: &[(String, String)],
+) -> (Vec<Chart>, Vec<ChartEx>) {
+    let mut charts = Vec::new();
+    let mut extended = Vec::new();
+    for (drawing, xml) in drawings {
+        let rels = read_relationships(zip, &rels_path_for(drawing)).unwrap_or_default();
         let dir = drawing.rsplit_once('/').map_or("", |(dir, _)| dir);
-        let objects = super::chart::scan_drawing(&xml);
+        let objects = super::chart::scan_drawing(xml);
         for object in objects {
             let Some(anchor) = object.anchor else {
                 continue;
@@ -670,32 +682,66 @@ fn read_sheet_charts<R: Read + Seek>(
     (charts, extended)
 }
 
+/// The shapes drawn on one sheet, in drawing order.
+fn read_sheet_shapes(drawings: &[(String, String)]) -> Vec<crate::model::shape::Shape> {
+    use crate::model::shape::{Shape, ShapeOrigin};
+    let mut shapes = Vec::new();
+    for (drawing, xml) in drawings {
+        if !xml.contains("sp") {
+            continue;
+        }
+        let first = shapes.len();
+        for object in super::shape::scan_shapes(xml) {
+            let Some(anchor) = object.anchor else {
+                continue;
+            };
+            for element in object.shapes {
+                shapes.push(Shape {
+                    origin: Some(ShapeOrigin {
+                        drawing: drawing.clone(),
+                        id: element.id,
+                        grouped: element.grouped,
+                        name: element.name.clone(),
+                        description: element.description.clone(),
+                        anchor,
+                        geometry: element.geometry.clone(),
+                        text: element.text.clone(),
+                        read_from_drawing: 0,
+                    }),
+                    name: element.name,
+                    description: element.description,
+                    anchor,
+                    geometry: element.geometry,
+                    text: element.text,
+                });
+            }
+        }
+        let read = shapes.len() - first;
+        for shape in &mut shapes[first..] {
+            if let Some(origin) = &mut shape.origin {
+                origin.read_from_drawing = read;
+            }
+        }
+    }
+    shapes
+}
+
 /// The pictures drawn on one sheet, in drawing order. A picture linked to a
 /// file outside the package has no bytes to model and stays in the drawing
 /// as written.
 fn read_sheet_images<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
-    links: &HashMap<String, Relationship>,
-    base: &str,
+    drawings: &[(String, String)],
 ) -> Vec<crate::model::image::Image> {
     use crate::model::image::{Image, ImageFormat, ImageOrigin, hash};
     let mut images = Vec::new();
-    let mut drawings: Vec<String> = links
-        .values()
-        .filter(|r| !r.external && r.kind.ends_with("/drawing"))
-        .map(|r| resolve(base, &r.target))
-        .collect();
-    drawings.sort();
-    for drawing in drawings {
-        let Ok(xml) = read_part(zip, &drawing) else {
-            continue;
-        };
+    for (drawing, xml) in drawings {
         if !xml.contains("pic") {
             continue;
         }
-        let rels = read_relationships(zip, &rels_path_for(&drawing)).unwrap_or_default();
+        let rels = read_relationships(zip, &rels_path_for(drawing)).unwrap_or_default();
         let dir = drawing.rsplit_once('/').map_or("", |(dir, _)| dir);
-        for object in super::image::scan_pictures(&xml) {
+        for object in super::image::scan_pictures(xml) {
             let Some(anchor) = object.anchor else {
                 continue;
             };

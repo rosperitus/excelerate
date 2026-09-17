@@ -151,7 +151,7 @@ pub(super) fn parse_relationships(xml: &str, part: &str) -> Vec<Relationship> {
             Some(Relationship {
                 id: n.attr("Id")?.to_owned(),
                 kind: n.attr("Type")?.to_owned(),
-                target: resolve(base, n.attr("Target")?),
+                target: resolve(base, &n.attr_text("Target")?),
                 span: root.inner_start + n.span.start..root.inner_start + n.span.end,
             })
         })

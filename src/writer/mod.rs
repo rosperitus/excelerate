@@ -7,6 +7,7 @@ pub mod html;
 mod image;
 pub mod ods;
 pub(crate) mod ole;
+mod shape;
 pub mod xls;
 mod xls_formula;
 pub mod xlsx;

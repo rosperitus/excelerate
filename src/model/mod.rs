@@ -11,6 +11,7 @@ pub mod chart;
 pub mod image;
 pub mod pivot;
 pub mod protection;
+pub mod shape;
 pub mod table;
 
 use crate::coordinate::{CellRef, Col, Range, Row};
@@ -1454,6 +1455,9 @@ pub struct Worksheet {
     /// The pictures on the sheet, read and written both: see
     /// [`crate::model::image`].
     pub images: Vec<image::Image>,
+    /// The shapes on the sheet - boxes, arrows, callouts, text boxes - read
+    /// and written both: see [`crate::model::shape`].
+    pub shapes: Vec<shape::Shape>,
     /// The sheet's `<extLst>`, carried as it was written.
     ///
     /// Everything newer than the 2006 schema hangs off this element:

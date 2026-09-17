@@ -90,9 +90,8 @@ fn find_pictures(kids: &[Node<'_>], base: usize, grouped: bool, out: &mut Vec<Pi
                 let attr = |name: &str| {
                     props
                         .as_ref()
-                        .and_then(|p| p.attr(name))
+                        .and_then(|p| p.attr_text(name))
                         .unwrap_or_default()
-                        .to_owned()
                 };
                 out.push(Picture {
                     id: props
