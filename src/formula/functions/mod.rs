@@ -92,17 +92,25 @@ impl Arg {
     /// [`CellError::Value`] for text that spells no date, and whatever error
     /// the argument already carried.
     pub fn serial(&self, epoch: Epoch) -> Result<f64, CellError> {
-        let Value::Text(text) = self.value.scalar() else {
-            return self.value.scalar().number();
+        let serial = match self.value.scalar() {
+            // Text spelling a number is that serial already: `DAY("35")` is
+            // the fourth of February 1900, not a date read out of the digits.
+            Value::Text(text) => match self.value.scalar().number() {
+                Ok(n) => n,
+                Err(_) => crate::shared::date_parse::parse(text)
+                    .and_then(|parsed| parsed.serial(epoch))
+                    .ok_or(CellError::Value)?,
+            },
+            other => other.number()?,
         };
-        // Text spelling a number is that serial already: `DAY("35")` is the
-        // fourth of February 1900, not a date read out of the digits.
-        if let Ok(n) = self.value.scalar().number() {
-            return Ok(n);
+        // Excel's calendar ends on 31 December 9999, and a date past it - or
+        // before its first day - is #NUM!. It is also what keeps a function
+        // that walks the days, as NETWORKDAYS does, from walking billions.
+        if (0.0..=date::last_serial(epoch)).contains(&serial) {
+            Ok(serial)
+        } else {
+            Err(CellError::Num)
         }
-        crate::shared::date_parse::parse(text)
-            .and_then(|parsed| parsed.serial(epoch))
-            .ok_or(CellError::Value)
     }
 
     /// Whether the argument was left out, as the second one in `IF(A1,,0)`.

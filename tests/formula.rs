@@ -890,6 +890,13 @@ fn what_an_excel_formula_reference_cached() {
         ("ISERROR(1/0)", "TRUE"),
         ("ERROR.TYPE(#REF!)", "4"),
         ("COUNT(1,#REF!)", "1"),
+        // Excel's calendar ends on 31 December 9999: a date past it is
+        // #NUM!, and so is a count of working days that would land there.
+        ("NETWORKDAYS(1,4E+8)", "#NUM!"),
+        ("YEAR(2958466)", "#NUM!"),
+        ("YEAR(2958465)", "9999"),
+        ("WORKDAY(1,1E+9)", "#NUM!"),
+        ("EDATE(1E+9,1)", "#NUM!"),
         // Only values of the needle's kind are searched: blanks and numbers
         // in a row of names are stepped over.
         ("MATCH(\"b\",{\"a\",1,\"b\",2,\"c\"})", "3"),
