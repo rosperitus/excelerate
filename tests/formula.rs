@@ -906,6 +906,13 @@ fn what_an_excel_formula_reference_cached() {
         ("ROWS(RANDARRAY(1E+6,1E+6))", "#NUM!"),
         ("SUM(SEQUENCE(1,5000)*SEQUENCE(5000,1))", "#NUM!"),
         ("ROWS(EXPAND(1,3,2))", "3"),
+        // Found by fuzzing: a large number of trials is searched, not walked.
+        ("CRITBINOM(77777776,0.5,0.5)", "38888888"),
+        ("BINOM.INV(2000,0.3,0.9)", "626"),
+        ("BINOM.INV(1000,0.3,0.9)", "319"),
+        ("ROUND(BINOM.DIST.RANGE(5000,0.5,0,2500),6)", "0.505642"),
+        ("ROUND(BINOM.DIST.RANGE(60,0.75,45,50),6)", "0.52363"),
+        ("HYPGEOM.DIST(2E+7,4E+7,3E+7,5E+7,TRUE)", "#NUM!"),
         // Only values of the needle's kind are searched: blanks and numbers
         // in a row of names are stepped over.
         ("MATCH(\"b\",{\"a\",1,\"b\",2,\"c\"})", "3"),

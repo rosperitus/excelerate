@@ -604,6 +604,12 @@ pub fn hypgeom_dist(args: &[Arg]) -> Value {
     if !is_set(cumulative) {
         return Value::Number(mass(x));
     }
+    // ponytail: a term per count up to x, with a ceiling instead of a closed
+    // form; a hypergeometric distribution function (a 3F2 series) lifts it
+    // if a workbook ever needs counts in the tens of millions.
+    if x > 1.0e7 {
+        return Value::Error(CellError::Num);
+    }
     let mut total = 0.0;
     let mut k = 0.0;
     while k <= x {
@@ -624,6 +630,28 @@ pub fn binom_inv(args: &[Arg]) -> Value {
     let trials = trials.trunc();
     if trials < 0.0 || !(0.0..=1.0).contains(&p) || !(0.0..=1.0).contains(&alpha) {
         return Value::Error(CellError::Num);
+    }
+    if trials > 1000.0 && p > 0.0 && p < 1.0 {
+        // A step per success counted is millions of steps for a large number
+        // of trials; the distribution function is monotone, so halving the
+        // range finds the same smallest count in sixty.
+        let cumulative = |k: f64| {
+            if k >= trials {
+                1.0
+            } else {
+                beta_i(trials - k, k + 1.0, 1.0 - p)
+            }
+        };
+        let (mut low, mut high) = (0.0_f64, trials);
+        while low < high {
+            let middle = f64::midpoint(low, high).floor();
+            if cumulative(middle) >= alpha {
+                high = middle;
+            } else {
+                low = middle + 1.0;
+            }
+        }
+        return Value::Number(low);
     }
     let mut total = 0.0;
     let mut k = 0.0;
@@ -981,6 +1009,20 @@ pub fn binom_dist_range(args: &[Arg]) -> Value {
         || high < low
     {
         return Value::Error(CellError::Num);
+    }
+    if high - low > 1000.0 && p > 0.0 && p < 1.0 {
+        // A wide range is the difference of two cumulative values rather
+        // than a sum of millions of terms.
+        let cumulative = |k: f64| {
+            if k < 0.0 {
+                0.0
+            } else if k >= trials {
+                1.0
+            } else {
+                beta_i(trials - k, k + 1.0, 1.0 - p)
+            }
+        };
+        return Value::Number(cumulative(high) - cumulative(low - 1.0));
     }
     let mut total = 0.0;
     let mut k = low;
