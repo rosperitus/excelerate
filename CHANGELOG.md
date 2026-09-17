@@ -12,6 +12,13 @@
   that expands to 634 MB and that Excel opens; the ratio is what tells such a
   workbook from a zip bomb.
 
+### Added
+
+- `PasswordHash::new`, `iso`, `legacy` and `verify`: set a sheet or workbook
+  password from its text the way Excel does (SHA-512, random 16-byte salt,
+  100,000 spins), and check a password against a hash a file carries.
+  Verified against hashes `excelize` wrote.
+
 ### Fixed
 
 - Array formulas keep their flag through an xlsx round trip:
