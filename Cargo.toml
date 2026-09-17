@@ -23,7 +23,12 @@ write = []
 # Already in the tree under `zip`; naming it here is what lets the Gnumeric
 # reader gunzip its one XML part.
 flate2 = "1.1.9"
+# Both already in the tree under `zip`: the password hash of a protected
+# sheet or workbook (SHA-512, SHA-1 for older files) and its random salt.
+getrandom = "0.4"
 quick-xml = "0.42.0"
+sha1 = "0.11"
+sha2 = "0.11"
 thiserror = "2.0.20"
 zip = "8.6.0"
 
@@ -32,6 +37,8 @@ zip = "8.6.0"
 wasm-bindgen = "0.2"
 # `Date.now()`: wasm32-unknown-unknown has no clock of its own.
 js-sys = "0.3"
+# `crypto.getRandomValues` for the salt of a new password hash.
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [lib]
 crate-type = ["cdylib", "rlib"]

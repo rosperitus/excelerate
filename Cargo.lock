@@ -168,8 +168,11 @@ name = "excelerate"
 version = "0.8.0"
 dependencies = [
  "flate2",
+ "getrandom",
  "js-sys",
  "quick-xml",
+ "sha1",
+ "sha2",
  "thiserror",
  "wasm-bindgen",
  "zip",

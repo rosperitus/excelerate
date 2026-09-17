@@ -83,6 +83,72 @@ impl PasswordHash {
     /// `Protection::$spinCount` has it.
     pub const DEFAULT_SPIN_COUNT: u32 = 10_000;
 
+    /// What Excel itself spins SHA-512 when it sets a password.
+    pub const EXCEL_SPIN_COUNT: u32 = 100_000;
+
+    /// The hash Excel writes when a password is set: SHA-512 over a fresh
+    /// sixteen-byte salt, spun [`Self::EXCEL_SPIN_COUNT`] times.
+    ///
+    /// `None` where the platform has no source of randomness to salt with;
+    /// [`Self::iso`] takes a salt from the caller instead.
+    #[must_use]
+    pub fn new(password: &str) -> Option<Self> {
+        let mut salt = [0u8; 16];
+        getrandom::fill(&mut salt).ok()?;
+        Some(Self::iso(password, &salt, Self::EXCEL_SPIN_COUNT))
+    }
+
+    /// The SHA-512 hash of `password` over `salt`, as ECMA-376 defines it: the
+    /// salt and the password in UTF-16LE hashed once, then the hash and the
+    /// iteration number hashed `spin_count` times more.
+    #[must_use]
+    pub fn iso(password: &str, salt: &[u8], spin_count: u32) -> Self {
+        Self::Iso {
+            algorithm: "SHA-512".to_owned(),
+            hash: base64(&spin::<sha2::Sha512>(password, salt, spin_count)),
+            salt: base64(salt),
+            spin_count,
+        }
+    }
+
+    /// The 16-bit verifier of the old method, which older Excel and many
+    /// other programs still write.
+    #[must_use]
+    pub fn legacy(password: &str) -> Self {
+        Self::Legacy(format!("{:04X}", legacy_verifier(password)))
+    }
+
+    /// Whether `password` is the one this hash was made from.
+    ///
+    /// The ISO form knows SHA-512, SHA-384, SHA-256 and SHA-1; a hash under
+    /// any other algorithm, or with a salt that is not base64, never matches.
+    #[must_use]
+    pub fn verify(&self, password: &str) -> bool {
+        match self {
+            Self::Legacy(verifier) => {
+                u16::from_str_radix(verifier, 16).is_ok_and(|v| v == legacy_verifier(password))
+            }
+            Self::Iso {
+                algorithm,
+                hash,
+                salt,
+                spin_count,
+            } => {
+                let Some(salt) = unbase64(salt) else {
+                    return false;
+                };
+                let got = match algorithm.to_ascii_uppercase().as_str() {
+                    "SHA-512" => spin::<sha2::Sha512>(password, &salt, *spin_count),
+                    "SHA-384" => spin::<sha2::Sha384>(password, &salt, *spin_count),
+                    "SHA-256" => spin::<sha2::Sha256>(password, &salt, *spin_count),
+                    "SHA-1" => spin::<sha1::Sha1>(password, &salt, *spin_count),
+                    _ => return false,
+                };
+                base64(&got) == *hash
+            }
+        }
+    }
+
     /// Builds the hash from the attributes of an element, given how that
     /// element spells them.
     ///
@@ -126,6 +192,82 @@ impl PasswordHash {
             ],
         }
     }
+}
+
+/// The iterated salted hash of ECMA-376 Part 1, 18.2.28.
+fn spin<D: sha2::Digest>(password: &str, salt: &[u8], spin_count: u32) -> Vec<u8> {
+    let mut first = D::new();
+    first.update(salt);
+    for unit in password.encode_utf16() {
+        first.update(unit.to_le_bytes());
+    }
+    let mut hash = first.finalize().to_vec();
+    for i in 0..spin_count {
+        let mut next = D::new();
+        next.update(&hash);
+        next.update(i.to_le_bytes());
+        hash = next.finalize().to_vec();
+    }
+    hash
+}
+
+/// The verifier of the old method (ECMA-376 Part 4, 3.3.1.81): each character
+/// rotated in from the last, then the length and a constant.
+///
+/// Excel reads the password as single bytes of the ANSI code page; the low
+/// byte of each UTF-16 unit is that byte for everything Latin-1 spells.
+fn legacy_verifier(password: &str) -> u16 {
+    let bytes: Vec<u16> = password.encode_utf16().map(|u| u & 0xFF).collect();
+    let mut hash: u16 = 0;
+    for &byte in bytes.iter().rev() {
+        hash = ((hash >> 14) & 1) | ((hash << 1) & 0x7FFF);
+        hash ^= byte;
+    }
+    hash = ((hash >> 14) & 1) | ((hash << 1) & 0x7FFF);
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "the old method hashes the length modulo 2^16"
+    )]
+    let length = bytes.len() as u16;
+    hash ^ length ^ 0xCE4B
+}
+
+const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/// Standard base64 with padding, which is how the file spells hash and salt.
+fn base64(bytes: &[u8]) -> String {
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, &b)| n | (u32::from(b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(char::from(BASE64[(n >> (18 - 6 * i) & 63) as usize]));
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// The reverse; `None` for anything that is not base64.
+fn unbase64(text: &str) -> Option<Vec<u8>> {
+    let text = text.trim_end_matches('=');
+    let mut out = Vec::with_capacity(text.len() * 3 / 4);
+    let (mut n, mut bits) = (0u32, 0);
+    for c in text.bytes() {
+        let digit = BASE64.iter().position(|&d| d == c)?;
+        n = (n << 6) | u32::try_from(digit).ok()?;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push(u8::try_from((n >> bits) & 0xFF).ok()?);
+        }
+    }
+    Some(out)
 }
 
 /// What a protected sheet refuses.
@@ -294,7 +436,7 @@ impl WorkbookProtection {
 
 #[cfg(test)]
 mod tests {
-    use super::{PasswordAttrs, PasswordHash, SheetProtection};
+    use super::{PasswordAttrs, PasswordHash, SheetProtection, base64, unbase64};
 
     /// Reads from a fixed list of attributes, the way the readers do.
     fn lookup(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> + use<> {
@@ -388,5 +530,24 @@ mod tests {
         let names: Vec<&str> = protection.flags().iter().map(|(n, _)| *n).collect();
         let slots: Vec<&str> = protection.slots().iter().map(|(n, _)| *n).collect();
         assert_eq!(names, slots);
+    }
+
+    #[test]
+    fn base64_round_trips() {
+        for bytes in [&b""[..], b"f", b"fo", b"foo", b"foob", b"\xff\x00\x10"] {
+            assert_eq!(unbase64(&base64(bytes)).as_deref(), Some(bytes));
+        }
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+        assert_eq!(base64(b"fo"), "Zm8=");
+    }
+
+    #[test]
+    fn a_hash_verifies_its_own_password_only() {
+        let hash = PasswordHash::iso("secret", b"0123456789abcdef", 1000);
+        assert!(hash.verify("secret"));
+        assert!(!hash.verify("Secret"));
+        let hash = PasswordHash::legacy("secret");
+        assert!(hash.verify("secret"));
+        assert!(!hash.verify("other"));
     }
 }
