@@ -21,6 +21,18 @@ use crate::shared::date::Epoch;
 /// How many steps the two iterative solvers take before giving up.
 const MAX_ITERATIONS: usize = 128;
 
+/// The most periods a function walks one at a time.
+///
+/// `DB`, `DDB`, `VDB`, `IPMT`, `CUMIPMT` and `AMORDEGRC` step through the
+/// schedule period by period, and the count comes from the cell: a period of
+/// four billion is four billion steps, in every cell that asks. A million is a
+/// monthly schedule a hundred thousand years long; past it the answer is
+/// `#NUM!`.
+// ponytail: a ceiling instead of closed forms; each of these has one (a
+// geometric series for DB and DDB, the annuity split for IPMT), and they lift
+// it if a real schedule ever needs more periods.
+const MAX_PERIODS: f64 = 1_000_000.0;
+
 /// How close is close enough for them.
 const PRECISION: f64 = 1.0e-8;
 
@@ -153,7 +165,7 @@ fn split_payment(args: &[Arg], want_interest: bool) -> Value {
     };
     let timing = timing_of(timing);
     let (period, nper) = (period.trunc(), nper.trunc());
-    if period <= 0.0 || period > nper {
+    if period <= 0.0 || period > nper || period > MAX_PERIODS {
         return Value::Error(CellError::Num);
     }
     let (interest, principal) = walk_schedule(rate, whole(period), nper, pv, fv, timing);
@@ -218,13 +230,34 @@ fn cumulative(args: &[Arg], want_interest: bool) -> Value {
     };
     let timing = timing_of(timing);
     let (start, end) = (start.trunc(), end.trunc());
-    if rate <= 0.0 || nper <= 0.0 || pv <= 0.0 || start < 1.0 || end < start || end > nper {
+    if rate <= 0.0
+        || nper <= 0.0
+        || pv <= 0.0
+        || start < 1.0
+        || end < start
+        || end > nper
+        || end > MAX_PERIODS
+    {
         return Value::Error(CellError::Num);
     }
+    // One walk of the schedule, summing the periods inside the span; walking
+    // it afresh for each period made a long span quadratic.
+    let payment = payment(rate, nper, pv, 0.0, timing);
+    let due_at_start = timing != 0.0;
+    let (first, last) = (whole(start), whole(end));
+    let mut capital = pv;
     let mut total = 0.0;
-    for period in whole(start)..=whole(end) {
-        let (interest, principal) = walk_schedule(rate, period, nper, pv, 0.0, timing);
-        total += if want_interest { interest } else { principal };
+    for i in 1..=last {
+        let interest = if due_at_start && i == 1 {
+            0.0
+        } else {
+            -capital * rate
+        };
+        let principal = payment - interest;
+        capital += principal;
+        if i >= first {
+            total += if want_interest { interest } else { principal };
+        }
     }
     Value::Number(total)
 }
@@ -436,7 +469,7 @@ pub fn db(args: &[Arg]) -> Value {
     else {
         return Value::Error(CellError::Value);
     };
-    if cost < 0.0 || salvage < 0.0 || life <= 0.0 || period <= 0.0 {
+    if cost < 0.0 || salvage < 0.0 || life <= 0.0 || period <= 0.0 || period > MAX_PERIODS {
         return Value::Error(CellError::Num);
     }
     if cost == 0.0 {
@@ -448,7 +481,7 @@ pub fn db(args: &[Arg]) -> Value {
     let depreciation_rate = (raw * 1000.0).round() / 1000.0;
 
     let (mut previous, mut depreciation) = (0.0, 0.0);
-    let last_year = whole(life) + 1;
+    let last_year = whole(life).saturating_add(1);
     for per in 1..=whole(period) {
         depreciation = if per == 1 {
             cost * depreciation_rate * month / 12.0
@@ -477,7 +510,7 @@ pub fn ddb(args: &[Arg]) -> Value {
     if cost < 0.0 || salvage < 0.0 || life <= 0.0 || period <= 0.0 || factor <= 0.0 {
         return Value::Error(CellError::Num);
     }
-    if period > life {
+    if period > life || period > MAX_PERIODS {
         return Value::Error(CellError::Num);
     }
     let (mut previous, mut depreciation) = (0.0, 0.0);
@@ -509,7 +542,7 @@ pub fn vdb(args: &[Arg]) -> Value {
     if cost < 0.0 || salvage < 0.0 || life <= 0.0 || start < 0.0 || end < start || end > life {
         return Value::Error(CellError::Num);
     }
-    if factor <= 0.0 {
+    if factor <= 0.0 || end > MAX_PERIODS {
         return Value::Error(CellError::Num);
     }
     let switching = no_switch == 0.0;
@@ -581,6 +614,9 @@ pub fn amordegrc(epoch: Epoch, args: &[Arg]) -> Value {
     let Some(fraction) = super::date::year_fraction(epoch, purchased, first, basis) else {
         return Value::Error(CellError::Num);
     };
+    if period > MAX_PERIODS {
+        return Value::Error(CellError::Num);
+    }
     let rate = rate * amortization_coefficient(rate);
     let mut cost = cost;
     let mut write_off = (fraction * rate * cost).round();

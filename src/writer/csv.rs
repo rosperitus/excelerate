@@ -7,9 +7,8 @@
 
 use crate::error::{Error, Result};
 use crate::formula::eval::{Engine, Origin};
-use crate::formula::value::Value;
 use crate::model::{CellValue, Spreadsheet};
-use crate::{CellRef, Col, Row};
+use crate::{CellRef, Row};
 use std::io::Write;
 
 /// The field quote, and what a quote inside a field is doubled into.
@@ -56,19 +55,34 @@ pub fn write_csv_to<W: Write>(
             break;
         };
         line.clear();
-        for col in used.start.col.one_based()..=used.end.col.one_based() {
-            let Ok(col) = Col::from_one_based(u64::from(col)) else {
-                break;
-            };
-            if col != used.start.col {
-                line.push(delimiter);
+        // Only the cells the row has are visited; the empty fields between
+        // them are delimiters, pushed as a run. A sheet with one cell far out
+        // at XFD1048576 is a large file whatever happens, but it need not be
+        // a hash lookup per empty field on the way.
+        let (first, last) = (used.start.col.index(), used.end.col.index());
+        let mut next = first;
+        for (col, cell) in ws.row_cells(row) {
+            let index = col.index();
+            if index < first || index > last {
+                continue;
             }
+            let gap = usize::try_from(index - next).unwrap_or(0) + usize::from(next > first);
+            line.extend(std::iter::repeat_n(delimiter, gap));
             let at = CellRef::new(col, row);
-            let field = ws.get(at).map_or_else(String::new, |cell| {
-                render(&mut engine, sheet, at, &cell.value)
-            });
-            quote_into(&mut line, &field, delimiter);
+            quote_into(
+                &mut line,
+                &render(&mut engine, sheet, at, &cell.value),
+                delimiter,
+            );
+            next = index + 1;
         }
+        let tail = usize::try_from((last + 1).saturating_sub(next)).unwrap_or(0);
+        let tail = if next == first {
+            tail.saturating_sub(1)
+        } else {
+            tail
+        };
+        line.extend(std::iter::repeat_n(delimiter, tail));
         line.push_str("\r\n");
         sink.write_all(line.as_bytes())
             .map_err(|e| Error::Csv(e.to_string()))?;
@@ -85,25 +99,15 @@ fn render(engine: &mut Engine<'_>, sheet: usize, at: CellRef, value: &CellValue)
         CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_owned(),
         CellValue::Error(e) => e.as_str().to_owned(),
         CellValue::RichText(runs) => runs.iter().map(|r| r.text.as_str()).collect(),
-        CellValue::Formula { formula, cached } => match cached {
-            Some(cached) => render(engine, sheet, at, cached),
-            None => match engine.eval(Origin::new(sheet, at), formula) {
-                Value::Blank => String::new(),
-                Value::Number(n) => number(n),
-                Value::Text(t) => t,
-                Value::Bool(b) => if b { "TRUE" } else { "FALSE" }.to_owned(),
-                // A cell cannot hold a function, so it shows the error Excel
-                // shows in its place.
-                Value::Lambda(_) => crate::error::CellError::Calc.as_str().to_owned(),
-                Value::Error(e) => e.as_str().to_owned(),
-                // A formula that spilled: a CSV cell holds one value, so it
-                // gets the top-left one, the way Excel shows it in the cell.
-                Value::Array(rows) => rows
-                    .first()
-                    .and_then(|line| line.first())
-                    .map_or_else(String::new, |v| format!("{v:?}")),
-            },
-        },
+        CellValue::Formula { formula, cached } => {
+            if let Some(cached) = cached {
+                return render(engine, sheet, at, cached);
+            }
+            // What a cell with no cache shows is what it computes to, held
+            // as a cell holds a value.
+            let value = crate::formula::eval::stored(&engine.eval(Origin::new(sheet, at), formula));
+            render(engine, sheet, at, &value)
+        }
     }
 }
 
@@ -149,6 +153,44 @@ fn quote_into(line: &mut String, field: &str, delimiter: char) {
 
 #[cfg(test)]
 mod tests {
+    /// Only the cells a row has are visited, and the empty fields around them
+    /// are delimiters. A far cell makes the file large, not slow per field.
+    #[test]
+    fn a_sparse_sheet_writes_every_field_it_spans() {
+        use crate::model::{Spreadsheet, Worksheet};
+        let mut book = Spreadsheet::empty();
+        let mut sheet = Worksheet::new("S").unwrap();
+        let at = |a: &str| CellRef::parse(a).unwrap();
+        sheet.set(at("B1"), 1.0);
+        sheet.set(at("D1"), 2.0);
+        sheet.set(at("A3"), "x");
+        sheet.set(
+            at("C3"),
+            crate::model::CellValue::Formula {
+                formula: "{7,8}".to_owned(),
+                cached: None,
+            },
+        );
+        book.add_sheet(sheet).unwrap();
+        let mut out = Vec::new();
+        write_csv_to(&book, 0, &mut out, ',').unwrap();
+        // The used range is A1:D3; the array formula shows its first value.
+        assert_eq!(String::from_utf8(out).unwrap(), ",1,,2\r\n,,,\r\nx,,7,\r\n");
+
+        let mut far = Spreadsheet::empty();
+        let mut sheet = Worksheet::new("S").unwrap();
+        sheet.set(at("A1"), 1.0);
+        sheet.set(at("XFD2000"), 2.0);
+        far.add_sheet(sheet).unwrap();
+        let started = std::time::Instant::now();
+        let mut out = Vec::new();
+        write_csv_to(&far, 0, &mut out, ',').unwrap();
+        // Two thousand lines of 16 383 delimiters and a line break, plus the
+        // two values.
+        assert_eq!(out.len(), 2000 * (16_383 + 2) + 2);
+        assert!(started.elapsed().as_secs() < 5, "{:?}", started.elapsed());
+    }
+
     use super::*;
     use crate::model::Worksheet;
 

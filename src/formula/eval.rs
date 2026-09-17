@@ -969,7 +969,9 @@ pub fn recalculate_cell_with(
     true
 }
 
-fn stored(value: &Value) -> CellValue {
+/// A computed value as a cell holds it: an array shows its top-left value,
+/// and a function, which no cell can hold, the error Excel shows instead.
+pub(crate) fn stored(value: &Value) -> CellValue {
     match value {
         Value::Blank => CellValue::Empty,
         Value::Number(n) => CellValue::Number(*n),
