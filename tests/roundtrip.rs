@@ -1360,3 +1360,16 @@ fn a_workbook_with_macros_is_written_as_macro_enabled() {
         "{text}"
     );
 }
+
+/// `chart1.xlsx` keeps 50 differential formats in `<dxfs>` and 48 more for its
+/// slicer styles in `<extLst>`. The extension travels whole; read as the
+/// part's own, its formats were added to the book's and written out again on
+/// every save.
+#[test]
+fn a_style_extension_does_not_add_to_the_differential_formats() {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/chart1.xlsx");
+    let book = read_xlsx_from(Cursor::new(std::fs::read(path).unwrap())).unwrap();
+    assert_eq!(book.styles.differential.len(), 50);
+    let back = cycle(&book);
+    assert_eq!(back.styles.differential, book.styles.differential);
+}

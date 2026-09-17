@@ -1213,12 +1213,24 @@ struct StylesReader {
     /// `cellStyleXfs` holds `xf` elements that cells never index into.
     section: Section,
     side: BorderSide,
+    /// How deep inside `<extLst>` the reader is. The extension travels whole
+    /// in `Spreadsheet::style_extensions`, and what it holds repeats the
+    /// part's own names: the `<x14:dxfs>` of slicer styles, read as the
+    /// part's `<dxfs>`, were appended to the book's differential formats and
+    /// written out a second time on every save.
+    ext_depth: u32,
 }
 
 impl StylesReader {
     fn start(&mut self, e: &quick_xml::events::BytesStart<'_>, empty: bool) {
         let name = e.local_name();
         let name = name.as_ref();
+        if name == "extLst" && !empty {
+            self.ext_depth += 1;
+        }
+        if self.ext_depth > 0 {
+            return;
+        }
         if self.start_section(name) || self.start_number_format(name, e) {
             return;
         }
@@ -1345,6 +1357,13 @@ impl StylesReader {
     }
 
     fn end(&mut self, name: &str) {
+        if name == "extLst" {
+            self.ext_depth = self.ext_depth.saturating_sub(1);
+            return;
+        }
+        if self.ext_depth > 0 {
+            return;
+        }
         match name {
             "fonts" | "fills" | "borders" | "cellXfs" | "cellStyleXfs" | "dxfs" => {
                 self.section = Section::None;
