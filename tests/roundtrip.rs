@@ -1328,3 +1328,35 @@ fn a_font_keeps_its_charset_and_its_scheme() {
     assert_eq!(run.charset, Some(204));
     assert_eq!(run.scheme, Some(FontScheme::Minor));
 }
+
+/// A workbook with a VBA project is macro-enabled, and its main part has to
+/// say so: Excel refuses an `.xlsm` whose workbook claims to be plain.
+#[test]
+fn a_workbook_with_macros_is_written_as_macro_enabled() {
+    use excelerate::model::{Attachment, OpaquePart};
+    let content_types = |book: &Spreadsheet| {
+        let mut bytes = Vec::new();
+        write_xlsx_to(book, Cursor::new(&mut bytes)).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes)).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("[Content_Types].xml").unwrap(), &mut text)
+            .unwrap();
+        text
+    };
+    let mut book = Spreadsheet::new();
+    assert!(content_types(&book).contains("spreadsheetml.sheet.main+xml"));
+    book.parts.push(OpaquePart {
+        path: "xl/vbaProject.bin".to_owned(),
+        content_type: Some("application/vnd.ms-office.vbaProject".to_owned()),
+        data: vec![0xD0, 0xCF, 0x11, 0xE0],
+    });
+    book.attachments.push(Attachment {
+        kind: "http://schemas.microsoft.com/office/2006/relationships/vbaProject".to_owned(),
+        target: "xl/vbaProject.bin".to_owned(),
+    });
+    let text = content_types(&book);
+    assert!(
+        text.contains(r#"PartName="/xl/workbook.xml" ContentType="application/vnd.ms-excel.sheet.macroEnabled.main+xml""#),
+        "{text}"
+    );
+}

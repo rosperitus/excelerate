@@ -335,6 +335,21 @@ const ROOT_RELS: &str = concat!(
     "</Relationships>",
 );
 
+/// The content type of the workbook part. A workbook that carries a VBA
+/// project is macro-enabled, and says so here: Excel refuses to open an `.xlsm`
+/// whose main part claims to be a plain workbook, macros and all.
+fn main_content_type(book: &Spreadsheet) -> &'static str {
+    let macros = book
+        .parts
+        .iter()
+        .any(|p| p.content_type.as_deref() == Some("application/vnd.ms-office.vbaProject"));
+    if macros {
+        "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
+    } else {
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    }
+}
+
 fn content_types(book: &Spreadsheet) -> String {
     let sheet_count = book.sheets().len();
     let mut s = format!(
@@ -343,12 +358,13 @@ fn content_types(book: &Spreadsheet) -> String {
             r#"<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">"#,
             r#"<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>"#,
             r#"<Default Extension="xml" ContentType="application/xml"/>"#,
-            r#"<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>"#,
+            r#"<Override PartName="/xl/workbook.xml" ContentType="{main}"/>"#,
             r#"<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>"#,
             r#"<Override PartName="/xl/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>"#,
             r#"<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>"#,
         ),
-        decl = XML_DECL
+        decl = XML_DECL,
+        main = main_content_type(book),
     );
     for i in 1..=sheet_count {
         let _ = write!(
