@@ -178,6 +178,9 @@ enum Position {
 
 /// Reads an `INDEX` position; a negative number is not a position at all.
 fn position_of(n: f64) -> Option<Position> {
+    // Excel drops the fraction of a position first, so 0.2 means "all", the
+    // same as 0 - and not a position one before the first.
+    let n = n.trunc();
     if n < 0.0 {
         return None;
     }

@@ -897,6 +897,9 @@ fn what_an_excel_formula_reference_cached() {
         ("YEAR(2958465)", "9999"),
         ("WORKDAY(1,1E+9)", "#NUM!"),
         ("EDATE(1E+9,1)", "#NUM!"),
+        // Found by fuzzing: a fractional position under one is the whole row.
+        ("SUM(INDEX({1,2;3,4},0.2,1))", "4"),
+        ("INDEX({1,2;3,4},1.9,2.7)", "2"),
         // Only values of the needle's kind are searched: blanks and numbers
         // in a row of names are stepped over.
         ("MATCH(\"b\",{\"a\",1,\"b\",2,\"c\"})", "3"),
