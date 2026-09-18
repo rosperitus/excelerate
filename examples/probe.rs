@@ -156,6 +156,12 @@ fn scalar_questions() -> Vec<(&'static str, &'static str)> {
             r#"TEXT(DATE(2025,1,15),"МММММ")"#,
         ),
         ("месяц как текст без формата", "MONTH(DATE(2025,1,15))"),
+        ("время: Ч:ММ:СС (русские коды)", r#"TEXT(0.5,"Ч:ММ:СС")"#),
+        ("время: [Ч]:ММ (прошло часов)", r#"TEXT(1.5,"[Ч]:ММ")"#),
+        ("число: 1234,5 -> 0,00", r#"TEXT(1234.5,"0,00")"#),
+        ("число: 1234,5 -> 0.00", r#"TEXT(1234.5,"0.00")"#),
+        ("число: 1234,5 -> # ##0", "TEXT(1234.5,\"# ##0\")"),
+        ("процент: 0,256 -> 0,0%", r#"TEXT(0.256,"0,0%")"#),
     ]
 }
 
@@ -532,7 +538,37 @@ fn isolated(dir: &str) -> Fallible {
     }
     excelerate::writer::xlsx::write_xlsx(&book, format!("{dir}/probe-cx-2-имена.xlsx"))?;
 
-    // 3. The same with a title, which is now written as typed text.
+    // 3. The same as the first, with the fallback taken out again: if this one
+    // opens too, the namespace was the whole story.
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("Каскад")?;
+    data(&mut sheet)?;
+    sheet.extended_charts.push(ChartEx::new(
+        SeriesLayout::Waterfall,
+        dimensions("Каскад!$A$2:$A$6", "Каскад!$B$2:$B$6"),
+        frame,
+    ));
+    book.add_sheet(sheet)?;
+    let mut bytes = Vec::new();
+    excelerate::writer::xlsx::write_xlsx_to(&book, std::io::Cursor::new(&mut bytes))?;
+    let mut book = excelerate::reader::xlsx::read_xlsx_from(std::io::Cursor::new(bytes))?;
+    for part in &mut book.parts {
+        if part.path.starts_with("xl/drawings/drawing")
+            && let Ok(text) = core::str::from_utf8(&part.data)
+            && let Some(start) = text.find("<mc:Fallback>")
+            && let Some(end) = text.find("</mc:Fallback>")
+        {
+            let without = format!(
+                "{}{}",
+                &text[..start],
+                &text[end + "</mc:Fallback>".len()..]
+            );
+            part.data = without.into_bytes();
+        }
+    }
+    excelerate::writer::xlsx::write_xlsx(&book, format!("{dir}/probe-cx-5-без-запасной.xlsx"))?;
+
+    // 4. The same with a title, which is now written as typed text.
     let mut book = Spreadsheet::empty();
     let mut sheet = Worksheet::new("Каскад")?;
     data(&mut sheet)?;
@@ -651,39 +687,40 @@ fn recalculate_on_load(book: &mut Spreadsheet) {
 
 /// What to do with the files, beside them.
 fn instructions(dir: &str) -> Fallible {
-    let text = format!(
-        "\u{feff}Второй заход\r\n\
+    let text = ("\u{feff}Третий заход\r\n\
         ============\r\n\r\n\
-        Журналы восстановления очень помогли - по ним нашлись три наши ошибки:\r\n\
-        \x20 - из styles.xml пропадали <tableStyles>, а на них стоят срезы: поэтому\r\n\
-        \x20   Excel и удалил все 14 срезов из probe-edited. Теперь переносим их,\r\n\
-        \x20   заодно и палитру <colors>;\r\n\
-        \x20 - в формуле массива мы писали формулу в каждой ячейке области, а надо\r\n\
-        \x20   только в верхней левой - отсюда «удалены сведения о ячейках»;\r\n\
-        \x20 - в ODS любое число без формата уезжало как дата.\r\n\
-        \x20 Рисунок, созданный с нуля, Excel по-прежнему выбрасывает целиком -\r\n\
-        \x20 чтобы понять, кто виноват, он теперь разложен по четырём файлам.\r\n\r\n\
-        По каждому файлу: открылся молча или просил восстановить (и что в журнале).\r\n\
-        Потом сохранить под именем с припиской -excel.\r\n\r\n\
-        probe-formulas.xlsx - форматы заново, по-русски. Каждый вопрос задан в\r\n\
-        \x20  нескольких написаниях: понятое Excel и есть ответ, остальные дадут #ЗНАЧ!.\r\n\
-        \x20  Лист «Скаляры»: C - ответ Excel, D - наш.\r\n\r\n\
-        probe-cx-1-простой.xlsx - только каскадная диаграмма, без заголовка.\r\n\
-        probe-cx-2-имена.xlsx - то же через скрытые имена _xlchart.v1.N.\r\n\
-        probe-cx-3-заголовок.xlsx - то же с заголовком (форму записи мы поменяли).\r\n\
-        probe-cx-4-фигура.xlsx - только фигура, без диаграмм.\r\n\
-        \x20  Разложено нарочно: в прошлый раз одна сломанная часть унесла весь рисунок.\r\n\r\n\
-        probe-array.xlsx / .xls / .ods - формула массива после починки.\r\n\
-        probe-array-простой.xlsx / .xls / .ods - то же, но формула без функций\r\n\
-        \x20  (A2:A4*2). На прошлом .xls Excel 2019 упал - эта пара покажет, дело в\r\n\
-        \x20  самой записи ARRAY или в том, как мы кодируем функцию внутри неё.\r\n\
-        \x20  Если .xls снова уронит Excel - больше его не открывайте, этого ответа\r\n\
-        \x20  достаточно.\r\n\r\n\
-        probe-objects.xlsx, probe-edited.xlsx - те же, что в прошлый раз, но\r\n\
-        \x20  переписанные с починенными стилями: интересно, вернутся ли срезы.\r\n\r\n\
-        probe-protected.xlsx - лист заперт паролем «{PASSWORD}», хеш наш.\r\n\
-        \x20  Скажите словами: принял ли Excel этот пароль. По файлу не видно.\r\n"
-    );
+        Спасибо, второй заход дал три ответа:\r\n\
+        \x20 - фигура, написанная нами с нуля, открылась молча: рисунок и якоря в\r\n\
+        \x20   порядке, виновата была только рамка диаграммы 2016 года;\r\n\
+        \x20 - все три варианта диаграммы Excel отверг одинаково, значит дело не в\r\n\
+        \x20   заголовке и не в скрытых именах. Теперь рамка повторяет то, что пишет\r\n\
+        \x20   сам Excel: xmlns:r объявлен прямо на <cx:chart> и добавлен mc:Fallback;\r\n\
+        \x20 - xls ронял Excel и с функцией, и без неё: ячейки внутри области массива\r\n\
+        \x20   мы писали значениями, а BIFF требует в каждой запись FORMULA с\r\n\
+        \x20   указателем на верхний левый угол. Исправлено.\r\n\
+        \x20 И ещё: по вашим ответам про форматы теперь понимаются русские коды дат\r\n\
+        \x20 (ДД.ММ.ГГГГ), а месяцы приведены к тому, что показывает Excel.\r\n\r\n\
+        Вопросы этого захода.\r\n\r\n\
+        probe-cx-1-простой.xlsx - каскадная диаграмма с исправленной рамкой.\r\n\
+        probe-cx-5-без-запасной.xlsx - та же рамка, но без mc:Fallback. Если первый\r\n\
+        \x20  откроется, а этот нет - дело было в запасной ветке; если оба откроются -\r\n\
+        \x20  хватало объявления пространства имён.\r\n\
+        probe-cx-2-имена.xlsx, probe-cx-3-заголовок.xlsx - те же две проверки поверх\r\n\
+        \x20  исправленной рамки: скрытые имена и заголовок.\r\n\
+        probe-cx-4-фигура.xlsx - фигура, для порядка (в прошлый раз открылась молча).\r\n\r\n\
+        probe-array.xls и probe-array-простой.xls - ТОТ САМЫЙ xls, из-за которого\r\n\
+        \x20  Excel падал. Если и теперь уронит - больше не открывайте, я уберу\r\n\
+        \x20  запись ARRAY из писателя совсем.\r\n\
+        \x20  Их же .xlsx и .ods - для порядка.\r\n\r\n\
+        probe-formulas.xlsx - форматы в третий раз: русские числовые форматы\r\n\
+        \x20  (# ##0,00) мы пока не понимаем, хочу увидеть, что Excel отвечает на них\r\n\
+        \x20  и на время (Ч:ММ:СС), чтобы дописать таблицу.\r\n\r\n\
+        probe-objects.xlsx, probe-edited.xlsx - с починенными стилями и рамкой:\r\n\
+        \x20  интересно, вернутся ли срезы в probe-edited и переживут ли открытие\r\n\
+        \x20  три диаграммы 2016 года в probe-objects.\r\n\r\n\
+        Как обычно: молча или с журналом, и сохранить с припиской -excel.\r\n\
+        Пароль больше не проверяем - он принят.\r\n")
+        .to_owned();
     std::fs::write(format!("{dir}/ЧИТАТЬ.txt"), text)?;
     Ok(())
 }
