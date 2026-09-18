@@ -1,8 +1,10 @@
 # Formulas
 
-The engine parses, evaluates and caches - 443 Excel functions across math,
+The engine parses, evaluates and caches - 517 Excel functions across math,
 statistics, distributions, regression, text, dates, financial, lookup, logic,
-information, database, engineering and web categories.
+information, database, engineering and web categories, `LAMBDA` and its kin,
+`GROUPBY` and `PIVOTBY`, and the regular expressions (`REGEXTEST`,
+`REGEXEXTRACT`, `REGEXREPLACE`, which have no lookaround or backreferences).
 
 ## Recalculating a workbook
 
@@ -22,6 +24,11 @@ The third argument carries a progress callback and any functions of your own
 the workbook calls; `&Options::default()` when you want neither. See
 [`progress`](https://docs.rs/excelerate/latest/excelerate/progress/) for a
 callback that reports formula by formula.
+
+A workbook of more than twenty thousand formulas is parsed and computed on up
+to eight threads, in waves of formulas that read nothing of each other; the
+answers are what one thread gives. Your own functions, a smaller workbook or
+WebAssembly keep the single-threaded pass.
 
 Results land in each formula cell's `cached` field, which is exactly where a
 file's own saved results live - so writing the book back gives every other
@@ -186,4 +193,6 @@ what Excel shows for a function it does not know.
 
 There is no panic path here. A formula 200 levels deep, a circular reference, a
 range covering a million cells - each has a defined answer (`#REF!` for a
-cycle, `#VALUE!` for an oversized range) rather than a stack overflow.
+cycle, `#VALUE!` for an oversized range) rather than a stack overflow. A chain
+of formulas reading formulas has no limit of its own: past a hundred links the
+engine sets the deepest cell aside, computes it from the top and carries on.
