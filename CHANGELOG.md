@@ -24,7 +24,8 @@
 - `PasswordHash::new`, `iso`, `legacy` and `verify`: set a sheet or workbook
   password from its text the way Excel does (SHA-512, random 16-byte salt,
   100,000 spins), and check a password against a hash a file carries.
-  Verified against hashes `excelize` wrote.
+  Verified against hashes `excelize` wrote, and Excel 2019 unprotected a sheet
+  this crate locked, with the password it was locked with.
 - `Worksheet::shapes`: boxes, arrows, callouts and text boxes are read into
   `Shape` (name, alt text, anchor, preset outline, text) and written back. An
   untouched shape keeps its bytes; a rename, new outline, new text or move is
