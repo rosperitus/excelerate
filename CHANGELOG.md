@@ -62,6 +62,12 @@
 
 ### Fixed
 
+- `OpenDocument` stated every number of a cell with no format of its own as a
+  date: `is_date_format` took the `e` of `General` for the Japanese era code,
+  so `10` was written as the tenth of January 1900. Found by asking Excel to
+  read one of our files.
+- A title typed into a 2016 chart is written as formatted text rather than as
+  the form that carries a cell's formula, which has no formula to carry.
 - Building the dependency graph of a pass halved: what sits inside each
   rectangle is worked out on several threads, and the edges live in vectors
   rather than hash maps (COIN: 1.53 s to 0.60 s). An engine that wants a

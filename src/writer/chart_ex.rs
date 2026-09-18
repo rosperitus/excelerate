@@ -511,6 +511,8 @@ fn render_title(text: &ChartText, p: &str) -> String {
 /// still says the same words, or plain text.
 fn render_tx(text: &ChartText, p: &str) -> String {
     let body = match text {
+        // `txData` is the form for text a cell holds: the formula, and what it
+        // said. Typed text goes as `rich`, the way it does in a classic chart.
         ChartText::Reference { formula, cache } => {
             let value = cache
                 .as_ref()
@@ -524,11 +526,19 @@ fn render_tx(text: &ChartText, p: &str) -> String {
             text,
             rich: Some(rich),
         } if rich_text(rich) == *text => rich.clone(),
-        ChartText::Text { text, .. } => {
-            format!("<{p}txData><{p}v>{}</{p}v></{p}txData>", escape(text))
-        }
+        ChartText::Text { text, .. } => render_rich(text, p),
     };
     format!("<{p}tx>{body}</{p}tx>")
+}
+
+/// Typed text as `DrawingML`, a paragraph per line.
+fn render_rich(text: &str, p: &str) -> String {
+    let mut s = format!("<{p}rich><a:bodyPr/><a:lstStyle/>");
+    for line in text.split('\n') {
+        let _ = write!(s, "<a:p><a:r><a:t>{}</a:t></a:r></a:p>", escape(line));
+    }
+    let _ = write!(s, "</{p}rich>");
+    s
 }
 
 fn render_series(index: usize, series: &ExSeries, p: &str) -> String {

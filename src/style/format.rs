@@ -788,6 +788,12 @@ fn trim_trailing_zeros(s: &str) -> String {
 /// Whether a section is a date or time format rather than a numeric one.
 #[must_use]
 pub fn is_date_format(section: &str) -> bool {
+    // `General` is not a format of codes at all, and its `e` is not the era
+    // code: without this every plain number counted as a date, and the
+    // `OpenDocument` writer stated `10` as the tenth of January 1900.
+    if section.trim().eq_ignore_ascii_case(GENERAL) || section.trim().is_empty() {
+        return false;
+    }
     let mut chars = section.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
@@ -1236,6 +1242,19 @@ mod tests {
         assert_eq!(general(1e-7), "1E-07");
         assert_eq!(general(1e12), "1E+12");
         assert_eq!(general(0.1), "0.1");
+    }
+
+    #[test]
+    fn general_is_not_a_date_format() {
+        use super::is_date_format;
+        assert!(!is_date_format("General"));
+        assert!(!is_date_format("general"));
+        assert!(!is_date_format(""));
+        assert!(!is_date_format("0.00"));
+        // The era code still counts, and so do the ordinary date codes.
+        assert!(is_date_format("ge"));
+        assert!(is_date_format("yyyy-mm-dd"));
+        assert!(!is_date_format("0.00E+00"));
     }
 
     #[test]

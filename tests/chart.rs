@@ -398,13 +398,26 @@ fn a_plot_with_no_axes_is_refused() {
     assert!(write_xlsx_to(&book, Cursor::new(&mut bytes)).is_err());
 }
 
-/// What a 2016 chart says, without where it was read from.
+/// What a 2016 chart says, without where it was read from and without the
+/// markup typed text is carried in: a title written as plain text comes back
+/// as the `DrawingML` that spells it.
 fn said(chart: &ChartEx) -> (String, Anchor, Option<ChartText>, Vec<ExSeries>) {
+    let plain = |text: &ChartText| match text {
+        ChartText::Text { text, .. } => ChartText::text(text),
+        other @ ChartText::Reference { .. } => other.clone(),
+    };
     (
         chart.name.clone(),
         chart.anchor,
-        chart.title.clone(),
-        chart.series.clone(),
+        chart.title.as_ref().map(plain),
+        chart
+            .series
+            .iter()
+            .map(|series| ExSeries {
+                name: series.name.as_ref().map(plain),
+                ..series.clone()
+            })
+            .collect(),
     )
 }
 
