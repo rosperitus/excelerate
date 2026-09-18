@@ -144,15 +144,15 @@ formulas, finding every cell a sheet reads, or rewriting references.
 
 ## Values
 
-```rust
+```text
 pub enum Value {
     Blank,
     Number(f64),
     Text(String),
     Bool(bool),
     Error(CellError),
-    Array(Rc<Vec<Vec<Value>>>),
-    Lambda(Rc<Lambda>),
+    Array(Arc<Vec<Vec<Value>>>),
+    Lambda(Arc<Lambda>),
 }
 ```
 

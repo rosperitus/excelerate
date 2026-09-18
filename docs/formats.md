@@ -124,7 +124,7 @@ Reading guesses the encoding from the BOM (UTF-8/16, else CP1252), honours a
 `sep=` line, and infers the delimiter by scoring candidates across rows. RFC
 4180 quoting, with a doubled quote inside a quoted field.
 
-```rust
+```rust,no_run
 use excelerate::reader::{CsvOptions, read_csv_with};
 
 let opts = CsvOptions {
@@ -188,7 +188,7 @@ filter, and sheet visibility. What does not: hyperlinks and data validation
 reader does not open - tables, pivot tables, drawings, conditional
 formatting.
 
-Two sharp edges:
+Four sharp edges:
 
 - **Functions numbered past the BIFF8 table.** xlsb numbers the analysis
   add-in functions and the ones Excel 2007 added (`IFERROR`, `COUNTIFS`,

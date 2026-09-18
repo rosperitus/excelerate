@@ -12,7 +12,7 @@
 
 Runnable examples live in [`examples/`](../examples):
 
-```
+```text
 cargo run --release --example convert   -- input.xlsx output.ods
 cargo run --release --example recalc    -- workbook.xlsx
 cargo run --release --example parse_all -- workbook.xlsx

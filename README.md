@@ -2,17 +2,17 @@
 
 Read, write and recalculate spreadsheets in pure Rust.
 
-Opens `.xlsx`, `.xls`, `.ods`, `.csv`, `.html`, `.slk`, `.gnumeric` and
-SpreadsheetML 2003, hands you the workbook as a plain Rust struct, evaluates
-formulas (443 Excel functions and counting) and writes the whole thing back.
+Opens `.xlsx`, `.xlsb`, `.xls`, `.ods`, `.csv`, `.html`, `.slk`, `.gnumeric`
+and SpreadsheetML 2003, hands you the workbook as a plain Rust struct, evaluates
+formulas (518 Excel functions and counting) and writes the whole thing back.
 No Excel, no LibreOffice, no COM, no headless anything - just the crate.
 
 ```toml
 [dependencies]
-excelerate = "0.8"
+excelerate = "0.9"
 ```
 
-```rust
+```rust,no_run
 use excelerate::reader;
 
 let book = reader::read("report.xlsx")?;
@@ -35,14 +35,16 @@ println!("{}: {} non-empty cells", sheet.title(), sheet.len());
   anything the crate does not model yet rides through byte for byte along with
   its relationships.
 - **Builds for WebAssembly**, so the same reader runs in Node.
-- **No `unsafe`**, `clippy::pedantic` clean, and the only deps are `zip`,
-  `quick-xml`, `flate2` and `thiserror`.
+- **No `unsafe`**, `clippy::pedantic` clean, and the deps are `zip`, `quick-xml`,
+  `flate2`, `thiserror`, `regex` for the `REGEX*` functions, and `sha1`/`sha2`/
+  `getrandom` for password hashes - all but `regex` already come with `zip`.
 
 ## Sixty-second tour
 
-```rust
+```rust,no_run
 use excelerate::CellRef;
 use excelerate::formula::eval::recalculate;
+use excelerate::progress::Options;
 use excelerate::model::{CellValue, Spreadsheet, Worksheet};
 use excelerate::writer::write_xlsx;
 
@@ -60,7 +62,7 @@ sheet.set(
 );
 
 book.add_sheet(sheet)?;
-recalculate(&mut book, None);       // B3 is now 360
+recalculate(&mut book, None, &Options::default());   // B3 is now 360
 write_xlsx(&book, "quote.xlsx")?;
 # Ok::<(), excelerate::Error>(())
 ```
@@ -68,7 +70,7 @@ write_xlsx(&book, "quote.xlsx")?;
 Converting between formats is a two-liner - the output format comes from the
 extension you ask for:
 
-```rust
+```rust,no_run
 use excelerate::{reader, writer};
 
 let book = reader::read("report.xlsx")?;
@@ -108,7 +110,7 @@ Every format has its own sharp edges; they are all written down in
 
 ## Building
 
-```
+```text
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```

@@ -7,7 +7,7 @@ does the same.
 
 ## How `[1]` resolves
 
-```
+```text
 formula "[1]Prices!A1"
   └─ 1 -> the first <externalReference> in workbook.xml   (position, not a name)
         └─ its relationship -> xl/externalLinks/externalLink1.xml
@@ -101,7 +101,7 @@ fn link(book: &mut Spreadsheet, index: usize, source: &Spreadsheet) {
 }
 ```
 
-```rust
+```rust,no_run
 # use excelerate::{reader, formula::eval::recalculate, progress::Options};
 # fn link(_: &mut excelerate::model::Spreadsheet, _: usize, _: &excelerate::model::Spreadsheet) {}
 let mut prices = reader::read("prices.xlsx")?;

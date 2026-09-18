@@ -22,3 +22,20 @@ pub mod writer;
 
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
+
+/// The README and the pages under `docs/`, pulled in so that `cargo test`
+/// compiles every example in them. Nothing else uses this type, and it exists
+/// only while doctests are collected.
+///
+/// A page that needs a file on disk marks its block `no_run`; a block that is
+/// an excerpt of a type rather than code to run is fenced as `text`.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+#[doc = include_str!("../docs/getting-started.md")]
+#[doc = include_str!("../docs/model.md")]
+#[doc = include_str!("../docs/formats.md")]
+#[doc = include_str!("../docs/formulas.md")]
+#[doc = include_str!("../docs/styles.md")]
+#[doc = include_str!("../docs/external-links.md")]
+#[doc = include_str!("../docs/wasm.md")]
+pub struct Documentation;

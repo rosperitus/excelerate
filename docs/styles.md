@@ -32,7 +32,7 @@ book.add_sheet(sheet)?;
 
 ## What a style holds
 
-```rust
+```text
 pub struct Style {
     pub number_format: NumberFormat,
     pub font: Font,           // name, size, bold, italic, underline, colour, script

@@ -5,7 +5,7 @@ same reader that runs on your server runs in Node or a browser tab.
 
 ## Install
 
-```
+```text
 npm install excelerate
 ```
 
@@ -14,7 +14,7 @@ from the Rust signatures, so they never drift from the API.
 
 ## Build it yourself
 
-```
+```text
 tools/build-npm.sh            # nodejs target, release, into npm/pkg
 tools/build-npm.sh web        # or bundler
 ```

@@ -2,7 +2,7 @@
 
 Three types carry almost everything: `Spreadsheet`, `Worksheet`, `Cell`.
 
-```
+```text
 Spreadsheet
 ├── sheets: Vec<Worksheet>
 │   ├── cells        (sparse, row-major)
@@ -45,11 +45,11 @@ moves the bug downstream.
 
 ## Cell values
 
-```rust
+```text
 pub enum CellValue {
     Empty,
     Number(f64),          // dates live here too; the format makes them dates
-    Text(String),
+    Text(Arc<str>),      // shared: one allocation per distinct string
     Bool(bool),
     Error(CellError),     // #DIV/0!, #N/A, ...
     RichText(Vec<TextRun>),   // formatting that changes mid-string

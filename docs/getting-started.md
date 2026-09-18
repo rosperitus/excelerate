@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-excelerate = "0.8"
+excelerate = "0.9"
 ```
 
 Rust 2024 edition. No system libraries, no build scripts, nothing to install
@@ -15,7 +15,7 @@ next to it.
 `reader::read` figures out the format from the file's own bytes and falls back
 to the extension only when the bytes say nothing:
 
-```rust
+```rust,no_run
 use excelerate::reader;
 
 let book = reader::read("budget.xlsx")?;
@@ -82,7 +82,7 @@ for (at, cell) in sheet.iter() {
 
 ## Build a workbook from scratch
 
-```rust
+```rust,no_run
 use excelerate::CellRef;
 use excelerate::model::{Spreadsheet, Worksheet};
 use excelerate::writer::write_xlsx;
@@ -109,7 +109,7 @@ file Excel refuses to open.
 
 ## Convert between formats
 
-```rust
+```rust,no_run
 use excelerate::{reader, writer};
 
 let book = reader::read("legacy.xls")?;
@@ -120,7 +120,7 @@ writer::write_html(&book, "preview.html")?;
 
 There is a ready-made example in the repo, too:
 
-```
+```text
 cargo run --release --example convert -- input.xlsx output.ods
 ```
 
