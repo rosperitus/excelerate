@@ -243,8 +243,16 @@ impl<'a> Ole<'a> {
     }
 
     /// One stream by name, `None` if the file has no such entry.
+    ///
+    /// The name is matched exactly first and then without regard to case, the
+    /// same way [`super::zipxml::resolve`] finds a part: files whose workbook
+    /// stream is called `BOOK` exist, and `LibreOffice` opens them.
     pub fn stream(&self, name: &str) -> Option<Vec<u8>> {
-        let entry = self.entries.iter().find(|e| e.name == name)?;
+        let entry = self.entries.iter().find(|e| e.name == name).or_else(|| {
+            self.entries
+                .iter()
+                .find(|e| e.name.eq_ignore_ascii_case(name))
+        })?;
         let size = usize::try_from(entry.size.min(MAX_STREAM_SIZE)).ok()?;
         if entry.size >= u64::from(self.mini_cutoff) {
             return Some(self.read_chain(entry.start, entry.size));

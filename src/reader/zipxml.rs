@@ -30,18 +30,33 @@ pub const MAX_COMPRESSION_RATIO: u64 = 100;
 /// ceiling for a header that claims four gigabytes of XML in one piece.
 pub const MAX_PART_SIZE: u64 = 4 << 30;
 
-/// The name a part is stored under, matched without regard to case.
+/// The name a part is stored under, matched without regard to case and to the
+/// slash a Windows writer used.
 ///
-/// Part names in a package are case-sensitive by the letter of the format, but
-/// Excel opens files whose parts are spelled `xl/SharedStrings.xml`, and such
-/// files exist in the wild. So: exact match first, then a scan.
+/// Part names in a package are case-sensitive by the letter of the format, and
+/// the separator is a forward slash. Excel opens files that break both - parts
+/// spelled `xl/SharedStrings.xml`, and packages whose names carry a backslash
+/// (`xl\_rels\workbook.xml.rels`) - and such files exist in the wild. So:
+/// exact match first, then a scan.
 pub fn resolve<R: Read + Seek>(zip: &zip::ZipArchive<R>, path: &str) -> Option<String> {
     if zip.index_for_name(path).is_some() {
         return Some(path.to_owned());
     }
     zip.file_names()
-        .find(|name| name.eq_ignore_ascii_case(path))
+        .find(|name| same_part_name(name, path))
         .map(ToOwned::to_owned)
+}
+
+/// Whether two part names address the same part.
+fn same_part_name(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes().zip(b.bytes()).all(|(x, y)| {
+            let (x, y) = (
+                if x == b'\\' { b'/' } else { x },
+                if y == b'\\' { b'/' } else { y },
+            );
+            x.eq_ignore_ascii_case(&y)
+        })
 }
 
 /// Whether a package may be read: under the absolute cap, or over it but

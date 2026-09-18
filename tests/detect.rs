@@ -166,3 +166,72 @@ fn a_package_that_expands_like_a_bomb_is_refused() {
         "{err}"
     );
 }
+
+/// Part names in a package are separated by a forward slash, but writers on
+/// Windows have shipped packages spelled `xl\workbook.xml`. Excel opens those,
+/// and so does this reader.
+#[test]
+fn a_part_name_written_with_a_backslash_is_still_found() {
+    use std::io::{Read, Write};
+
+    let book = read("tests/fixtures/sample.xlsx").unwrap();
+    let mut original = Vec::new();
+    excelerate::writer::write_xlsx_to(&book, std::io::Cursor::new(&mut original)).unwrap();
+
+    // Repack it under the same names with the separator Windows used.
+    let mut source = zip::ZipArchive::new(std::io::Cursor::new(&original)).unwrap();
+    let mut backslashed = Vec::new();
+    {
+        let mut out = zip::ZipWriter::new(std::io::Cursor::new(&mut backslashed));
+        let options = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Deflated);
+        for i in 0..source.len() {
+            let mut part = source.by_index(i).unwrap();
+            let name = part.name().replace('/', "\\");
+            let mut data = Vec::new();
+            part.read_to_end(&mut data).unwrap();
+            out.start_file(name, options).unwrap();
+            out.write_all(&data).unwrap();
+        }
+        out.finish().unwrap();
+    }
+
+    let reread = excelerate::reader::read_bytes(&backslashed, Some("windows.xlsx")).unwrap();
+    assert_eq!(reread.sheets().len(), book.sheets().len());
+    assert_eq!(
+        reread.sheets()[0].iter().count(),
+        book.sheets()[0].iter().count()
+    );
+}
+
+/// Excel 97 calls the stream `Workbook` and Excel 5 calls it `Book`, but files
+/// naming it `BOOK` exist and `LibreOffice` opens them.
+#[test]
+fn the_workbook_stream_is_found_whatever_its_case() {
+    let book = read("tests/fixtures/sample.xls").unwrap();
+    let mut bytes = Vec::new();
+    excelerate::writer::write_xls_to(&book, std::io::Cursor::new(&mut bytes)).unwrap();
+
+    // The directory holds the name as UTF-16LE, so upper-casing it in place
+    // keeps every offset where it was.
+    let name: Vec<u8> = "Workbook"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let upper: Vec<u8> = "WORKBOOK"
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let at = bytes
+        .windows(name.len())
+        .position(|w| w == name.as_slice())
+        .expect("the writer names the stream Workbook");
+    bytes[at..at + upper.len()].copy_from_slice(&upper);
+
+    let reread = excelerate::reader::read_bytes(&bytes, Some("shouty.xls")).unwrap();
+    assert_eq!(reread.sheets().len(), book.sheets().len());
+    assert_eq!(
+        reread.sheets()[0].iter().count(),
+        book.sheets()[0].iter().count()
+    );
+}

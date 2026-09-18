@@ -113,6 +113,16 @@ fn read_content(xml: &str) -> Result<Spreadsheet> {
     state.finish()
 }
 
+/// Most copies one sheet may be expanded to by repeat counts.
+///
+/// A repeat count is a number in the file, and `999999999` rows of
+/// `999999999` cells is a thousand bytes to write and longer than this machine
+/// will run to expand. The grid's own bounds are no defence: a full sheet is
+/// still seventeen billion cells. Only copies count against this, so a sheet
+/// that really does hold nine million cells is read whole; what it stops is a
+/// file that asks for millions of them out of one element.
+const MAX_SHEET_COPIES: u64 = 4_000_000;
+
 /// The workbook being built and where in it the reader stands.
 struct ContentReader {
     book: Spreadsheet,
@@ -122,6 +132,9 @@ struct ContentReader {
     row: u64,
     col: u64,
     cell: CellState,
+    /// Copies made by repeat counts on the sheet being read, against
+    /// [`MAX_SHEET_COPIES`].
+    copies: u64,
     /// Depth of `text:p` and friends, so text is collected only inside a cell.
     in_text: usize,
     names: Vec<(String, String)>,
@@ -144,6 +157,7 @@ impl Default for ContentReader {
             row: 1,
             col: 1,
             cell: CellState::default(),
+            copies: 0,
             in_text: 0,
             names: Vec::new(),
             styles: HashMap::new(),
@@ -204,7 +218,6 @@ impl ContentReader {
                             repeat_of(e, "number-matrix-rows-spanned"),
                         )
                     }),
-                    covered: name == "covered-table-cell",
                     style: attr(e, "style-name").and_then(|n| self.styles.get(&n).copied()),
                     ..CellState::default()
                 };
@@ -290,6 +303,7 @@ impl ContentReader {
                         self.row,
                         self.col,
                         &mut self.pending,
+                        &mut self.copies,
                     );
                 }
                 self.col += self.cell.repeat.max(1);
@@ -323,6 +337,7 @@ impl ContentReader {
         if let Some(done) = self.sheet.take() {
             let _ = self.book.add_sheet(done);
         }
+        self.copies = 0;
     }
 
     fn finish(mut self) -> Result<Spreadsheet> {
@@ -359,7 +374,6 @@ struct CellState {
     /// How far a formula entered as a matrix - an array formula - reaches;
     /// `None` for an ordinary formula.
     matrix: Option<(u64, u64)>,
-    covered: bool,
     style: Option<StyleId>,
     text: String,
     link: Option<String>,
@@ -373,12 +387,12 @@ fn place(
     row: u64,
     col: u64,
     pending: &mut Vec<(u64, u64, StyleId)>,
+    copies: &mut u64,
 ) {
-    // A covered cell is the inside of a merge; the spanning cell already holds
-    // the value, and this one exists only to keep the columns lined up.
-    if cell.covered {
-        return;
-    }
+    // A covered cell is the inside of a merge. It usually exists only to keep
+    // the columns lined up, but it is allowed to carry a value of its own -
+    // the merge hides it rather than deletes it, and dropping it here would
+    // lose data the file holds.
     let (value, format) = value_of(cell);
     let has_value = !matches!(value, CellValue::Empty);
     if !has_value && cell.link.is_none() {
@@ -396,10 +410,17 @@ fn place(
             let Ok(row) = Row::from_one_based(row + r) else {
                 break;
             };
+            if *copies >= MAX_SHEET_COPIES {
+                break;
+            }
             for c in 0..repeat {
                 let Ok(column) = Col::from_one_based(at_col + c) else {
                     break;
                 };
+                if *copies >= MAX_SHEET_COPIES {
+                    break;
+                }
+                *copies += u64::from(c > 0 || r > 0);
                 sheet.entry(CellRef::new(column, row)).style = style;
             }
         }
@@ -421,10 +442,19 @@ fn place(
         let Ok(row) = Row::from_one_based(row + r) else {
             return;
         };
+        // A repeat count comes from the file, and the grid's bounds alone
+        // leave seventeen billion cells to fill.
+        if *copies >= MAX_SHEET_COPIES {
+            return;
+        }
         for c in 0..repeat {
             let Ok(col) = Col::from_one_based(col + c) else {
                 break;
             };
+            if *copies >= MAX_SHEET_COPIES {
+                break;
+            }
+            *copies += u64::from(c > 0 || r > 0);
             let at = CellRef::new(col, row);
             if has_value {
                 sheet.set(at, value.clone());

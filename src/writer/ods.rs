@@ -345,11 +345,14 @@ fn table(book: &Spreadsheet, sheet: &Worksheet, index: usize, out: &mut String) 
             };
             let at = CellRef::new(column, row);
             let mut element = String::new();
-            if covered_by(sheet, at).is_some_and(|merge| merge.start != at) {
-                element.push_str("<table:covered-table-cell/>");
+            // The inside of a merge is written as a covered cell, which is
+            // still allowed a value: the merge hides it, it does not erase it.
+            let tag = if covered_by(sheet, at).is_some_and(|merge| merge.start != at) {
+                "table:covered-table-cell"
             } else {
-                cell(book, sheet, at, &names, &mut element);
-            }
+                "table:table-cell"
+            };
+            cell(book, sheet, at, &names, tag, &mut element);
             match &mut run {
                 Some((previous, count)) if *previous == element => *count += 1,
                 Some((previous, count)) => {
@@ -385,12 +388,20 @@ fn push_run(out: &mut String, element: &str, count: u32) {
 }
 
 /// One cell as a `table:table-cell`.
-fn cell(book: &Spreadsheet, sheet: &Worksheet, at: CellRef, names: &[String], out: &mut String) {
+fn cell(
+    book: &Spreadsheet,
+    sheet: &Worksheet,
+    at: CellRef,
+    names: &[String],
+    tag: &str,
+    out: &mut String,
+) {
     let cell = sheet.get(at);
     let value = cell.map_or(&CellValue::Empty, |c| &c.value);
     let style = cell.map_or_else(StyleId::default, |c| c.style);
 
-    out.push_str("<table:table-cell");
+    out.push('<');
+    out.push_str(tag);
     if style != StyleId::default() {
         let _ = write!(out, r#" table:style-name="ce{}""#, style.index());
     }
@@ -467,7 +478,7 @@ fn cell(book: &Spreadsheet, sheet: &Worksheet, at: CellRef, names: &[String], ou
             }
         }
     }
-    out.push_str("</table:table-cell>");
+    let _ = write!(out, "</{tag}>");
 }
 
 /// Writes the typed-value attributes of a cell and returns the text to show.

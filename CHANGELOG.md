@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- A workbook stream named in another case is found: `WorkBook` beside a stale
+  BIFF5 `Book`, or `BOOK` on its own. Files like these exist and LibreOffice
+  opens them; before this the reader took the first name it knew and refused
+  the file as BIFF5.
+- Part names written with a Windows separator (`xl\workbook.xml`) resolve. The
+  format says forward slash, but packages spelled this way exist and Excel
+  opens them.
+- ODS: a cell covered by a merge keeps the value of its own, both read and
+  written. The merge hides it rather than deletes it, and dropping it lost
+  what the file said.
+- ODS: a repeat count no longer expands without bound. `999999999` rows of
+  `999999999` cells is thirteen hundred bytes to write, and the grid's own
+  bounds still leave seventeen billion cells; copies made by repeat counts are
+  now capped at four million per sheet, which leaves a sheet that really holds
+  that many cells untouched.
+
 ## 0.9.0
 
 ### Breaking changes
