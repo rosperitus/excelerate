@@ -85,6 +85,7 @@ writer::write_csv(&book, 0, "report.csv")?;
 |---|:--:|:--:|
 | xlsx (OOXML) | ✅ | ✅ |
 | xls (BIFF8) | ✅ | ✅ |
+| xls (BIFF5, Excel 5 and 95) | ✅ | — |
 | xlsb (BIFF12) | ✅ | — |
 | ods (OpenDocument) | ✅ | ✅ |
 | CSV | ✅ | ✅ |

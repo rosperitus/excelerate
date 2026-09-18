@@ -1,4 +1,4 @@
-//! Reading xls (BIFF8).
+//! Reading xls (BIFF8 and BIFF5).
 //!
 //! An xls is a stream of records - a two-byte number, a two-byte length, then
 //! that many bytes - kept in the `Workbook` stream of an OLE compound file (see
@@ -18,10 +18,19 @@
 //! reader expands them. A formula that does not decompile - a data table, an
 //! unknown token - keeps only its cached result.
 //!
+//! Excel 5 and 95 wrote the same records in a narrower shape - one byte per
+//! character in the workbook's code page rather than UTF-16, one byte per
+//! column, the relative flags of a reference on its row, and sixteen-byte `XF`
+//! records - and named the sheet of a 3D reference inside the token instead of
+//! in an `EXTERNSHEET` entry. All of that is read; [`Biff`] is what tells the
+//! two apart, from the version in the first `BOF`.
+//!
 //! What is not read, and why:
 //!
-//! - **BIFF5 and older, and encrypted files.** Both are refused rather than
+//! - **BIFF4 and older, and encrypted files.** Both are refused rather than
 //!   half-read.
+//! - **A BIFF5 code page other than 1252.** The bytes are read as 1252, which
+//!   is what the rest of this crate does with bytes it cannot place.
 
 use super::xls_formula::{self, Base, Book, BookKind, Context};
 use crate::error::{Error, Result};
@@ -60,6 +69,8 @@ mod record {
     pub const RK: u16 = 0x027E;
     pub const MULRK: u16 = 0x00BD;
     pub const LABEL: u16 = 0x0204;
+    /// A `LABEL` with formatting runs after it, which BIFF5 writes instead.
+    pub const RSTRING: u16 = 0x00D6;
     pub const LABELSST: u16 = 0x00FD;
     pub const BOOLERR: u16 = 0x0205;
     pub const FORMULA: u16 = 0x0006;
@@ -100,6 +111,18 @@ pub fn read_xls_from(bytes: &[u8]) -> Result<Spreadsheet> {
             ))
         })?;
     Reader::new(&stream).read()
+}
+
+/// Which BIFF the workbook is written in.
+///
+/// BIFF8 (Excel 97 and later) writes strings as UTF-16 with a width byte and
+/// gives a column two bytes; BIFF5 (Excel 5 and 95) writes one byte per
+/// character in the workbook's code page and gives a column one byte. The
+/// records are otherwise the same ones in the same order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Biff {
+    V5,
+    V8,
 }
 
 /// One record: its number and its data.
@@ -150,6 +173,8 @@ fn f64_at(data: &[u8], at: usize) -> f64 {
 /// The state the two passes share.
 struct Reader<'a> {
     stream: &'a [u8],
+    /// Which BIFF the stream is, read from its first `BOF`.
+    biff: Biff,
     book: Spreadsheet,
     styles: StyleTable,
     /// The shared string table, indexed by `LABELSST`.
@@ -188,6 +213,7 @@ impl<'a> Reader<'a> {
     fn new(stream: &'a [u8]) -> Self {
         Self {
             stream,
+            biff: Biff::V8,
             book: Spreadsheet::empty(),
             styles: StyleTable::default(),
             strings: Vec::new(),
@@ -234,10 +260,24 @@ impl<'a> Reader<'a> {
             ));
         }
         let version = u16_at(bof.data, 0);
-        if version != 0x0600 {
-            return Err(Error::Xls(format!(
-                "BIFF version {version:#06x} is not supported; only BIFF8 (Excel 97 and later) is"
-            )));
+        self.biff = match version {
+            0x0600 => Biff::V8,
+            0x0500 => Biff::V5,
+            _ => {
+                return Err(Error::Xls(format!(
+                    "BIFF version {version:#06x} is not supported; only BIFF5 (Excel 5 and 95) \
+                     and BIFF8 (Excel 97 and later) are"
+                )));
+            }
+        };
+        if self.biff == Biff::V5 {
+            self.context.dialect = xls_formula::Dialect::Biff5;
+            // BIFF5 has no `SUPBOOK`: every `EXTERNSHEET` names a sheet
+            // directly, so they all belong to one implied internal book.
+            self.context.books.push(Book {
+                kind: BookKind::Internal,
+                names: Vec::new(),
+            });
         }
         at = bof.next;
 
@@ -255,16 +295,19 @@ impl<'a> Reader<'a> {
                 }
                 record::BOUNDSHEET => {
                     let position = u32_at(record.data, 0) as usize;
-                    let name = short_string(record.data, 6);
+                    let name = short_string(record.data, 6, self.biff);
                     self.sheets.push((name, position));
                 }
                 record::FORMAT => {
                     let index = u16_at(record.data, 0);
-                    let (code, _) = unicode_string(record.data, 2);
+                    let code = match self.biff {
+                        Biff::V5 => short_string(record.data, 2, Biff::V5),
+                        Biff::V8 => unicode_string(record.data, 2, Biff::V8).0,
+                    };
                     self.formats.insert(index, code);
                 }
-                record::XF => self.cell_formats.push(Xf::parse(record.data)),
-                record::FONT => self.fonts.push(FontRecord::parse(record.data)),
+                record::XF => self.cell_formats.push(Xf::parse(record.data, self.biff)),
+                record::FONT => self.fonts.push(FontRecord::parse(record.data, self.biff)),
                 record::PALETTE => {
                     let count = usize::from(u16_at(record.data, 0)).min(56);
                     for slot in 0..count {
@@ -280,23 +323,10 @@ impl<'a> Reader<'a> {
                 record::SUPBOOK => self.context.books.push(supbook(record.data)),
                 record::EXTERNNAME => {
                     if let Some(book) = self.context.books.last_mut() {
-                        book.names.push(short_string(record.data, 6));
+                        book.names.push(short_string(record.data, 6, self.biff));
                     }
                 }
-                record::EXTERNSHEET => {
-                    let count = usize::from(u16_at(record.data, 0));
-                    for i in 0..count {
-                        let at = 2 + i * 6;
-                        if record.data.len() < at + 6 {
-                            break;
-                        }
-                        self.context.externs.push((
-                            u16_at(record.data, at),
-                            u16_at(record.data, at + 2),
-                            u16_at(record.data, at + 4),
-                        ));
-                    }
-                }
+                record::EXTERNSHEET => self.extern_sheet(record.data),
                 record::SST => {
                     let (strings, next) = self.shared_strings(&record, at);
                     self.strings = strings;
@@ -306,6 +336,39 @@ impl<'a> Reader<'a> {
             }
         }
         Ok(())
+    }
+
+    /// One `EXTERNSHEET` record.
+    ///
+    /// BIFF8 writes a single record of triples pointing into the `SUPBOOK`
+    /// records; BIFF5 writes one record per reference, holding the name it
+    /// stands for - a byte count, a byte saying what kind of reference it is
+    /// (`0x03` is a sheet of this workbook), then the name.
+    fn extern_sheet(&mut self, data: &[u8]) {
+        if self.biff == Biff::V5 {
+            let count = usize::from(data.first().copied().unwrap_or(0));
+            let name = bytes_string(data, 2, count);
+            let sheet = self
+                .sheets
+                .iter()
+                .position(|(known, _)| known == &name)
+                .and_then(|i| u16::try_from(i).ok())
+                .unwrap_or(u16::MAX);
+            self.context.externs.push((0, sheet, sheet));
+            return;
+        }
+        let count = usize::from(u16_at(data, 0));
+        for i in 0..count {
+            let at = 2 + i * 6;
+            if data.len() < at + 6 {
+                break;
+            }
+            self.context.externs.push((
+                u16_at(data, at),
+                u16_at(data, at + 2),
+                u16_at(data, at + 4),
+            ));
+        }
     }
 
     /// The shared string table, which is one record plus however many
@@ -448,8 +511,10 @@ impl<'a> Reader<'a> {
                     );
                 }
             }
-            record::LABEL => {
-                let (text, _) = unicode_string(data, 6);
+            // `RSTRING` is a `LABEL` with formatting runs after the text.
+            // The runs are not modelled here, and the text is the same.
+            record::LABEL | record::RSTRING => {
+                let (text, _) = unicode_string(data, 6, self.biff);
                 self.put(sheet, r, c, u16_at(data, 4), CellValue::text(text));
             }
             record::LABELSST => {
@@ -544,10 +609,11 @@ impl<'a> Reader<'a> {
     /// known and one may refer to another.
     fn defined_names(&mut self) {
         // The names first, since formulas refer to them by position.
+        let biff = self.biff;
         self.context.names = self
             .name_records
             .iter()
-            .map(|data| name_text(data))
+            .map(|data| name_text(data, biff))
             .collect();
         for (data, name) in self.name_records.iter().zip(&self.context.names) {
             let flags = u16_at(data, 0);
@@ -558,8 +624,15 @@ impl<'a> Reader<'a> {
                 continue;
             }
             let count = usize::from(data.get(3).copied().unwrap_or(0));
-            let wide = data.get(14).copied().unwrap_or(0) & 1 != 0;
-            let start = 15 + count * if wide { 2 } else { 1 };
+            // BIFF5 writes the name as bytes straight after the header; BIFF8
+            // puts a width byte first and may write it in two-byte characters.
+            let start = match biff {
+                Biff::V5 => 14 + count,
+                Biff::V8 => {
+                    let wide = data.get(14).copied().unwrap_or(0) & 1 != 0;
+                    15 + count * if wide { 2 } else { 1 }
+                }
+            };
             let Some(tokens) = data.get(start..start + length) else {
                 continue;
             };
@@ -595,7 +668,7 @@ impl<'a> Reader<'a> {
                     return CellValue::text("");
                 }
                 *at = next.next;
-                let (text, _) = unicode_string(next.data, 0);
+                let (text, _) = unicode_string(next.data, 0, self.biff);
                 CellValue::text(text)
             }
             1 => CellValue::Bool(data.get(8).copied().unwrap_or(0) != 0),
@@ -776,7 +849,15 @@ struct Xf {
 
 impl Xf {
     /// Unpacks the record's data.
-    fn parse(data: &[u8]) -> Self {
+    ///
+    /// BIFF5 packs the same record into sixteen bytes instead of twenty, and
+    /// packs it differently: the font, the format, the protection flags and
+    /// the alignment sit where BIFF8 puts them, and everything past that -
+    /// the fill and the four borders - moves.
+    fn parse(data: &[u8], biff: Biff) -> Self {
+        if biff == Biff::V5 {
+            return Self::parse_biff5(data);
+        }
         let byte = |at: usize| data.get(at).copied().unwrap_or(0);
         let protection = u16_at(data, 4);
         let align = byte(6);
@@ -821,6 +902,63 @@ impl Xf {
             pattern_background: (colors >> 7) & 0x7F,
         }
     }
+
+    /// The sixteen-byte record Excel 5 and 95 write.
+    ///
+    /// Two words hold what BIFF8 spreads over three: the fill and the bottom
+    /// border in the first, the other three borders in the second. A diagonal
+    /// border has no place in it - BIFF5 has none.
+    fn parse_biff5(data: &[u8]) -> Self {
+        let byte = |at: usize| data.get(at).copied().unwrap_or(0);
+        let protection = u16_at(data, 4);
+        let align = byte(6);
+        let fill = u32_at(data, 8);
+        let sides = u32_at(data, 12);
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "every field is masked to its width first"
+        )]
+        let bits = |value: u32, shift: u32, mask: u32| ((value >> shift) & mask) as u16;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "every field is masked to its width first"
+        )]
+        let small = |value: u32, shift: u32, mask: u32| ((value >> shift) & mask) as u8;
+        Self {
+            font: u16_at(data, 0),
+            format: u16_at(data, 2),
+            locked: protection & 0x01 != 0,
+            hidden: protection & 0x02 != 0,
+            horizontal: align & 0x07,
+            wrap: align & 0x08 != 0,
+            vertical: (align >> 4) & 0x07,
+            rotation: match byte(7) & 0x03 {
+                // BIFF5 has four orientations rather than an angle.
+                1 => 255,
+                2 => 90,
+                3 => 180,
+                _ => 0,
+            },
+            indent: 0,
+            shrink: false,
+            reading_order: 0,
+            left: small(sides, 3, 0x07),
+            right: small(sides, 6, 0x07),
+            top: small(sides, 0, 0x07),
+            bottom: small(fill, 22, 0x07),
+            diagonal: 0,
+            left_color: bits(sides, 16, 0x7F),
+            right_color: bits(sides, 23, 0x7F),
+            top_color: bits(sides, 9, 0x7F),
+            bottom_color: bits(fill, 25, 0x7F),
+            diagonal_color: 0,
+            diagonal_down: false,
+            diagonal_up: false,
+            pattern: small(fill, 16, 0x3F),
+            pattern_foreground: bits(fill, 0, 0x7F),
+            pattern_background: bits(fill, 7, 0x7F),
+        }
+    }
 }
 
 /// A `FONT` record, kept with its colour as a palette index.
@@ -839,7 +977,7 @@ struct FontRecord {
 }
 
 impl FontRecord {
-    fn parse(data: &[u8]) -> Self {
+    fn parse(data: &[u8], biff: Biff) -> Self {
         let flags = u16_at(data, 2);
         Self {
             height: u16_at(data, 0),
@@ -851,7 +989,7 @@ impl FontRecord {
             underline: data.get(10).copied().unwrap_or(0),
             family: data.get(11).copied().unwrap_or(0),
             charset: data.get(12).copied().unwrap_or(0),
-            name: short_string(data, 14),
+            name: short_string(data, 14, biff),
         }
     }
 
@@ -949,10 +1087,15 @@ fn column(value: u16) -> Result<Col> {
 
 /// The name a `NAME` record defines. A built-in name is stored as a single
 /// character code and spelled with the `_xlnm.` prefix xlsx gives it.
-fn name_text(data: &[u8]) -> String {
+fn name_text(data: &[u8], biff: Biff) -> String {
     let count = usize::from(data.get(3).copied().unwrap_or(0));
-    let wide = data.get(14).copied().unwrap_or(0) & 1 != 0;
-    let (text, _) = read_chars(data, 15, count, wide);
+    let text = match biff {
+        Biff::V5 => bytes_string(data, 14, count),
+        Biff::V8 => {
+            let wide = data.get(14).copied().unwrap_or(0) & 1 != 0;
+            read_chars(data, 15, count, wide).0
+        }
+    };
     if u16_at(data, 0) & 0x20 == 0 {
         return text;
     }
@@ -984,10 +1127,10 @@ fn supbook(data: &[u8]) -> Book {
         0x0401 => BookKind::Internal,
         0x3A01 => BookKind::AddIn,
         _ => {
-            let (path, mut at) = unicode_string(data, 2);
+            let (path, mut at) = unicode_string(data, 2, Biff::V8);
             let mut names = Vec::with_capacity(sheets.min(1024));
             for _ in 0..sheets {
-                let (name, next) = unicode_string(data, at);
+                let (name, next) = unicode_string(data, at, Biff::V8);
                 names.push(name);
                 at = next;
             }
@@ -1031,18 +1174,46 @@ fn rk(value: u32) -> f64 {
 }
 
 /// A string with a one-byte character count, as `BOUNDSHEET` writes it.
-fn short_string(data: &[u8], at: usize) -> String {
+///
+/// BIFF8 puts a width byte between the count and the text; BIFF5 has none,
+/// every character being one byte of the workbook's code page.
+fn short_string(data: &[u8], at: usize, biff: Biff) -> String {
     let count = usize::from(data.get(at).copied().unwrap_or(0));
-    let wide = data.get(at + 1).copied().unwrap_or(0) & 1 != 0;
-    read_chars(data, at + 2, count, wide).0
+    match biff {
+        Biff::V5 => bytes_string(data, at + 1, count),
+        Biff::V8 => {
+            let wide = data.get(at + 1).copied().unwrap_or(0) & 1 != 0;
+            read_chars(data, at + 2, count, wide).0
+        }
+    }
 }
 
-/// A string with a two-byte character count, as `FORMAT` and `STRING` write it.
+/// A string with a two-byte character count, as `LABEL` and `STRING` write it.
 /// Returns the text and where it ends.
-fn unicode_string(data: &[u8], at: usize) -> (String, usize) {
+fn unicode_string(data: &[u8], at: usize, biff: Biff) -> (String, usize) {
     let count = usize::from(u16_at(data, at));
-    let wide = data.get(at + 2).copied().unwrap_or(0) & 1 != 0;
-    read_chars(data, at + 3, count, wide)
+    match biff {
+        Biff::V5 => (bytes_string(data, at + 2, count), at + 2 + count),
+        Biff::V8 => {
+            let wide = data.get(at + 2).copied().unwrap_or(0) & 1 != 0;
+            read_chars(data, at + 3, count, wide)
+        }
+    }
+}
+
+/// Text one byte per character, the way BIFF5 writes it.
+///
+/// The `CODEPAGE` record names the page, and every Windows-written file this
+/// reader has seen says 1252. A file from another page reads as 1252 rather
+/// than as nothing, which is what the rest of this crate does with bytes it
+/// cannot place.
+fn bytes_string(data: &[u8], at: usize, count: usize) -> String {
+    data.get(at..)
+        .unwrap_or(&[])
+        .iter()
+        .take(count)
+        .map(|&b| super::csv::cp1252(b))
+        .collect()
 }
 
 /// Characters, either one byte each in the Latin-1 half of CP1252 or two bytes

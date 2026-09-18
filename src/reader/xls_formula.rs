@@ -28,6 +28,10 @@ pub enum Dialect {
     /// The xls record stream.
     #[default]
     Biff8,
+    /// The xls record stream as Excel 5 and 95 wrote it: a column is one byte,
+    /// a string is one byte per character, and the relative flags ride on the
+    /// row rather than the column.
+    Biff5,
     /// The xlsb record stream.
     Biff12,
 }
@@ -36,17 +40,30 @@ impl Dialect {
     /// The bits of a column field that hold the column itself.
     const fn column_mask(self) -> u16 {
         match self {
-            Self::Biff8 => 0x00FF,
+            Self::Biff8 | Self::Biff5 => 0x00FF,
             Self::Biff12 => 0x3FFF,
+        }
+    }
+
+    /// Bytes a column field takes.
+    const fn column_size(self) -> usize {
+        match self {
+            Self::Biff5 => 1,
+            Self::Biff8 | Self::Biff12 => 2,
+        }
+    }
+
+    /// Bytes a row field takes.
+    const fn row_size(self) -> usize {
+        match self {
+            Self::Biff8 | Self::Biff5 => 2,
+            Self::Biff12 => 4,
         }
     }
 
     /// Bytes a cell reference takes after its token byte.
     const fn cell_size(self) -> usize {
-        match self {
-            Self::Biff8 => 4,
-            Self::Biff12 => 6,
-        }
+        self.row_size() + self.column_size()
     }
 
     /// Bytes an area reference takes after its token byte.
@@ -54,11 +71,25 @@ impl Dialect {
         self.cell_size() * 2
     }
 
+    /// Bytes between a 3D token and the reference inside it.
+    ///
+    /// BIFF8 spends them on one index into `EXTERNSHEET`. BIFF5 spends them on
+    /// that index, eight reserved bytes, and the first and last sheet of the
+    /// span, which is where the sheet is actually named: the `EXTERNSHEET`
+    /// entry of a BIFF5 file names the book, not the tab.
+    const fn three_d_header(self) -> usize {
+        match self {
+            Self::Biff5 => 14,
+            Self::Biff8 | Self::Biff12 => 2,
+        }
+    }
+
     /// The last row and column of a sheet, which an area spanning whole
     /// columns or rows reaches.
     const fn limits(self) -> (u32, u16) {
         match self {
             Self::Biff8 => (0xFFFF, 0x00FF),
+            Self::Biff5 => (0x3FFF, 0x00FF),
             Self::Biff12 => (0x000F_FFFF, 0x3FFF),
         }
     }
@@ -177,20 +208,25 @@ impl Decompiler<'_> {
         ))
     }
 
-    /// A row field: two bytes in BIFF8, four in BIFF12.
+    /// A row field: two bytes in BIFF8 and BIFF5, four in BIFF12.
     fn row_field(&self, at: usize) -> Option<u32> {
         match self.context.dialect {
-            Dialect::Biff8 => self.word(at).map(u32::from),
+            Dialect::Biff8 | Dialect::Biff5 => self.word(at).map(u32::from),
             Dialect::Biff12 => self.dword(at),
+        }
+    }
+
+    /// A column field: one byte in BIFF5, two otherwise.
+    fn column_field(&self, at: usize) -> Option<u16> {
+        match self.context.dialect {
+            Dialect::Biff5 => self.byte(at).map(u16::from),
+            Dialect::Biff8 | Dialect::Biff12 => self.word(at),
         }
     }
 
     /// Bytes a row field takes.
     const fn row_size(&self) -> usize {
-        match self.context.dialect {
-            Dialect::Biff8 => 2,
-            Dialect::Biff12 => 4,
-        }
+        self.context.dialect.row_size()
     }
 
     /// Replays the token at `at` and returns where the next one starts.
@@ -247,6 +283,8 @@ impl Decompiler<'_> {
                         self.byte(data + 1)? & 1 != 0,
                         data + 2,
                     ),
+                    // BIFF5 has no width byte: every character is one byte.
+                    Dialect::Biff5 => (usize::from(self.byte(data)?), false, data + 1),
                     Dialect::Biff12 => (usize::from(self.word(data)?), true, data + 2),
                 };
                 let (text, end) = chars(self.tokens, from, count, wide)?;
@@ -328,12 +366,17 @@ impl Decompiler<'_> {
             }
             0x23 => {
                 let index = match self.context.dialect {
-                    Dialect::Biff8 => usize::from(self.word(data)?),
+                    Dialect::Biff8 | Dialect::Biff5 => usize::from(self.word(data)?),
                     Dialect::Biff12 => usize::try_from(self.dword(data)?).ok()?,
                 };
                 let name = self.context.names.get(index.checked_sub(1)?)?.clone();
                 self.stack.push(name);
-                data + 4
+                // BIFF5 pads the token to fourteen bytes; BIFF8 to four.
+                data + if self.context.dialect == Dialect::Biff5 {
+                    14
+                } else {
+                    4
+                }
             }
             0x24 | 0x2C => {
                 let cell = self.cell(data, base == 0x2C)?;
@@ -348,7 +391,7 @@ impl Decompiler<'_> {
             // A memory area's rectangles wait in the extra data; the tokens
             // that compute it follow and are replayed as usual.
             0x26 => match self.context.dialect {
-                Dialect::Biff8 => {
+                Dialect::Biff8 | Dialect::Biff5 => {
                     let count = usize::from(u16_at(self.extra, self.extra_at)?);
                     self.extra_at += 2 + count * 8;
                     data + 6
@@ -384,35 +427,45 @@ impl Decompiler<'_> {
             0x39 => {
                 let name = match self.context.dialect {
                     Dialect::Biff8 => self.external_name(self.word(data)?, self.word(data + 2)?),
+                    // BIFF5 keeps eight reserved bytes between the two.
+                    Dialect::Biff5 => self.external_name(self.word(data)?, self.word(data + 10)?),
                     Dialect::Biff12 => {
                         let index = u16::try_from(self.dword(data + 2)?).ok()?;
                         self.external_name(self.word(data)?, index)
                     }
                 }?;
                 self.stack.push(name);
-                data + 6
+                data + if self.context.dialect == Dialect::Biff5 {
+                    24
+                } else {
+                    6
+                }
             }
             0x3A => {
-                let sheet = self.sheet(self.word(data)?)?;
-                let cell = self.cell(data + 2, false)?;
+                let head = self.context.dialect.three_d_header();
+                let sheet = self.three_d_sheet(data)?;
+                let cell = self.cell(data + head, false)?;
                 self.stack.push(format!("{sheet}{cell}"));
-                data + 2 + self.context.dialect.cell_size()
+                data + head + self.context.dialect.cell_size()
             }
             0x3B => {
-                let sheet = self.sheet(self.word(data)?)?;
-                let area = self.area(data + 2, false)?;
+                let head = self.context.dialect.three_d_header();
+                let sheet = self.three_d_sheet(data)?;
+                let area = self.area(data + head, false)?;
                 self.stack.push(format!("{sheet}{area}"));
-                data + 2 + self.context.dialect.area_size()
+                data + head + self.context.dialect.area_size()
             }
             0x3C => {
-                let sheet = self.sheet(self.word(data)?)?;
+                let head = self.context.dialect.three_d_header();
+                let sheet = self.three_d_sheet(data)?;
                 self.stack.push(format!("{sheet}#REF!"));
-                data + 2 + self.context.dialect.cell_size()
+                data + head + self.context.dialect.cell_size()
             }
             0x3D => {
-                let sheet = self.sheet(self.word(data)?)?;
+                let head = self.context.dialect.three_d_header();
+                let sheet = self.three_d_sheet(data)?;
                 self.stack.push(format!("{sheet}#REF!"));
-                data + 2 + self.context.dialect.area_size()
+                data + head + self.context.dialect.area_size()
             }
             // A structured reference to a table, which BIFF12 spells with a
             // token of its own. Only the broken kind is read: a table that was
@@ -467,7 +520,7 @@ impl Decompiler<'_> {
         // BIFF8 counts the rows and columns one short and in three bytes;
         // BIFF12 writes both as counts in four bytes each.
         let (cols, rows, mut pos) = match self.context.dialect {
-            Dialect::Biff8 => (
+            Dialect::Biff8 | Dialect::Biff5 => (
                 usize::from(*extra.get(at)?) + 1,
                 usize::from(u16_at(extra, at + 1)?) + 1,
                 at + 3,
@@ -490,7 +543,7 @@ impl Decompiler<'_> {
                 // BIFF12 numbers the kinds of an array's values afresh, with
                 // no slot for an empty one.
                 let kind = match self.context.dialect {
-                    Dialect::Biff8 => kind,
+                    Dialect::Biff8 | Dialect::Biff5 => kind,
                     Dialect::Biff12 => match kind {
                         0x00 => 0x01,
                         0x01 => 0x02,
@@ -516,6 +569,8 @@ impl Decompiler<'_> {
                                 *extra.get(pos + 2)? & 1 != 0,
                                 pos + 3,
                             ),
+                            // One byte per character, and the count is a byte.
+                            Dialect::Biff5 => (usize::from(*extra.get(pos)?), false, pos + 1),
                             Dialect::Biff12 => (
                                 usize::try_from(u32::from_le_bytes(
                                     extra.get(pos..pos + 4)?.try_into().ok()?,
@@ -554,9 +609,19 @@ impl Decompiler<'_> {
     /// In a relative token (`RefN`, `AreaN`) a relative row or column is an
     /// offset from the base cell rather than a position.
     fn position(&self, row: u32, col_field: u16, relative: bool) -> Option<(String, String)> {
-        let col_relative = col_field & 0x4000 != 0;
-        let row_relative = col_field & 0x8000 != 0;
         let dialect = self.context.dialect;
+        // BIFF5 has no room in a one-byte column, so the flags ride on the row
+        // and the row itself is what is left of it.
+        let (flags, row) = match dialect {
+            Dialect::Biff5 => {
+                #[expect(clippy::cast_possible_truncation, reason = "a BIFF5 row is two bytes")]
+                let flags = row as u16;
+                (flags, row & 0x3FFF)
+            }
+            Dialect::Biff8 | Dialect::Biff12 => (col_field, row),
+        };
+        let col_relative = flags & 0x4000 != 0;
+        let row_relative = flags & 0x8000 != 0;
         let col = u32::from(col_field & dialect.column_mask());
         let (row, col) = if relative {
             let row = if row_relative {
@@ -592,6 +657,16 @@ impl Decompiler<'_> {
             }
             #[expect(clippy::cast_possible_wrap, reason = "the field is a signed offset")]
             Dialect::Biff12 => self.base.row.wrapping_add_signed(field as i32),
+            // BIFF5 leaves a row fourteen bits: the top two carry the flags.
+            Dialect::Biff5 => {
+                let field = field & 0x3FFF;
+                let offset = if field & 0x2000 == 0 {
+                    field
+                } else {
+                    field.wrapping_sub(0x4000)
+                };
+                self.base.row.wrapping_add(offset) & 0x3FFF
+            }
         }
     }
 
@@ -614,7 +689,7 @@ impl Decompiler<'_> {
     fn cell(&self, at: usize, relative: bool) -> Option<String> {
         let (col, row) = self.position(
             self.row_field(at)?,
-            self.word(at + self.row_size())?,
+            self.column_field(at + self.row_size())?,
             relative,
         )?;
         Some(format!("{col}{row}"))
@@ -626,8 +701,12 @@ impl Decompiler<'_> {
         let dialect = self.context.dialect;
         // Rows first, both of them, then both columns.
         let width = self.row_size();
+        let column = dialect.column_size();
         let (first_row, last_row) = (self.row_field(at)?, self.row_field(at + width)?);
-        let (first_col, last_col) = (self.word(at + 2 * width)?, self.word(at + 2 * width + 2)?);
+        let (first_col, last_col) = (
+            self.column_field(at + 2 * width)?,
+            self.column_field(at + 2 * width + column)?,
+        );
         let (col1, row1) = self.position(first_row, first_col, relative)?;
         let (col2, row2) = self.position(last_row, last_col, relative)?;
         let (last_row_of_sheet, last_col_of_sheet) = dialect.limits();
@@ -641,6 +720,28 @@ impl Decompiler<'_> {
         } else {
             format!("{col1}{row1}:{col2}{row2}")
         })
+    }
+
+    /// The `Sheet!` prefix of a 3D token, whose data starts at `at`.
+    ///
+    /// BIFF8 names one `EXTERNSHEET` entry, which holds the span. BIFF5 holds
+    /// the span itself, ten bytes in, as two indices into this workbook's own
+    /// tabs.
+    fn three_d_sheet(&self, at: usize) -> Option<String> {
+        if self.context.dialect != Dialect::Biff5 {
+            return self.sheet(self.word(at)?);
+        }
+        let (first, last) = (self.word(at + 10)?, self.word(at + 12)?);
+        if first == 0xFFFF {
+            return Some("#REF!".to_owned());
+        }
+        let name = self.context.sheets.get(usize::from(first))?.clone();
+        let name = if last == first {
+            name
+        } else {
+            format!("{name}:{}", self.context.sheets.get(usize::from(last))?)
+        };
+        Some(format!("{}!", quote(&name)))
     }
 
     /// The `Sheet!` prefix an `EXTERNSHEET` entry stands for.
@@ -897,6 +998,43 @@ mod tests {
             text(&[0x1E, 1, 0, 0x1E, 2, 0], &[], Base::default()),
             None,
             "two values"
+        );
+    }
+
+    /// Excel 5 and 95 give a column one byte, put the relative flags on the
+    /// row, and name the sheet of a 3D reference in the token rather than in
+    /// an `EXTERNSHEET` entry. These are the bytes a real workbook holds.
+    #[test]
+    fn biff5_tokens_are_read_in_their_own_widths() {
+        let context = Context {
+            dialect: Dialect::Biff5,
+            sheets: (1..=11).map(|n| format!("Sheet{n}")).collect(),
+            ..Context::default()
+        };
+        // Ref: row 0, column 0, both absolute.
+        let cell = [0x24, 0x00, 0x00, 0x00];
+        assert_eq!(
+            decompile(&cell, &[], Base::default(), &context).as_deref(),
+            Some("$A$1")
+        );
+
+        // Ref3d out of the defined name `test` of misc_biff5_parsing.xls:
+        // the index, eight reserved bytes, the first and last sheet, then the
+        // reference itself. A BIFF8 reader takes the sheet for a row.
+        let three_d = [
+            0x3A, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x09, 0x00, 0x09,
+            0x00, 0x10, 0x00, 0x0B,
+        ];
+        assert_eq!(
+            decompile(&three_d, &[], Base::default(), &context).as_deref(),
+            Some("Sheet10!$L$17")
+        );
+
+        // A string counts its characters in one byte and has no width byte.
+        let string = [0x17, 0x02, b'h', b'i'];
+        assert_eq!(
+            decompile(&string, &[], Base::default(), &context).as_deref(),
+            Some("\"hi\"")
         );
     }
 }

@@ -97,7 +97,18 @@ structured reference, a reference past row 65536 or column IV, a string
 literal over 255 characters, a function called with more arguments than the
 format allows.
 
-BIFF5 and older, and encrypted workbooks, are rejected rather than read halfway.
+BIFF5 - the xls Excel 5 and 95 wrote - is read too, and by the same code: the
+records are the same ones in the same order, packed more narrowly. One byte per
+character in the workbook's code page rather than UTF-16, one byte per column,
+the relative flags of a reference on its row rather than its column, and an
+`XF` record of sixteen bytes rather than twenty. A 3D reference names its sheet
+inside the token, where BIFF8 points at an `EXTERNSHEET` entry. Two things it
+leaves behind: a code page other than 1252, which is read as 1252, and the
+formatting runs of an `RSTRING` cell, whose text is kept and whose runs are
+not.
+
+Writing is BIFF8 only. BIFF4 and older, and encrypted workbooks, are rejected
+rather than read halfway.
 
 ## ods - OpenDocument
 

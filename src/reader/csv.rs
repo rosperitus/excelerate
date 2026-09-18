@@ -167,7 +167,7 @@ fn from_utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> String {
 
 /// One CP1252 byte as a character. Only `0x80..=0x9F` differs from Latin-1,
 /// where CP1252 puts printable characters and Latin-1 puts control codes.
-fn cp1252(b: u8) -> char {
+pub(crate) fn cp1252(b: u8) -> char {
     const HIGH: [char; 32] = [
         '\u{20AC}', '\u{81}', '\u{201A}', '\u{192}', '\u{201E}', '\u{2026}', '\u{2020}',
         '\u{2021}', '\u{2C6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8D}', '\u{17D}',

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Added
+
+- **BIFF5 is read**: the xls Excel 5 and 95 wrote, which was refused outright
+  before. It packs the same records more narrowly - one byte per character in
+  the workbook's code page, one byte per column, the relative flags of a
+  reference on its row, sixteen-byte `XF` records - and names the sheet of a
+  3D reference inside the token rather than through an `EXTERNSHEET` entry.
+  Values, sheets, formulas, defined names and the cell format all come across;
+  a code page other than 1252 is read as 1252.
+
 ### Fixed
 
 - A workbook stream named in another case is found: `WorkBook` beside a stale

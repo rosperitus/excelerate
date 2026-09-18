@@ -287,3 +287,65 @@ fn ods_refuses_to_expand_a_repeat_count_forever() {
     assert_eq!(book.sheets().len(), 1);
     assert!(started.elapsed().as_secs() < 30, "{:?}", started.elapsed());
 }
+
+/// Excel 5 and 95 wrote a different BIFF: one byte per character, one byte per
+/// column, the relative flags on the row, and sixteen-byte `XF` records. Every
+/// workbook here was refused outright before that was read.
+#[test]
+fn biff5_workbooks_are_read() {
+    let Some(simple) = book("biff5_write.xls") else {
+        return;
+    };
+    let sheet = &simple.sheets()[0];
+    assert_eq!(sheet.title(), "SheetJS");
+    assert_eq!(text(sheet, "D2"), "sheetjs");
+    assert_eq!(value(sheet, "A2"), CellValue::Bool(true));
+    assert!((number(sheet, "C1") - 3.0).abs() < f64::EPSILON);
+
+    // Eleven sheets, and a defined name whose reference names its sheet inside
+    // the token rather than through an `EXTERNSHEET` entry.
+    let Some(many) = book("misc_biff5_parsing.xls") else {
+        return;
+    };
+    assert_eq!(many.sheets().len(), 11);
+    let names: Vec<_> = many
+        .defined_names
+        .iter()
+        .map(|n| (n.name.as_str(), n.formula.as_str()))
+        .collect();
+    assert_eq!(names, [("test", "Sheet10!$L$17")]);
+
+    // A formula, which needs the column to be read as one byte.
+    let Some(with_formula) = book("issue_643_biff5_formula.xls") else {
+        return;
+    };
+    let at = CellRef::parse("B4").unwrap();
+    let CellValue::Formula { formula, .. } = &with_formula.sheets()[0].get(at).unwrap().value
+    else {
+        panic!("B4 holds a formula");
+    };
+    assert_eq!(formula, "$A$1");
+}
+
+/// A BIFF5 file whose `PtgExp` operand is two bytes rather than four, and one
+/// whose sheet name the record's length alone says where to stop.
+#[test]
+fn biff5_workbooks_with_broken_records_still_read() {
+    if let Some(workbook) = book("ptgexp-truncated-operand.xls") {
+        let sheet = &workbook.sheets()[0];
+        assert_eq!(sheet.title(), "Tab 1");
+        let formulas = sheet
+            .iter()
+            .filter(|(_, c)| matches!(c.value, CellValue::Formula { .. }))
+            .count();
+        assert_eq!(formulas, 22);
+    }
+    if let Some(workbook) = book("OOM_alloc2.xls") {
+        assert_eq!(workbook.sheets().len(), 1);
+        assert_eq!(workbook.sheets()[0].title(), "Colsale (Aug");
+    }
+    // Its number format record is malformed; the rest of the sheet still reads.
+    if let Some(workbook) = book("malformed_format.xls") {
+        assert_eq!(text(&workbook.sheets()[0], "A1"), "GENNAIO");
+    }
+}
