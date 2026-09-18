@@ -486,10 +486,7 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
         record(&mut out, 0x0208, &data);
     }
 
-    for (at, cell) in sheet.iter() {
-        let array = sheet.array_formulas.iter().find(|r| r.start == at).copied();
-        cell_record(&mut out, index, at, cell, plan, array);
-    }
+    cells(&mut out, sheet, index, plan);
 
     // A record holds 1027 merges at most.
     for chunk in sheet.merges.chunks(1027) {
@@ -524,6 +521,20 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
     out
 }
 
+/// Every cell of the sheet, in the order the records go out.
+fn cells(out: &mut Vec<u8>, sheet: &Worksheet, index: usize, plan: &Plan) {
+    for (at, cell) in sheet.iter() {
+        let array = sheet.array_formulas.iter().find(|r| r.start == at).copied();
+        // A cell inside somebody else's array holds its part of the result,
+        // not a formula: BIFF says the expression once, in the `ARRAY` record.
+        let covered = sheet
+            .array_formulas
+            .iter()
+            .any(|r| r.contains(at) && r.start != at);
+        cell_record(out, index, at, cell, plan, array, covered);
+    }
+}
+
 /// One cell, as whichever record carries its kind of value.
 fn cell_record(
     out: &mut Vec<u8>,
@@ -532,6 +543,7 @@ fn cell_record(
     cell: &crate::model::Cell,
     plan: &Plan,
     array: Option<crate::coordinate::Range>,
+    covered: bool,
 ) {
     let xf = cell_format(plan, cell.style);
     let head = |data: &mut Vec<u8>| {
@@ -540,7 +552,7 @@ fn cell_record(
         data.extend_from_slice(&xf.to_le_bytes());
     };
 
-    if let Some(compiled) = plan.compiled.get(&(sheet, at)) {
+    if let Some(compiled) = plan.compiled.get(&(sheet, at)).filter(|_| !covered) {
         let result = plan.resolved.get(&(sheet, at)).unwrap_or(&CellValue::Empty);
         formula_record(out, at, xf, result, compiled, array);
         return;

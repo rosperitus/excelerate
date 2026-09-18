@@ -404,8 +404,17 @@ fn cell(book: &Spreadsheet, sheet: &Worksheet, at: CellRef, names: &[String], ou
     }
 
     // A formula carries both its text and its last known result, the way it
-    // does in xlsx; a reader with no engine still has something to show.
+    // does in xlsx; a reader with no engine still has something to show. A
+    // cell inside somebody else's array shows its part of the result and says
+    // no formula: the matrix span said how far that one reaches.
+    let covered = sheet
+        .array_formulas
+        .iter()
+        .any(|r| r.contains(at) && r.start != at);
     let (shown, formula) = match value {
+        CellValue::Formula { cached, .. } if covered => {
+            (cached.as_deref().unwrap_or(&CellValue::Empty).clone(), None)
+        }
         CellValue::Formula { formula, cached } => (
             cached.as_deref().unwrap_or(&CellValue::Empty).clone(),
             Some(odf_formula::from_a1(formula, names)),

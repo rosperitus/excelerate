@@ -122,6 +122,8 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
         let styles_path = resolve(base, &r.target);
         if let Ok(xml) = read_part(&mut zip, &styles_path) {
             book.style_extensions = trailing_extensions(&xml);
+            book.table_styles = element_of(&xml, "tableStyles");
+            book.palette = element_of(&xml, "colors");
         }
         book.styles = read_styles(&mut zip, &styles_path)?;
     }
@@ -1024,6 +1026,20 @@ fn read_pivot_cache<R: Read + Seek>(
         }
     }
     Ok(out)
+}
+
+/// One element of a part, from its opening tag to its closing one, as it
+/// stands in the file. For the parts of the stylesheet this crate carries
+/// rather than models.
+fn element_of(xml: &str, name: &str) -> Option<String> {
+    let open = xml.find(&format!("<{name}"))?;
+    let close = format!("</{name}>");
+    if let Some(end) = xml[open..].find(&close) {
+        return Some(xml[open..open + end + close.len()].to_owned());
+    }
+    // An empty element: `<tableStyles count="0"/>`.
+    let end = xml[open..].find("/>")? + 2;
+    Some(xml[open..open + end].to_owned())
 }
 
 /// The sheet's own `<extLst>`, as it stands in the file.

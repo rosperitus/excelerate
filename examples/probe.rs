@@ -588,22 +588,41 @@ fn edited(dir: &str) -> Fallible {
 }
 
 /// The same array formula in the three formats that can say how far it
-/// reaches.
+/// reaches, and a second, simpler one: Excel 2019 fell over on the first xls,
+/// and a formula with no function in it says whether the function or the
+/// record is what it choked on.
 fn arrays(dir: &str) -> Fallible {
-    let mut book = Spreadsheet::empty();
-    let mut sheet = Worksheet::new("Массив")?;
-    sheet.set(at("A1")?, "В B1:B3 одна формула массива TRANSPOSE(A1:A3)");
-    for row in 1..=3u32 {
-        sheet.set(cell(0, row), f64::from(row) * 10.0);
-        sheet.set(cell(1, row), formula("TRANSPOSE(A2:A4)"));
+    let write = |book: &Spreadsheet, stem: &str| -> Fallible {
+        excelerate::writer::xlsx::write_xlsx(book, format!("{dir}/{stem}.xlsx"))?;
+        excelerate::writer::xls::write_xls(book, format!("{dir}/{stem}.xls"))?;
+        excelerate::writer::ods::write_ods(book, format!("{dir}/{stem}.ods"))?;
+        Ok(())
+    };
+    for (stem, text, what) in [
+        (
+            "probe-array",
+            "TRANSPOSE(A2:A4)",
+            "В B2:B4 одна формула массива TRANSPOSE(A2:A4)",
+        ),
+        (
+            "probe-array-простой",
+            "A2:A4*2",
+            "В B2:B4 одна формула массива A2:A4*2, без функций",
+        ),
+    ] {
+        let mut book = Spreadsheet::empty();
+        let mut sheet = Worksheet::new("Массив")?;
+        sheet.set(at("A1")?, what);
+        for row in 1..=3u32 {
+            sheet.set(cell(0, row), f64::from(row) * 10.0);
+            sheet.set(cell(1, row), formula(text));
+        }
+        sheet.array_formulas.push(Range::new(at("B2")?, at("B4")?));
+        book.add_sheet(sheet)?;
+        recalculate(&mut book, None, &Options::default());
+        recalculate_on_load(&mut book);
+        write(&book, stem)?;
     }
-    sheet.array_formulas.push(Range::new(at("B2")?, at("B4")?));
-    book.add_sheet(sheet)?;
-    recalculate(&mut book, None, &Options::default());
-    recalculate_on_load(&mut book);
-    excelerate::writer::xlsx::write_xlsx(&book, format!("{dir}/probe-array.xlsx"))?;
-    excelerate::writer::xls::write_xls(&book, format!("{dir}/probe-array.xls"))?;
-    excelerate::writer::ods::write_ods(&book, format!("{dir}/probe-array.ods"))?;
     Ok(())
 }
 
@@ -635,39 +654,35 @@ fn instructions(dir: &str) -> Fallible {
     let text = format!(
         "\u{feff}Второй заход\r\n\
         ============\r\n\r\n\
-        Что уже выяснилось из первых файлов (спасибо):\r\n\
-        \x20 - сводную из модели Excel принял и разложил сам - это работает;\r\n\
-        \x20 - формула массива в xlsx пережила Excel - тоже работает;\r\n\
-        \x20 - наша правка внутри файла, написанного Excel (probe-edited), принята:\r\n\
-        \x20   изменённый каскад и фигура на месте после его сохранения;\r\n\
-        \x20 - а вот рисунок, созданный нами с нуля, Excel выбросил целиком -\r\n\
-        \x20   вместе с тремя диаграммами 2016 года и обеими фигурами;\r\n\
-        \x20 - вопросы про форматы были заданы не на том языке: ваш Excel ждёт\r\n\
-        \x20   русские коды дат (ДД.ММ.ГГГГ), а пробел в «# ?/?» принял за разделитель\r\n\
-        \x20   разрядов. Поэтому теперь каждый вопрос задан в нескольких написаниях.\r\n\r\n\
-        По каждому файлу нужно то же самое: открылся молча или Excel просил\r\n\
-        восстановить содержимое, и что именно он написал. Потом сохранить под именем\r\n\
-        с припиской -excel.\r\n\r\n\
-        probe-formulas.xlsx - вопросы про форматы заново, теперь по-русски.\r\n\
-        \x20  Лист «Скаляры»: C - ответ Excel, D - наш. Тот вариант написания, который\r\n\
-        \x20  Excel понял, и есть ответ; остальные дадут #ЗНАЧ! - это нормально.\r\n\r\n\
-        probe-cx-1-простой.xlsx - только каскадная диаграмма, без заголовка,\r\n\
-        \x20  ряды читают ячейки напрямую.\r\n\
-        probe-cx-2-имена.xlsx - то же, но через скрытые имена _xlchart.v1.N,\r\n\
-        \x20  как пишет сам Excel.\r\n\
-        probe-cx-3-заголовок.xlsx - то же, что первый, плюс заголовок: мы поменяли\r\n\
-        \x20  его форму записи, подозрение было на неё.\r\n\
-        probe-cx-4-фигура.xlsx - только фигура, никаких диаграмм.\r\n\
-        \x20  Эти четыре файла разделены нарочно: в прошлый раз одна сломанная часть\r\n\
-        \x20  унесла с собой весь рисунок, и было не видно, кто виноват.\r\n\r\n\
-        probe-array.ods - формула массива в OpenDocument. В прошлый раз Excel\r\n\
-        \x20  прочитал оттуда только значения: у нас число было записано как дата,\r\n\
-        \x20  это мы уже починили. Вопрос: видит ли Excel формулу и её область.\r\n\r\n\
+        Журналы восстановления очень помогли - по ним нашлись три наши ошибки:\r\n\
+        \x20 - из styles.xml пропадали <tableStyles>, а на них стоят срезы: поэтому\r\n\
+        \x20   Excel и удалил все 14 срезов из probe-edited. Теперь переносим их,\r\n\
+        \x20   заодно и палитру <colors>;\r\n\
+        \x20 - в формуле массива мы писали формулу в каждой ячейке области, а надо\r\n\
+        \x20   только в верхней левой - отсюда «удалены сведения о ячейках»;\r\n\
+        \x20 - в ODS любое число без формата уезжало как дата.\r\n\
+        \x20 Рисунок, созданный с нуля, Excel по-прежнему выбрасывает целиком -\r\n\
+        \x20 чтобы понять, кто виноват, он теперь разложен по четырём файлам.\r\n\r\n\
+        По каждому файлу: открылся молча или просил восстановить (и что в журнале).\r\n\
+        Потом сохранить под именем с припиской -excel.\r\n\r\n\
+        probe-formulas.xlsx - форматы заново, по-русски. Каждый вопрос задан в\r\n\
+        \x20  нескольких написаниях: понятое Excel и есть ответ, остальные дадут #ЗНАЧ!.\r\n\
+        \x20  Лист «Скаляры»: C - ответ Excel, D - наш.\r\n\r\n\
+        probe-cx-1-простой.xlsx - только каскадная диаграмма, без заголовка.\r\n\
+        probe-cx-2-имена.xlsx - то же через скрытые имена _xlchart.v1.N.\r\n\
+        probe-cx-3-заголовок.xlsx - то же с заголовком (форму записи мы поменяли).\r\n\
+        probe-cx-4-фигура.xlsx - только фигура, без диаграмм.\r\n\
+        \x20  Разложено нарочно: в прошлый раз одна сломанная часть унесла весь рисунок.\r\n\r\n\
+        probe-array.xlsx / .xls / .ods - формула массива после починки.\r\n\
+        probe-array-простой.xlsx / .xls / .ods - то же, но формула без функций\r\n\
+        \x20  (A2:A4*2). На прошлом .xls Excel 2019 упал - эта пара покажет, дело в\r\n\
+        \x20  самой записи ARRAY или в том, как мы кодируем функцию внутри неё.\r\n\
+        \x20  Если .xls снова уронит Excel - больше его не открывайте, этого ответа\r\n\
+        \x20  достаточно.\r\n\r\n\
+        probe-objects.xlsx, probe-edited.xlsx - те же, что в прошлый раз, но\r\n\
+        \x20  переписанные с починенными стилями: интересно, вернутся ли срезы.\r\n\r\n\
         probe-protected.xlsx - лист заперт паролем «{PASSWORD}», хеш наш.\r\n\
-        \x20  Скажите, пожалуйста, словами: приняла ли Excel этот пароль при снятии\r\n\
-        \x20  защиты. По сохранённому файлу этого не видно - защиты в нём уже нет.\r\n\r\n\
-        probe-objects.xlsx, probe-edited.xlsx, probe-array.xlsx - как в прошлый раз,\r\n\
-        \x20  открывать заново не нужно.\r\n"
+        \x20  Скажите словами: принял ли Excel этот пароль. По файлу не видно.\r\n"
     );
     std::fs::write(format!("{dir}/ЧИТАТЬ.txt"), text)?;
     Ok(())

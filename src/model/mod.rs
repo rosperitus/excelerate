@@ -1712,6 +1712,14 @@ pub struct Spreadsheet {
     /// The stylesheet's `<extLst>`, which is where slicer and table styles
     /// live. Same reasoning as [`Worksheet::extensions`].
     pub style_extensions: Option<String>,
+    /// The stylesheet's `<tableStyles>`, carried as written: a slicer and a
+    /// table name the style they are painted with, and a style this crate
+    /// dropped took the slicer with it - Excel removed all fourteen of them
+    /// from a dashboard rewritten without this.
+    pub table_styles: Option<String>,
+    /// The stylesheet's `<colors>`: the palette an `indexed` colour counts
+    /// into, and the colours last picked in the dialog.
+    pub palette: Option<String>,
 }
 
 impl Default for Spreadsheet {
@@ -1734,6 +1742,8 @@ impl Default for Spreadsheet {
             pivot_caches: Vec::new(),
             workbook_extensions: None,
             style_extensions: None,
+            table_styles: None,
+            palette: None,
         }
     }
 }

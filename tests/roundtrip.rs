@@ -1468,16 +1468,31 @@ fn an_array_formula_keeps_its_area_in_every_format() {
     excelerate::writer::xlsx::write_xlsx_to(&book, Cursor::new(&mut xlsx)).unwrap();
     let back = excelerate::reader::xlsx::read_xlsx_from(Cursor::new(xlsx)).unwrap();
     assert_eq!(back.sheet(0).unwrap().array_formulas, [area], "xlsx");
+    // Only the cell that holds the array says the formula. Excel strips the
+    // cells of a sheet that repeats it in the cells the array covers.
+    let formulas = |book: &Spreadsheet| -> Vec<String> {
+        book.sheet(0)
+            .unwrap()
+            .iter()
+            .filter_map(|(at, cell)| match &cell.value {
+                CellValue::Formula { .. } => Some(at.to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(formulas(&back), ["B1"], "xlsx: one formula in the array");
 
     let mut ods = Vec::new();
     excelerate::writer::ods::write_ods_to(&book, Cursor::new(&mut ods)).unwrap();
     let back = excelerate::reader::ods::read_ods_from(Cursor::new(ods)).unwrap();
     assert_eq!(back.sheet(0).unwrap().array_formulas, [area], "ods");
+    assert_eq!(formulas(&back), ["B1"], "ods: one formula in the array");
 
     let mut xls = Vec::new();
     excelerate::writer::xls::write_xls_to(&book, Cursor::new(&mut xls)).unwrap();
     let back = excelerate::reader::xls::read_xls_from(&xls).unwrap();
     assert_eq!(back.sheet(0).unwrap().array_formulas, [area], "xls");
+    assert_eq!(formulas(&back), ["B1"], "xls: one formula in the array");
     // And the formula itself is still on the cell that holds it.
     let CellValue::Formula { formula, .. } = &back.sheet(0).unwrap().get(at("B1")).unwrap().value
     else {

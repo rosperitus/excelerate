@@ -62,6 +62,13 @@
 
 ### Fixed
 
+- A rewrite dropped `<tableStyles>` and `<colors>` from the stylesheet. Slicers
+  are painted with a style named there, so Excel removed all fourteen slicers
+  of a dashboard this crate had rewritten; the palette an `indexed` colour
+  counts into went the same way. Both are carried now.
+- An array formula was written into every cell of its area rather than only
+  into the cell that holds it. Excel called that a damaged file and stripped
+  the sheet's cells; the xls form of it made Excel 2019 fall over.
 - `OpenDocument` stated every number of a cell with no format of its own as a
   date: `is_date_format` took the `e` of `General` for the Japanese era code,
   so `10` was written as the tenth of January 1900. Found by asking Excel to

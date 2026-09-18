@@ -832,6 +832,14 @@ fn styles(book: &Spreadsheet) -> String {
         }
         s.push_str("</dxfs>");
     }
+    // The schema's order: table styles, then the palette, then whatever a
+    // later schema hung on the stylesheet.
+    if let Some(styles) = &book.table_styles {
+        s.push_str(styles);
+    }
+    if let Some(palette) = &book.palette {
+        s.push_str(palette);
+    }
     if let Some(extensions) = &book.style_extensions {
         s.push_str(extensions);
     }
@@ -2222,6 +2230,24 @@ fn cell_xml(
             ),
         },
         CellValue::Formula { formula, cached } => {
+            // Inside somebody else's array the cell shows its part of the
+            // result and holds no formula of its own. Excel refuses a file
+            // that says otherwise: it strips the cells of the sheet.
+            if array_formulas
+                .iter()
+                .any(|r| r.contains(at) && r.start != at)
+            {
+                let value = cached.as_deref().unwrap_or(&CellValue::Empty).clone();
+                return cell_xml(
+                    at,
+                    &crate::model::Cell {
+                        value,
+                        ..cell.clone()
+                    },
+                    pool,
+                    array_formulas,
+                );
+            }
             let value = match cached.as_deref() {
                 Some(CellValue::Number(n)) => format!("<v>{}</v>", number(*n)),
                 Some(CellValue::Bool(b)) => format!("<v>{}</v>", u8::from(*b)),
