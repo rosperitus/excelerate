@@ -9,8 +9,14 @@
   the workbook's code page, one byte per column, the relative flags of a
   reference on its row, sixteen-byte `XF` records - and names the sheet of a
   3D reference inside the token rather than through an `EXTERNSHEET` entry.
-  Values, sheets, formulas, defined names and the cell format all come across;
-  a code page other than 1252 is read as 1252.
+  Values, sheets, formulas, defined names and the cell format all come across.
+
+- BIFF5 text is read in the code page the workbook's `CODEPAGE` record names.
+  `shared::codepage` holds Windows 1252 and 1251, Mac Roman and DOS 866, and
+  reads anything else as 1252 - three of the four BIFF5 workbooks tested say
+  Mac Roman, so 1252 alone would have been wrong. `read_xls_in(path, page)`
+  and `read_xls_from_in(bytes, page)` name the page for a workbook that has no
+  record or whose record lies; the page named there wins.
 
 ### Fixed
 

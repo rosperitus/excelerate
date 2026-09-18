@@ -1,6 +1,7 @@
 //! Shared helper subsystems.
 
 pub mod biff_functions;
+pub mod codepage;
 pub mod date;
 pub mod date_parse;
 pub mod odf_formula;

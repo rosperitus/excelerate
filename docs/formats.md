@@ -102,10 +102,24 @@ records are the same ones in the same order, packed more narrowly. One byte per
 character in the workbook's code page rather than UTF-16, one byte per column,
 the relative flags of a reference on its row rather than its column, and an
 `XF` record of sixteen bytes rather than twenty. A 3D reference names its sheet
-inside the token, where BIFF8 points at an `EXTERNSHEET` entry. Two things it
-leaves behind: a code page other than 1252, which is read as 1252, and the
-formatting runs of an `RSTRING` cell, whose text is kept and whose runs are
-not.
+inside the token, where BIFF8 points at an `EXTERNSHEET` entry. One thing it leaves behind: the formatting runs of an `RSTRING` cell, whose
+text is kept and whose runs are not.
+
+Its text is bytes rather than UTF-16, so it needs a code page. The workbook
+names one in a `CODEPAGE` record, and `shared::codepage` holds the pages such
+files carry - Windows 1252 and 1251, Mac Roman, DOS 866 - reading anything
+else as 1252. Three of the four BIFF5 workbooks tested here say Mac Roman, so
+assuming 1252 would have been wrong. Some say nothing at all, and some lie;
+for those, `read_xls_in(path, page)` and `read_xls_from_in(bytes, page)` take
+the page from you and outrank the record:
+
+```rust,no_run
+use excelerate::reader::xls::read_xls_in;
+use excelerate::shared::codepage::WINDOWS_1251;
+
+let book = read_xls_in("export.xls", WINDOWS_1251)?;
+# Ok::<(), excelerate::Error>(())
+```
 
 Writing is BIFF8 only. BIFF4 and older, and encrypted workbooks, are rejected
 rather than read halfway.

@@ -8,6 +8,7 @@
 
 use crate::error::{CellError, Error, Result};
 use crate::model::{CellValue, Spreadsheet, Worksheet};
+use crate::shared::codepage;
 use crate::{CellRef, Col, Row};
 
 /// Delimiters the reader will consider, best guess first.
@@ -142,7 +143,7 @@ pub fn decode(bytes: &[u8]) -> String {
         [0xFE, 0xFF, rest @ ..] => from_utf16(rest, u16::from_be_bytes),
         _ => match core::str::from_utf8(bytes) {
             Ok(text) => text.to_owned(),
-            Err(_) => bytes.iter().map(|&b| cp1252(b)).collect(),
+            Err(_) => codepage::decode(codepage::WINDOWS_1252, bytes),
         },
     }
 }
@@ -163,22 +164,6 @@ fn from_utf16(bytes: &[u8], unit: fn([u8; 2]) -> u16) -> String {
         text.push(char::REPLACEMENT_CHARACTER);
     }
     text
-}
-
-/// One CP1252 byte as a character. Only `0x80..=0x9F` differs from Latin-1,
-/// where CP1252 puts printable characters and Latin-1 puts control codes.
-pub(crate) fn cp1252(b: u8) -> char {
-    const HIGH: [char; 32] = [
-        '\u{20AC}', '\u{81}', '\u{201A}', '\u{192}', '\u{201E}', '\u{2026}', '\u{2020}',
-        '\u{2021}', '\u{2C6}', '\u{2030}', '\u{160}', '\u{2039}', '\u{152}', '\u{8D}', '\u{17D}',
-        '\u{8F}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}', '\u{2013}',
-        '\u{2014}', '\u{2DC}', '\u{2122}', '\u{161}', '\u{203A}', '\u{153}', '\u{9D}', '\u{17E}',
-        '\u{178}',
-    ];
-    match b {
-        0x80..=0x9F => HIGH[usize::from(b - 0x80)],
-        _ => char::from(b),
-    }
 }
 
 /// Splits off a leading `sep=x` line, which Excel writes to name the delimiter.

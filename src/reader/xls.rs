@@ -29,13 +29,17 @@
 //!
 //! - **BIFF4 and older, and encrypted files.** Both are refused rather than
 //!   half-read.
-//! - **A BIFF5 code page other than 1252.** The bytes are read as 1252, which
-//!   is what the rest of this crate does with bytes it cannot place.
+//! - **A code page this crate holds no table for.** BIFF5 names its page in a
+//!   `CODEPAGE` record and [`crate::shared::codepage`] knows the ones such
+//!   files carry - Windows Latin and Cyrillic, Mac Roman, DOS 866 - and reads
+//!   anything else as 1252. A workbook with no record at all, or one that
+//!   lies, is what [`read_xls_in`] is for.
 
 use super::xls_formula::{self, Base, Book, BookKind, Context};
 use crate::error::{Error, Result};
 use crate::model::DefinedName;
 use crate::model::{CellValue, ColumnRun, Spreadsheet, Worksheet};
+use crate::shared::codepage;
 use crate::shared::date::Epoch;
 use crate::shared::palette;
 use crate::style::{
@@ -71,6 +75,7 @@ mod record {
     pub const LABEL: u16 = 0x0204;
     /// A `LABEL` with formatting runs after it, which BIFF5 writes instead.
     pub const RSTRING: u16 = 0x00D6;
+    pub const CODEPAGE: u16 = 0x0042;
     pub const LABELSST: u16 = 0x00FD;
     pub const BOOLERR: u16 = 0x0205;
     pub const FORMULA: u16 = 0x0006;
@@ -94,14 +99,49 @@ pub fn read_xls(path: impl AsRef<std::path::Path>) -> Result<Spreadsheet> {
     read_xls_from(&bytes)
 }
 
+/// The same, reading BIFF5 text in the code page you name.
+///
+/// A BIFF5 workbook says its page in a `CODEPAGE` record and this is not
+/// needed; some of them do not, and then the reader falls back to 1252, which
+/// turns Cyrillic into mojibake. Name [`codepage::WINDOWS_1251`] and it comes
+/// back as Cyrillic. The page named here outranks the record, for a file whose
+/// record lies. BIFF8 text is UTF-16 and is not affected.
+///
+/// # Errors
+/// As [`read_xls`].
+pub fn read_xls_in(path: impl AsRef<std::path::Path>, page: u16) -> Result<Spreadsheet> {
+    let bytes = std::fs::read(path).map_err(|e| Error::Xls(e.to_string()))?;
+    read_xls_from_in(&bytes, page)
+}
+
 /// The same, from bytes already in memory.
 ///
 /// # Errors
 /// As [`read_xls`].
 pub fn read_xls_from(bytes: &[u8]) -> Result<Spreadsheet> {
     let ole = super::ole::Ole::new(bytes).map_err(Error::Xls)?;
+    let stream = workbook_stream(&ole)?;
+    Reader::new(&stream).read()
+}
+
+/// The same as [`read_xls_from`], in the code page you name. See
+/// [`read_xls_in`].
+///
+/// # Errors
+/// As [`read_xls`].
+pub fn read_xls_from_in(bytes: &[u8], page: u16) -> Result<Spreadsheet> {
+    let ole = super::ole::Ole::new(bytes).map_err(Error::Xls)?;
+    let stream = workbook_stream(&ole)?;
+    let mut reader = Reader::new(&stream);
+    reader.codepage = page;
+    reader.forced_codepage = Some(page);
+    reader.read()
+}
+
+/// The stream a workbook lives in, whatever this writer called it.
+fn workbook_stream(ole: &super::ole::Ole<'_>) -> Result<Vec<u8>> {
     // Excel 97 and later call it `Workbook`; Excel 5 and 95 call it `Book`.
-    let stream = ["Workbook", "Book"]
+    ["Workbook", "Book"]
         .into_iter()
         .find_map(|name| ole.stream(name))
         .ok_or_else(|| {
@@ -109,8 +149,7 @@ pub fn read_xls_from(bytes: &[u8]) -> Result<Spreadsheet> {
                 "no workbook stream; the file holds {}",
                 ole.names().collect::<Vec<_>>().join(", ")
             ))
-        })?;
-    Reader::new(&stream).read()
+        })
 }
 
 /// Which BIFF the workbook is written in.
@@ -175,6 +214,11 @@ struct Reader<'a> {
     stream: &'a [u8],
     /// Which BIFF the stream is, read from its first `BOF`.
     biff: Biff,
+    /// The code page BIFF5 text is written in: what the caller asked for, or
+    /// what the `CODEPAGE` record says, or 1252.
+    codepage: u16,
+    /// A code page the caller named, which outranks the record.
+    forced_codepage: Option<u16>,
     book: Spreadsheet,
     styles: StyleTable,
     /// The shared string table, indexed by `LABELSST`.
@@ -214,6 +258,8 @@ impl<'a> Reader<'a> {
         Self {
             stream,
             biff: Biff::V8,
+            codepage: codepage::WINDOWS_1252,
+            forced_codepage: None,
             book: Spreadsheet::empty(),
             styles: StyleTable::default(),
             strings: Vec::new(),
@@ -288,6 +334,16 @@ impl<'a> Reader<'a> {
                 record::FILEPASS => {
                     return Err(Error::Xls("the workbook is encrypted".to_owned()));
                 }
+                // BIFF8 says 1200 here and means UTF-16, which the reader
+                // works out from the strings themselves; only BIFF5 needs it.
+                record::CODEPAGE => {
+                    if self.forced_codepage.is_none() && self.biff == Biff::V5 {
+                        let page = u16_at(record.data, 0);
+                        if page != 0 && page != codepage::UTF16 {
+                            self.codepage = page;
+                        }
+                    }
+                }
                 record::DATEMODE => {
                     if u16_at(record.data, 0) == 1 {
                         self.book.epoch = Epoch::Mac1904;
@@ -295,19 +351,22 @@ impl<'a> Reader<'a> {
                 }
                 record::BOUNDSHEET => {
                     let position = u32_at(record.data, 0) as usize;
-                    let name = short_string(record.data, 6, self.biff);
+                    let name = short_string(record.data, 6, self.biff, self.codepage);
                     self.sheets.push((name, position));
                 }
                 record::FORMAT => {
                     let index = u16_at(record.data, 0);
                     let code = match self.biff {
-                        Biff::V5 => short_string(record.data, 2, Biff::V5),
-                        Biff::V8 => unicode_string(record.data, 2, Biff::V8).0,
+                        Biff::V5 => short_string(record.data, 2, Biff::V5, self.codepage),
+                        Biff::V8 => unicode_string(record.data, 2, Biff::V8, self.codepage).0,
                     };
                     self.formats.insert(index, code);
                 }
                 record::XF => self.cell_formats.push(Xf::parse(record.data, self.biff)),
-                record::FONT => self.fonts.push(FontRecord::parse(record.data, self.biff)),
+                record::FONT => {
+                    let font = FontRecord::parse(record.data, self.biff, self.codepage);
+                    self.fonts.push(font);
+                }
                 record::PALETTE => {
                     let count = usize::from(u16_at(record.data, 0)).min(56);
                     for slot in 0..count {
@@ -323,7 +382,8 @@ impl<'a> Reader<'a> {
                 record::SUPBOOK => self.context.books.push(supbook(record.data)),
                 record::EXTERNNAME => {
                     if let Some(book) = self.context.books.last_mut() {
-                        book.names.push(short_string(record.data, 6, self.biff));
+                        book.names
+                            .push(short_string(record.data, 6, self.biff, self.codepage));
                     }
                 }
                 record::EXTERNSHEET => self.extern_sheet(record.data),
@@ -347,7 +407,7 @@ impl<'a> Reader<'a> {
     fn extern_sheet(&mut self, data: &[u8]) {
         if self.biff == Biff::V5 {
             let count = usize::from(data.first().copied().unwrap_or(0));
-            let name = bytes_string(data, 2, count);
+            let name = bytes_string(data, 2, count, self.codepage);
             let sheet = self
                 .sheets
                 .iter()
@@ -514,7 +574,7 @@ impl<'a> Reader<'a> {
             // `RSTRING` is a `LABEL` with formatting runs after the text.
             // The runs are not modelled here, and the text is the same.
             record::LABEL | record::RSTRING => {
-                let (text, _) = unicode_string(data, 6, self.biff);
+                let (text, _) = unicode_string(data, 6, self.biff, self.codepage);
                 self.put(sheet, r, c, u16_at(data, 4), CellValue::text(text));
             }
             record::LABELSST => {
@@ -609,11 +669,11 @@ impl<'a> Reader<'a> {
     /// known and one may refer to another.
     fn defined_names(&mut self) {
         // The names first, since formulas refer to them by position.
-        let biff = self.biff;
+        let (biff, page) = (self.biff, self.codepage);
         self.context.names = self
             .name_records
             .iter()
-            .map(|data| name_text(data, biff))
+            .map(|data| name_text(data, biff, page))
             .collect();
         for (data, name) in self.name_records.iter().zip(&self.context.names) {
             let flags = u16_at(data, 0);
@@ -668,7 +728,7 @@ impl<'a> Reader<'a> {
                     return CellValue::text("");
                 }
                 *at = next.next;
-                let (text, _) = unicode_string(next.data, 0, self.biff);
+                let (text, _) = unicode_string(next.data, 0, self.biff, self.codepage);
                 CellValue::text(text)
             }
             1 => CellValue::Bool(data.get(8).copied().unwrap_or(0) != 0),
@@ -977,7 +1037,7 @@ struct FontRecord {
 }
 
 impl FontRecord {
-    fn parse(data: &[u8], biff: Biff) -> Self {
+    fn parse(data: &[u8], biff: Biff, page: u16) -> Self {
         let flags = u16_at(data, 2);
         Self {
             height: u16_at(data, 0),
@@ -989,7 +1049,7 @@ impl FontRecord {
             underline: data.get(10).copied().unwrap_or(0),
             family: data.get(11).copied().unwrap_or(0),
             charset: data.get(12).copied().unwrap_or(0),
-            name: short_string(data, 14, biff),
+            name: short_string(data, 14, biff, page),
         }
     }
 
@@ -1087,10 +1147,10 @@ fn column(value: u16) -> Result<Col> {
 
 /// The name a `NAME` record defines. A built-in name is stored as a single
 /// character code and spelled with the `_xlnm.` prefix xlsx gives it.
-fn name_text(data: &[u8], biff: Biff) -> String {
+fn name_text(data: &[u8], biff: Biff, page: u16) -> String {
     let count = usize::from(data.get(3).copied().unwrap_or(0));
     let text = match biff {
-        Biff::V5 => bytes_string(data, 14, count),
+        Biff::V5 => bytes_string(data, 14, count, page),
         Biff::V8 => {
             let wide = data.get(14).copied().unwrap_or(0) & 1 != 0;
             read_chars(data, 15, count, wide).0
@@ -1127,10 +1187,10 @@ fn supbook(data: &[u8]) -> Book {
         0x0401 => BookKind::Internal,
         0x3A01 => BookKind::AddIn,
         _ => {
-            let (path, mut at) = unicode_string(data, 2, Biff::V8);
+            let (path, mut at) = unicode_string(data, 2, Biff::V8, codepage::UTF16);
             let mut names = Vec::with_capacity(sheets.min(1024));
             for _ in 0..sheets {
-                let (name, next) = unicode_string(data, at, Biff::V8);
+                let (name, next) = unicode_string(data, at, Biff::V8, codepage::UTF16);
                 names.push(name);
                 at = next;
             }
@@ -1177,10 +1237,10 @@ fn rk(value: u32) -> f64 {
 ///
 /// BIFF8 puts a width byte between the count and the text; BIFF5 has none,
 /// every character being one byte of the workbook's code page.
-fn short_string(data: &[u8], at: usize, biff: Biff) -> String {
+fn short_string(data: &[u8], at: usize, biff: Biff, page: u16) -> String {
     let count = usize::from(data.get(at).copied().unwrap_or(0));
     match biff {
-        Biff::V5 => bytes_string(data, at + 1, count),
+        Biff::V5 => bytes_string(data, at + 1, count, page),
         Biff::V8 => {
             let wide = data.get(at + 1).copied().unwrap_or(0) & 1 != 0;
             read_chars(data, at + 2, count, wide).0
@@ -1190,10 +1250,10 @@ fn short_string(data: &[u8], at: usize, biff: Biff) -> String {
 
 /// A string with a two-byte character count, as `LABEL` and `STRING` write it.
 /// Returns the text and where it ends.
-fn unicode_string(data: &[u8], at: usize, biff: Biff) -> (String, usize) {
+fn unicode_string(data: &[u8], at: usize, biff: Biff, page: u16) -> (String, usize) {
     let count = usize::from(u16_at(data, at));
     match biff {
-        Biff::V5 => (bytes_string(data, at + 2, count), at + 2 + count),
+        Biff::V5 => (bytes_string(data, at + 2, count, page), at + 2 + count),
         Biff::V8 => {
             let wide = data.get(at + 2).copied().unwrap_or(0) & 1 != 0;
             read_chars(data, at + 3, count, wide)
@@ -1201,19 +1261,10 @@ fn unicode_string(data: &[u8], at: usize, biff: Biff) -> (String, usize) {
     }
 }
 
-/// Text one byte per character, the way BIFF5 writes it.
-///
-/// The `CODEPAGE` record names the page, and every Windows-written file this
-/// reader has seen says 1252. A file from another page reads as 1252 rather
-/// than as nothing, which is what the rest of this crate does with bytes it
-/// cannot place.
-fn bytes_string(data: &[u8], at: usize, count: usize) -> String {
-    data.get(at..)
-        .unwrap_or(&[])
-        .iter()
-        .take(count)
-        .map(|&b| super::csv::cp1252(b))
-        .collect()
+/// Text one byte per character, the way BIFF5 writes it, in `page`.
+fn bytes_string(data: &[u8], at: usize, count: usize, page: u16) -> String {
+    let end = at.saturating_add(count).min(data.len());
+    codepage::decode(page, data.get(at..end).unwrap_or(&[]))
 }
 
 /// Characters, either one byte each in the Latin-1 half of CP1252 or two bytes
@@ -1481,5 +1532,75 @@ mod tests {
         assert_eq!(xls_formula::error(0x07), CellError::Div0);
         assert_eq!(xls_formula::error(0x17), CellError::Ref);
         assert_eq!(xls_formula::error(0x2A), CellError::Na);
+    }
+
+    /// A BIFF5 workbook holding one byte of text, so that the code page is
+    /// the whole of what the answer depends on. Built with the OLE writer,
+    /// which the cut-down build does not have.
+    #[cfg(feature = "write")]
+    fn biff5_with(page: Option<u16>, byte: u8) -> Vec<u8> {
+        let mut globals = Vec::new();
+        push(&mut globals, record::BOF, &[0x00, 0x05, 0x05, 0x00]);
+        if let Some(page) = page {
+            push(&mut globals, record::CODEPAGE, &page.to_le_bytes());
+        }
+        let boundsheet_at = globals.len() + 4;
+        // Position, visibility and type, then the name as bytes: no width byte.
+        push(
+            &mut globals,
+            record::BOUNDSHEET,
+            &[0, 0, 0, 0, 0, 0, 1, b'S'],
+        );
+        push(&mut globals, record::EOF, &[]);
+        let start = u32::try_from(globals.len()).unwrap();
+        globals[boundsheet_at..boundsheet_at + 4].copy_from_slice(&start.to_le_bytes());
+        push(&mut globals, record::BOF, &[0x00, 0x05, 0x10, 0x00]);
+        // LABEL at A1: row, column, XF, a two-byte count, then the text.
+        push(&mut globals, record::LABEL, &[0, 0, 0, 0, 0, 0, 1, 0, byte]);
+        push(&mut globals, record::EOF, &[]);
+        crate::writer::ole::container("Workbook", &globals)
+    }
+
+    /// The same byte is a different letter in each page, and a caller who
+    /// names one outranks the record - a file whose record lies, or has none.
+    #[cfg(feature = "write")]
+    #[test]
+    fn biff5_text_is_read_in_the_workbook_code_page() {
+        let at = CellRef::parse("A1").unwrap();
+        let text = |bytes: &[u8], page: Option<u16>| {
+            let book = match page {
+                Some(page) => read_xls_from_in(bytes, page),
+                None => read_xls_from(bytes),
+            }
+            .unwrap();
+            match &book.sheets()[0].get(at).unwrap().value {
+                CellValue::Text(text) => text.to_string(),
+                other => panic!("A1 is {other:?}"),
+            }
+        };
+
+        // 0xC0 is `À` in 1252 and `А` in 1251.
+        assert_eq!(
+            text(&biff5_with(Some(codepage::WINDOWS_1252), 0xC0), None),
+            "À"
+        );
+        assert_eq!(
+            text(&biff5_with(Some(codepage::WINDOWS_1251), 0xC0), None),
+            "А"
+        );
+        // No record at all: 1252, until the caller says otherwise.
+        assert_eq!(text(&biff5_with(None, 0xC0), None), "À");
+        assert_eq!(
+            text(&biff5_with(None, 0xC0), Some(codepage::WINDOWS_1251)),
+            "А"
+        );
+        // And the caller wins over a record that says something else.
+        assert_eq!(
+            text(
+                &biff5_with(Some(codepage::WINDOWS_1252), 0xC0),
+                Some(codepage::WINDOWS_1251)
+            ),
+            "А"
+        );
     }
 }
