@@ -414,6 +414,17 @@ fn cell(book: &Spreadsheet, sheet: &Worksheet, at: CellRef, names: &[String], ou
     };
     if let Some(formula) = &formula {
         let _ = write!(out, r#" table:formula="{}""#, escape(formula));
+        // An array formula says how far it reaches, the way xlsx says it with
+        // `ref`; without this a reader takes it for an ordinary formula and
+        // computes one cell.
+        if let Some(area) = sheet.array_formulas.iter().find(|r| r.start == at) {
+            let _ = write!(
+                out,
+                r#" table:number-matrix-columns-spanned="{}" table:number-matrix-rows-spanned="{}""#,
+                area.width(),
+                area.height()
+            );
+        }
     }
 
     let code = book

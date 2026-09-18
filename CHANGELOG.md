@@ -16,6 +16,11 @@
 
 ### Added
 
+- An array formula keeps the area it fills in every format that can say it:
+  an `ARRAY` record in xls and a matrix span in `OpenDocument`, which are also
+  read back. Before, only xlsx carried it, and a workbook that went through
+  xls or ODS came back with an ordinary formula in its place - which the
+  implicit intersection then read as one cell.
 - `PasswordHash::new`, `iso`, `legacy` and `verify`: set a sheet or workbook
   password from its text the way Excel does (SHA-512, random 16-byte salt,
   100,000 spins), and check a password against a hash a file carries.

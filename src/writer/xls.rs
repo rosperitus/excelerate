@@ -487,7 +487,8 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
     }
 
     for (at, cell) in sheet.iter() {
-        cell_record(&mut out, index, at, cell, plan);
+        let array = sheet.array_formulas.iter().find(|r| r.start == at).copied();
+        cell_record(&mut out, index, at, cell, plan, array);
     }
 
     // A record holds 1027 merges at most.
@@ -530,6 +531,7 @@ fn cell_record(
     at: CellRef,
     cell: &crate::model::Cell,
     plan: &Plan,
+    array: Option<crate::coordinate::Range>,
 ) {
     let xf = cell_format(plan, cell.style);
     let head = |data: &mut Vec<u8>| {
@@ -540,7 +542,7 @@ fn cell_record(
 
     if let Some(compiled) = plan.compiled.get(&(sheet, at)) {
         let result = plan.resolved.get(&(sheet, at)).unwrap_or(&CellValue::Empty);
-        formula_record(out, at, xf, result, compiled);
+        formula_record(out, at, xf, result, compiled, array);
         return;
     }
 
@@ -604,6 +606,7 @@ fn formula_record(
     xf: u16,
     result: &CellValue,
     compiled: &Compiled,
+    array: Option<crate::coordinate::Range>,
 ) {
     let mut data = Vec::with_capacity(22 + compiled.tokens.len() + compiled.extra.len());
     data.extend_from_slice(&at.row.index_u16().to_le_bytes());
@@ -636,14 +639,45 @@ fn formula_record(
     };
     // Options, then the chain cookie Excel fills in itself.
     data.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
+    // An array formula does not hold its own expression: the cell points at
+    // the top left of the array, and the expression follows in an `ARRAY`
+    // record, which is how BIFF says what xlsx says with `<f t="array" ref>`.
+    let pointer = array.map(|area| {
+        let mut tokens = vec![0x01];
+        tokens.extend_from_slice(&area.start.row.index_u16().to_le_bytes());
+        tokens.extend_from_slice(&area.start.col.index_u16().to_le_bytes());
+        tokens
+    });
+    let tokens = pointer.as_ref().unwrap_or(&compiled.tokens);
+    let length = u16::try_from(tokens.len()).unwrap_or(0);
+    data.extend_from_slice(&length.to_le_bytes());
+    data.extend_from_slice(tokens);
+    if pointer.is_none() {
+        data.extend_from_slice(&compiled.extra);
+    }
+    record(out, 0x0006, &data);
+    if let Some(area) = array.filter(|_| pointer.is_some()) {
+        record(out, 0x0221, &array_record(area, compiled));
+    }
+    if let Some(text) = text {
+        record(out, 0x0207, &unicode_string(&text));
+    }
+}
+
+/// An `ARRAY` record: the area the formula fills, and the expression itself.
+fn array_record(area: crate::coordinate::Range, compiled: &Compiled) -> Vec<u8> {
+    let mut data = Vec::with_capacity(14 + compiled.tokens.len() + compiled.extra.len());
+    data.extend_from_slice(&area.start.row.index_u16().to_le_bytes());
+    data.extend_from_slice(&area.end.row.index_u16().to_le_bytes());
+    data.push(u8::try_from(area.start.col.index()).unwrap_or(u8::MAX));
+    data.push(u8::try_from(area.end.col.index()).unwrap_or(u8::MAX));
+    // Flags and the chain cookie Excel fills in itself.
+    data.extend_from_slice(&[0, 0, 0, 0, 0, 0]);
     let length = u16::try_from(compiled.tokens.len()).unwrap_or(0);
     data.extend_from_slice(&length.to_le_bytes());
     data.extend_from_slice(&compiled.tokens);
     data.extend_from_slice(&compiled.extra);
-    record(out, 0x0006, &data);
-    if let Some(text) = text {
-        record(out, 0x0207, &unicode_string(&text));
-    }
+    data
 }
 
 /// A `NAME` record. A built-in name (`_xlnm.Print_Area`) is stored as a

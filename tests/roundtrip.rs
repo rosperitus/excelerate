@@ -1440,3 +1440,48 @@ fn comment_boxes_follow_the_comments() {
     let again = cycle(&book);
     assert_eq!(boxes(&again), boxes(&book));
 }
+
+/// An array formula says how far it reaches in every format that can say it:
+/// `<f t="array" ref>` in xlsx, an `ARRAY` record in xls, a matrix span in
+/// `OpenDocument`.
+#[test]
+fn an_array_formula_keeps_its_area_in_every_format() {
+    use excelerate::coordinate::Range;
+
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    for row in 1..=3 {
+        sheet.set(at(&format!("A{row}")), f64::from(row));
+        sheet.set(
+            at(&format!("B{row}")),
+            CellValue::Formula {
+                formula: "TRANSPOSE(A1:A3)".into(),
+                cached: Some(Box::new(CellValue::Number(f64::from(row)))),
+            },
+        );
+    }
+    let area = Range::new(at("B1"), at("B3"));
+    sheet.array_formulas.push(area);
+    book.add_sheet(sheet).unwrap();
+
+    let mut xlsx = Vec::new();
+    excelerate::writer::xlsx::write_xlsx_to(&book, Cursor::new(&mut xlsx)).unwrap();
+    let back = excelerate::reader::xlsx::read_xlsx_from(Cursor::new(xlsx)).unwrap();
+    assert_eq!(back.sheet(0).unwrap().array_formulas, [area], "xlsx");
+
+    let mut ods = Vec::new();
+    excelerate::writer::ods::write_ods_to(&book, Cursor::new(&mut ods)).unwrap();
+    let back = excelerate::reader::ods::read_ods_from(Cursor::new(ods)).unwrap();
+    assert_eq!(back.sheet(0).unwrap().array_formulas, [area], "ods");
+
+    let mut xls = Vec::new();
+    excelerate::writer::xls::write_xls_to(&book, Cursor::new(&mut xls)).unwrap();
+    let back = excelerate::reader::xls::read_xls_from(&xls).unwrap();
+    assert_eq!(back.sheet(0).unwrap().array_formulas, [area], "xls");
+    // And the formula itself is still on the cell that holds it.
+    let CellValue::Formula { formula, .. } = &back.sheet(0).unwrap().get(at("B1")).unwrap().value
+    else {
+        panic!("B1 is not a formula")
+    };
+    assert_eq!(formula, "TRANSPOSE(A1:A3)");
+}

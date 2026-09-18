@@ -15,6 +15,9 @@
 //!   guesses one from the shape of the displayed text, and so does this.
 //! * Formulas are in `OpenDocument` notation - see
 //!   [`crate::shared::odf_formula`].
+//! * An array formula says how far it reaches on the cell that holds it
+//!   (`table:number-matrix-columns-spanned`), which is where xlsx puts a
+//!   `ref` and BIFF an `ARRAY` record.
 //! * A merge is stated on the top-left cell (`table:number-columns-spanned`),
 //!   not listed separately as xlsx does.
 
@@ -195,6 +198,12 @@ impl ContentReader {
                     formula: attr(e, "formula"),
                     columns_spanned: repeat_of(e, "number-columns-spanned"),
                     rows_spanned: repeat_of(e, "number-rows-spanned"),
+                    matrix: attr(e, "number-matrix-columns-spanned").map(|across| {
+                        (
+                            across.parse().unwrap_or(1),
+                            repeat_of(e, "number-matrix-rows-spanned"),
+                        )
+                    }),
                     covered: name == "covered-table-cell",
                     style: attr(e, "style-name").and_then(|n| self.styles.get(&n).copied()),
                     ..CellState::default()
@@ -347,6 +356,9 @@ struct CellState {
     formula: Option<String>,
     columns_spanned: u64,
     rows_spanned: u64,
+    /// How far a formula entered as a matrix - an array formula - reaches;
+    /// `None` for an ordinary formula.
+    matrix: Option<(u64, u64)>,
     covered: bool,
     style: Option<StyleId>,
     text: String,
@@ -434,6 +446,16 @@ fn place(
                         .unwrap_or(row),
                 );
                 sheet.merges.push(Range::new(at, end));
+            }
+            // So is the reach of an array formula.
+            if let Some((across, down)) = cell.matrix.filter(|_| c == 0 && r == 0) {
+                let end = CellRef::new(
+                    Col::from_one_based(u64::from(col.one_based()) + across.max(1) - 1)
+                        .unwrap_or(col),
+                    Row::from_one_based(u64::from(row.one_based()) + down.max(1) - 1)
+                        .unwrap_or(row),
+                );
+                sheet.array_formulas.push(Range::new(at, end));
             }
         }
     }
