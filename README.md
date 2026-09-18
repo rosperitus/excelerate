@@ -102,10 +102,14 @@ Every format has its own sharp edges; they are all written down in
 | Page | What's in it |
 |---|---|
 | [Getting started](docs/getting-started.md) | install, read a file, write one, the whole loop |
+| [Recipes](docs/recipes.md) | short answers: read a value, convert a file, recalculate one cell |
 | [Workbook model](docs/model.md) | workbook, sheet, cell, addresses and ranges |
+| [Editing the grid](docs/editing.md) | inserting and removing rows, columns and sheets, and what moves with them |
+| [Sheet features](docs/sheet-features.md) | merges, comments, tables, protection, filters, validation, print setup |
 | [File formats](docs/formats.md) | what each format carries and what it drops |
 | [Formulas](docs/formulas.md) | evaluation, incremental recalc, driving the engine yourself |
 | [Styles and number formats](docs/styles.md) | fonts, fills, borders, format strings |
+| [Long operations](docs/long-operations.md) | progress, custom functions, what each step costs |
 | [Links to other workbooks](docs/external-links.md) | `[1]Sheet1!A1`, the value cache, plugging in a live file |
 | [WebAssembly](docs/wasm.md) | building for Node and reading a book from JS |
 
