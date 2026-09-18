@@ -9,9 +9,10 @@ use excelerate::progress::Options;
 use libfuzzer_sys::fuzz_target;
 use std::io::Cursor;
 
-const NAMES: [Option<&str>; 8] = [
+const NAMES: [Option<&str>; 9] = [
     None,
     Some("a.xlsx"),
+    Some("a.xlsb"),
     Some("a.xls"),
     Some("a.csv"),
     Some("a.html"),

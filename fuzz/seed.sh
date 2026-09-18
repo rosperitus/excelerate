@@ -10,5 +10,14 @@ for f in "$fixtures"/*.xlsx "$fixtures"/*.xls "$fixtures"/sample.slk \
          "$fixtures"/sample.xml "$fixtures"/sample.gnumeric; do
     { printf '\000'; cat "$f"; } > "seeds/read_bytes/$(basename "$f")"
 done
+# No xlsb fixture is committed - this crate cannot write one, and the only
+# ones on hand are corpus workbooks, which git ignores. Seed from those when
+# the corpus is there; without it the target starts from the other packages,
+# which share the container but not a single part.
+for f in ../tests/corpus/*.xlsb; do
+    [ -e "$f" ] || continue
+    { printf '\001'; cat "$f"; } > "seeds/read_bytes/$(basename "$f")"
+done
+
 cp "$fixtures"/*.xls seeds/xls/
 grep -v '^#' "$fixtures/formulas.tsv" | cut -f1 | awk '{ printf "%s", $0 > ("seeds/formula/" NR ".txt") }'

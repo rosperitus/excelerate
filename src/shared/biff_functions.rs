@@ -2409,4 +2409,41 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn the_extended_table_is_sorted_and_starts_past_the_first() {
+        assert!(EXTENDED.windows(2).all(|w| w[0].0 < w[1].0));
+        let first = EXTENDED.first().expect("the table has entries").0;
+        assert!(
+            FUNCTIONS.iter().all(|f| f.index < first),
+            "the two tables must not claim the same number"
+        );
+        assert_eq!(extended(483).map(|(name, _)| name), Some("AVERAGEIF"));
+        assert_eq!(extended(449), Some(("EDATE", Some(2))));
+        assert_eq!(extended(1), None, "numbers of the first table are not here");
+    }
+
+    /// The names come from another implementation's table, so a typo or a
+    /// number off by one would show up as a formula naming a function nobody
+    /// has ever heard of. Everything here should be a function this engine
+    /// knows, bar the handful that need a world outside the workbook.
+    #[cfg(feature = "formulas")]
+    #[test]
+    fn every_extended_name_is_a_function_this_crate_knows() {
+        const OUTSIDE: &[&str] = &[
+            "CUBEVALUE",
+            "CUBEMEMBER",
+            "CUBEMEMBERPROPERTY",
+            "CUBERANKEDMEMBER",
+            "CUBESET",
+            "CUBESETCOUNT",
+            "CUBEKPIMEMBER",
+        ];
+        for &(index, name, _) in EXTENDED {
+            assert!(
+                crate::formula::functions::is_known(name) || OUTSIDE.contains(&name),
+                "{index} names {name:?}, which this crate has never heard of"
+            );
+        }
+    }
 }
