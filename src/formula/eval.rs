@@ -122,6 +122,10 @@ pub struct Engine<'a> {
 pub(crate) struct Shared {
     slots: HashMap<(usize, CellRef), usize>,
     values: Vec<std::sync::OnceLock<Value>>,
+    /// Whether an engine has taken a formula on. One that finds a cell taken
+    /// waits a little for the answer instead of computing the same chain
+    /// beside it.
+    claimed: Vec<std::sync::atomic::AtomicBool>,
     /// Rectangles read, as `Engine::ranges` keeps them for one engine: a
     /// table sixteen engines each read into a copy of their own was sixteen
     /// copies.
@@ -149,6 +153,25 @@ impl Shared {
         self.slots
             .get(&(sheet, at))
             .and_then(|&slot| self.values[slot].get())
+    }
+
+    /// Takes the formula on, or waits briefly for whoever did.
+    ///
+    /// The wait is bounded: two engines can be waiting for cells that read
+    /// each other - a circular reference through a reference built at
+    /// evaluation time - and each has to get on with it rather than hold.
+    fn claim(&self, slot: usize) -> Option<&Value> {
+        use std::sync::atomic::Ordering;
+        if !self.claimed[slot].swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        for _ in 0..WAIT_SPINS {
+            if let Some(value) = self.values[slot].get() {
+                return Some(value);
+            }
+            std::thread::yield_now();
+        }
+        None
     }
 }
 
@@ -463,6 +486,13 @@ impl<'a> Engine<'a> {
                 .is_some_and(|stale| !stale.contains(&(sheet, at))) =>
             {
                 stored_value(&cached)
+            }
+            Some(CellValue::Formula { .. })
+                if let Some(sh) = self.shared
+                    && let Some(slot) = sh.slot(sheet, at)
+                    && let Some(done) = sh.claim(slot) =>
+            {
+                done.clone()
             }
             Some(CellValue::Formula { formula, .. }) => {
                 // A formula that refers back to its own cell would recurse for
@@ -1237,6 +1267,10 @@ fn pass<'t>(
             .map(|(slot, &i)| ((deps.formulas[i].sheet, deps.formulas[i].at), slot))
             .collect(),
         values: nodes.iter().map(|_| std::sync::OnceLock::new()).collect(),
+        claimed: nodes
+            .iter()
+            .map(|_| std::sync::atomic::AtomicBool::new(false))
+            .collect(),
         ranges: std::sync::RwLock::default(),
     });
     let mut engine = match options.functions() {
@@ -1338,6 +1372,11 @@ pub fn recalculate_cell_with(
     *cached = Some(Box::new(stored(&value)));
     true
 }
+
+/// How long an engine waits for another to finish a formula it wants, in
+/// turns of the scheduler. Long enough for a formula of a few hundred cells,
+/// short enough that a wait on a cycle is over before it is felt.
+const WAIT_SPINS: usize = 1024;
 
 /// How many threads a pass over `formulas` formulas should use: one for a
 /// small book, for a caller's functions (which need not be safe to share), and
@@ -1464,10 +1503,10 @@ struct Graph {
     members: Vec<Vec<usize>>,
     /// The formulas reading each rectangle.
     readers: Vec<Vec<usize>>,
-    /// The rectangles each formula reads.
-    reads: HashMap<usize, Vec<usize>>,
-    /// The rectangles each formula sits in.
-    member_of: HashMap<usize, Vec<usize>>,
+    /// The rectangles each formula reads, by formula.
+    reads: Vec<Vec<usize>>,
+    /// The rectangles each formula sits in, by formula.
+    member_of: Vec<Vec<usize>>,
 }
 
 /// One formula of a workbook: where it sits, what it reads, and whether it
@@ -1642,7 +1681,7 @@ impl Dependencies {
                 }
             }
             while let Some(i) = queue.pop() {
-                for &id in graph.member_of.get(&i).into_iter().flatten() {
+                for &id in &graph.member_of[i] {
                     if !dirty_range[id] {
                         dirty_range[id] = true;
                         ranges.push(id);
@@ -1674,26 +1713,39 @@ impl Dependencies {
         for list in by_sheet.values_mut() {
             list.sort_unstable();
         }
-        let mut graph = Graph::default();
+        // Which distinct rectangles are read, and by whom. Kept in vectors
+        // indexed by formula rather than in maps: a workbook of 650,000
+        // formulas has millions of these edges, and hashing each of them was
+        // most of what the walk cost.
         let mut ids: HashMap<(usize, Range), usize> = HashMap::new();
+        let mut graph = Graph {
+            reads: vec![Vec::new(); self.formulas.len()],
+            member_of: vec![Vec::new(); self.formulas.len()],
+            ..Graph::default()
+        };
         for &i in nodes {
-            let mut seen = HashSet::new();
             for &(sheet, range) in &self.formulas[i].reads {
                 let id = *ids.entry((sheet, range)).or_insert_with(|| {
-                    let id = graph.members.len();
-                    let members = formulas_in(&by_sheet, sheet, range);
-                    for &j in &members {
-                        graph.member_of.entry(j).or_default().push(id);
-                    }
-                    graph.members.push(members);
                     graph.readers.push(Vec::new());
                     graph.ranges.push((sheet, range));
-                    id
+                    graph.ranges.len() - 1
                 });
-                if seen.insert(id) {
+                // A formula reads a handful of rectangles, so a look through
+                // them beats a set of its own for every formula.
+                if !graph.reads[i].contains(&id) {
                     graph.readers[id].push(i);
-                    graph.reads.entry(i).or_default().push(id);
+                    graph.reads[i].push(id);
                 }
+            }
+        }
+        // What sits inside each rectangle: one lookup per rectangle, and they
+        // are independent of each other.
+        graph.members = map_chunks(&graph.ranges, |&(sheet, range)| {
+            formulas_in(&by_sheet, sheet, range)
+        });
+        for (id, members) in graph.members.iter().enumerate() {
+            for &j in members {
+                graph.member_of[j].push(id);
             }
         }
         graph
@@ -1704,10 +1756,8 @@ impl Dependencies {
     fn levels(&self, nodes: &[usize]) -> (Vec<Vec<usize>>, Vec<usize>) {
         let graph = self.graph(nodes);
         let mut range_left: Vec<usize> = graph.members.iter().map(Vec::len).collect();
-        let mut waiting: HashMap<usize, usize> = nodes
-            .iter()
-            .map(|&i| (i, graph.reads.get(&i).map_or(0, Vec::len)))
-            .collect();
+        let mut waiting: HashMap<usize, usize> =
+            nodes.iter().map(|&i| (i, graph.reads[i].len())).collect();
         let (range_readers, member_of) = (&graph.readers, &graph.member_of);
 
         // Kahn's walk in waves: a wave is every formula whose inputs the waves
@@ -1734,7 +1784,7 @@ impl Dependencies {
         while !wave.is_empty() {
             let mut next = Vec::new();
             for &i in &wave {
-                for &id in member_of.get(&i).into_iter().flatten() {
+                for &id in &member_of[i] {
                     range_left[id] -= 1;
                     if range_left[id] == 0 {
                         ready.push(id);
@@ -1895,6 +1945,29 @@ fn node_of(
         },
         expr,
     ))
+}
+
+/// Maps `items` in chunks, on several threads when there are enough of them.
+fn map_chunks<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = workers(items.len(), &Options::default());
+    if threads <= 1 {
+        return items.iter().map(&f).collect();
+    }
+    let size = items.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = items
+            .chunks(size)
+            .map(|chunk| {
+                let f = &f;
+                scope.spawn(move || chunk.iter().map(f).collect::<Vec<_>>())
+            })
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .flatten()
+            .collect()
+    })
 }
 
 /// Parses a batch of formulas, on several threads when there are enough of

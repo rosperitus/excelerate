@@ -51,6 +51,12 @@
 
 ### Fixed
 
+- Building the dependency graph of a pass halved: what sits inside each
+  rectangle is worked out on several threads, and the edges live in vectors
+  rather than hash maps (COIN: 1.53 s to 0.60 s). An engine that wants a
+  formula another is already computing now waits briefly for the answer
+  instead of computing the same chain beside it. A full pass over COIN takes
+  6.9 s, against 13.5 s on one thread and 16.9 s before any of this.
 - `recalculate_from` did not finish on a large workbook. Finding what an edit
   reaches asked every formula, on every round, whether any dirty cell was
   inside what it read; one edit in a book of 651,614 formulas ran for over ten
