@@ -10,6 +10,9 @@ documentation = "https://docs.rs/excelerate"
 readme = "README.md"
 keywords = ["xlsx", "spreadsheet", "excel", "ods", "formula"]
 categories = ["parser-implementations", "encoding", "wasm"]
+# The npm packages are built from this crate but are not part of it, and the
+# oracle is a Go module used to check our answers against another engine.
+exclude = ["npm/", "npm-reader/", "tools/", ".github/"]
 
 [features]
 default = ["formulas", "write"]
