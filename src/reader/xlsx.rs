@@ -918,6 +918,9 @@ fn read_pivot_table<R: Read + Seek>(
                 }
                 "location" => {
                     out.location = attr(e, "ref").and_then(|r| Range::parse(&r).ok());
+                    let count = |name: &str| attr(e, name).and_then(|v| v.parse().ok());
+                    out.first_data_row = count("firstDataRow").unwrap_or(1);
+                    out.first_data_col = count("firstDataCol").unwrap_or(1);
                 }
                 "pivotField" => out.fields.push(PivotField {
                     axis: attr(e, "axis")

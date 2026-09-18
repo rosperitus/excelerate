@@ -250,6 +250,10 @@ fn a_report_made_in_code_gets_a_cache_of_its_own() {
         name: "Новая".into(),
         cache_id: 9,
         location: Some(excelerate::Range::parse("L1:P12").unwrap()),
+        // A report of Excel's smallest shape: a row of headers, a column of
+        // labels.
+        first_data_row: 1,
+        first_data_col: 1,
         fields: vec![
             PivotField {
                 axis: PivotAxis::Row,
@@ -318,4 +322,103 @@ fn a_removed_report_takes_its_part() {
     assert!(back.sheet(0).unwrap().pivot_tables.is_empty());
     assert!(part(&back, &path).is_none());
     assert_eq!(back.pivot_caches, book.pivot_caches);
+}
+
+/// `GETPIVOTDATA` reads the report out of the cells it was laid out in, which
+/// is where Excel reads it from too. The workbook is `tests/pivot.xlsx`,
+/// saved by Excel: three reports, one with two value fields, one with two row
+/// fields and a column field.
+#[test]
+fn a_value_is_read_out_of_a_laid_out_report() {
+    use excelerate::formula::eval::{Engine, Origin};
+    use excelerate::formula::value::Value;
+
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/pivot.xlsx");
+    let book = excelerate::reader::read(path).unwrap();
+    let mut engine = Engine::new(&book);
+    let ask = |engine: &mut Engine<'_>, sheet: usize, formula: &str| {
+        engine.eval(Origin::new(sheet, at("ZZ999")), formula)
+    };
+    let sheet = |title: &str| {
+        book.sheets()
+            .iter()
+            .position(|s| s.title() == title)
+            .unwrap()
+    };
+
+    // Two value fields over one row field: each is asked for by the name of
+    // the field it sums, not by the caption over its column.
+    let one = sheet("Решение1");
+    assert_eq!(
+        ask(
+            &mut engine,
+            one,
+            r#"GETPIVOTDATA("Кол-во",'Решение1'!A8,"Товар","Монитор")"#
+        ),
+        Value::Number(1774.0)
+    );
+    assert_eq!(
+        ask(
+            &mut engine,
+            one,
+            r#"GETPIVOTDATA("Цена",'Решение1'!A8,"Товар","Монитор")"#
+        ),
+        Value::Number(8136.4)
+    );
+    // Nothing else asked: the grand total.
+    assert_eq!(
+        ask(&mut engine, one, r#"GETPIVOTDATA("Кол-во",'Решение1'!A8)"#),
+        Value::Number(26422.0)
+    );
+    // A field this report does not show as a value.
+    assert!(matches!(
+        ask(&mut engine, one, r#"GETPIVOTDATA("Оклад",'Решение1'!A8)"#),
+        Value::Error(_)
+    ));
+    // A value field whose name is the start of another's caption is not it.
+    assert_eq!(
+        ask(
+            &mut engine,
+            sheet("Решение2"),
+            r#"GETPIVOTDATA("Цена с НДС",'Решение2'!A8,"Товар","Монитор")"#
+        ),
+        Value::Number(7068.2)
+    );
+
+    // Two row fields and a column field, with subtotals.
+    let third = sheet("Исходная таблица2+решение");
+    let report = "'Исходная таблица2+решение'!A66";
+    assert_eq!(
+        ask(
+            &mut engine,
+            third,
+            &format!(
+                r#"GETPIVOTDATA("Оклад",{report},"Отдел","Бухгалтерия","Должность","Бухгалтер")"#
+            )
+        ),
+        Value::Number(78950.0)
+    );
+    // Only the outer field: the subtotal of that department.
+    assert_eq!(
+        ask(
+            &mut engine,
+            third,
+            &format!(r#"GETPIVOTDATA("Оклад",{report},"Отдел","Администрация")"#)
+        ),
+        Value::Number(35600.0)
+    );
+    // An item the report does not show.
+    assert!(matches!(
+        ask(
+            &mut engine,
+            third,
+            &format!(r#"GETPIVOTDATA("Оклад",{report},"Отдел","Склад")"#)
+        ),
+        Value::Error(_)
+    ));
+    // A reference that is not in a report at all.
+    assert!(matches!(
+        ask(&mut engine, third, r#"GETPIVOTDATA("Оклад",'Решение1'!Z1)"#),
+        Value::Error(_)
+    ));
 }

@@ -1,9 +1,9 @@
 # Formulas
 
-The engine parses, evaluates and caches - 517 Excel functions across math,
+The engine parses, evaluates and caches - 518 Excel functions across math,
 statistics, distributions, regression, text, dates, financial, lookup, logic,
 information, database, engineering and web categories, `LAMBDA` and its kin,
-`GROUPBY` and `PIVOTBY`, and the regular expressions (`REGEXTEST`,
+`GROUPBY` and `PIVOTBY`, `GETPIVOTDATA`, and the regular expressions (`REGEXTEST`,
 `REGEXEXTRACT`, `REGEXREPLACE`, which have no lookaround or backreferences).
 
 ## Recalculating a workbook

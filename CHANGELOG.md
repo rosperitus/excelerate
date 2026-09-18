@@ -44,6 +44,12 @@
 - Number formats render fractions (`# ?/?`, `?/???`, `# ??/100`) and the
   symbol in a locale tag (`[$₽-419]`); a Russian locale tag names months and
   weekdays in Russian. Before, all three were dropped from the output.
+- `GETPIVOTDATA` reads a value out of a pivot report: the labels down its
+  side, the headers across its top and the value where they meet, as they
+  were laid out in the cells. Asking for one field of several leaves that
+  field's subtotal, and asking for none leaves the grand total, as in Excel.
+  `PivotTable` gained `first_data_row` and `first_data_col`, which say where
+  the report's headers end.
 - Ten more functions: `GROUPBY` and `PIVOTBY` (the summarising function a
   lambda or a bare name such as `SUM`, stored in files as `_xleta.SUM`),
   `PERCENTOF`, `TRIMRANGE`, `REGEXTEST`, `REGEXEXTRACT`, `REGEXREPLACE`,

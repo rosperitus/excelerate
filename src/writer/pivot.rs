@@ -252,7 +252,9 @@ fn render_table(table: &PivotTable, cache: &PivotCache) -> String {
     let location = table.location.map_or(String::new(), |r| r.to_string());
     let _ = write!(
         s,
-        r#"><location ref="{location}" firstHeaderRow="1" firstDataRow="1" firstDataCol="1"/>"#
+        r#"><location ref="{location}" firstHeaderRow="1" firstDataRow="{}" firstDataCol="{}"/>"#,
+        table.first_data_row.max(1),
+        table.first_data_col.max(1)
     );
 
     render_fields(&mut s, table, cache);

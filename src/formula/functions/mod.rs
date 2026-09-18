@@ -32,6 +32,7 @@ pub mod logical;
 pub mod lookup;
 pub mod math;
 pub mod pattern;
+pub mod pivot;
 pub mod regression;
 pub mod securities;
 pub mod stats;
@@ -355,6 +356,7 @@ fn lazy(name: &str) -> Option<Lazy> {
         "SHEET" => info::sheet,
         "SHEETS" => info::sheets,
         "CELL" => info::cell_info,
+        "GETPIVOTDATA" => pivot::getpivotdata,
         "INFO" => info::info,
         "GROUPBY" => group::groupby,
         "PIVOTBY" => group::pivotby,

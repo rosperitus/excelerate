@@ -1460,7 +1460,7 @@ fn parallel<'t>(
 }
 
 /// What a value stored in a cell is to a formula reading it.
-fn stored_value(cell: &CellValue) -> Value {
+pub(crate) fn stored_value(cell: &CellValue) -> Value {
     match cell {
         CellValue::Number(n) => Value::Number(*n),
         CellValue::Text(t) => Value::Text(t.to_string()),

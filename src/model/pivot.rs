@@ -168,6 +168,13 @@ pub struct PivotTable {
     pub cache_id: u32,
     /// The cells the report occupies.
     pub location: Option<Range>,
+    /// How many rows of the report are headers, as `<location>` states it.
+    /// Zero, as a report built in code has it, is written as one: Excel's
+    /// smallest report still has a row of headers.
+    pub first_data_row: u32,
+    /// How many columns hold the labels of the row fields, and the same about
+    /// zero.
+    pub first_data_col: u32,
     /// Every field of the cache, in the cache's order.
     pub fields: Vec<PivotField>,
     /// Cache field indexes down the side, in order. `-2` is the values field,
