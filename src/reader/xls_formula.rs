@@ -17,10 +17,59 @@
 use crate::shared::biff_functions;
 use crate::{CellError, Col};
 
+/// Which binary the tokens came out of.
+///
+/// BIFF8 and BIFF12 spell the same formula with the same tokens; what differs
+/// is how wide a row and a column are. BIFF8 predates the million-row sheet,
+/// so a row is two bytes and a column one; BIFF12 gives a row four bytes and a
+/// column fourteen bits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Dialect {
+    /// The xls record stream.
+    #[default]
+    Biff8,
+    /// The xlsb record stream.
+    Biff12,
+}
+
+impl Dialect {
+    /// The bits of a column field that hold the column itself.
+    const fn column_mask(self) -> u16 {
+        match self {
+            Self::Biff8 => 0x00FF,
+            Self::Biff12 => 0x3FFF,
+        }
+    }
+
+    /// Bytes a cell reference takes after its token byte.
+    const fn cell_size(self) -> usize {
+        match self {
+            Self::Biff8 => 4,
+            Self::Biff12 => 6,
+        }
+    }
+
+    /// Bytes an area reference takes after its token byte.
+    const fn area_size(self) -> usize {
+        self.cell_size() * 2
+    }
+
+    /// The last row and column of a sheet, which an area spanning whole
+    /// columns or rows reaches.
+    const fn limits(self) -> (u32, u16) {
+        match self {
+            Self::Biff8 => (0xFFFF, 0x00FF),
+            Self::Biff12 => (0x000F_FFFF, 0x3FFF),
+        }
+    }
+}
+
 /// What a formula can refer to outside itself: sheets, other workbooks and
 /// their names, and the workbook's own defined names.
 #[derive(Debug, Default)]
 pub struct Context {
+    /// Which binary spelled the tokens.
+    pub dialect: Dialect,
     /// Sheet names, in tab order.
     pub sheets: Vec<String>,
     /// `EXTERNSHEET` entries: the book, the first sheet and the last sheet.
@@ -61,9 +110,9 @@ pub enum BookKind {
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Base {
     /// Zero-based row.
-    pub row: u16,
+    pub row: u32,
     /// Zero-based column.
-    pub col: u16,
+    pub col: u32,
 }
 
 /// The formula a token stream spells, without the leading `=`.
@@ -122,6 +171,28 @@ impl Decompiler<'_> {
         u16_at(self.tokens, at)
     }
 
+    fn dword(&self, at: usize) -> Option<u32> {
+        Some(u32::from_le_bytes(
+            self.tokens.get(at..at + 4)?.try_into().ok()?,
+        ))
+    }
+
+    /// A row field: two bytes in BIFF8, four in BIFF12.
+    fn row_field(&self, at: usize) -> Option<u32> {
+        match self.context.dialect {
+            Dialect::Biff8 => self.word(at).map(u32::from),
+            Dialect::Biff12 => self.dword(at),
+        }
+    }
+
+    /// Bytes a row field takes.
+    const fn row_size(&self) -> usize {
+        match self.context.dialect {
+            Dialect::Biff8 => 2,
+            Dialect::Biff12 => 4,
+        }
+    }
+
     /// Replays the token at `at` and returns where the next one starts.
     #[expect(
         clippy::too_many_lines,
@@ -168,9 +239,17 @@ impl Decompiler<'_> {
                 data
             }
             0x17 => {
-                let count = usize::from(self.byte(data)?);
-                let wide = self.byte(data + 1)? & 1 != 0;
-                let (text, end) = chars(self.tokens, data + 2, count, wide)?;
+                // BIFF8 counts characters in a byte and says whether they are
+                // wide; BIFF12 counts them in a word and they always are.
+                let (count, wide, from) = match self.context.dialect {
+                    Dialect::Biff8 => (
+                        usize::from(self.byte(data)?),
+                        self.byte(data + 1)? & 1 != 0,
+                        data + 2,
+                    ),
+                    Dialect::Biff12 => (usize::from(self.word(data)?), true, data + 2),
+                };
+                let (text, end) = chars(self.tokens, from, count, wide)?;
                 self.stack
                     .push(format!("\"{}\"", text.replace('"', "\"\"")));
                 end
@@ -202,11 +281,23 @@ impl Decompiler<'_> {
             0x20 => {
                 let array = self.array()?;
                 self.stack.push(array);
-                data + 7
+                data + if self.context.dialect == Dialect::Biff8 {
+                    7
+                } else {
+                    14
+                }
             }
             0x21 => {
-                let function = biff_functions::by_index(self.word(data)?)?;
-                self.call(function.name, usize::from(function.max))?;
+                let index = self.word(data)?;
+                // Numbers past the BIFF8 table: xlsb gives the analysis add-in
+                // functions numbers of their own.
+                let (name, count) = if let Some(function) = biff_functions::by_index(index) {
+                    (function.name, function.max)
+                } else {
+                    let (name, count) = biff_functions::extended(index)?;
+                    (name, count?)
+                };
+                self.call(name, usize::from(count))?;
                 data + 2
             }
             0x22 => {
@@ -227,13 +318,19 @@ impl Decompiler<'_> {
                         .to_owned();
                     self.stack.push(format!("{name}({})", args.join(",")));
                 } else {
-                    let function = biff_functions::by_index(index)?;
-                    self.call(function.name, count)?;
+                    let name = match biff_functions::by_index(index) {
+                        Some(function) => function.name,
+                        None => biff_functions::extended(index)?.0,
+                    };
+                    self.call(name, count)?;
                 }
                 data + 3
             }
             0x23 => {
-                let index = usize::from(self.word(data)?);
+                let index = match self.context.dialect {
+                    Dialect::Biff8 => usize::from(self.word(data)?),
+                    Dialect::Biff12 => usize::try_from(self.dword(data)?).ok()?,
+                };
                 let name = self.context.names.get(index.checked_sub(1)?)?.clone();
                 self.stack.push(name);
                 data + 4
@@ -241,32 +338,57 @@ impl Decompiler<'_> {
             0x24 | 0x2C => {
                 let cell = self.cell(data, base == 0x2C)?;
                 self.stack.push(cell);
-                data + 4
+                data + self.context.dialect.cell_size()
             }
             0x25 | 0x2D => {
                 let area = self.area(data, base == 0x2D)?;
                 self.stack.push(area);
-                data + 8
+                data + self.context.dialect.area_size()
             }
             // A memory area's rectangles wait in the extra data; the tokens
             // that compute it follow and are replayed as usual.
-            0x26 => {
-                let count = usize::from(u16_at(self.extra, self.extra_at)?);
-                self.extra_at += 2 + count * 8;
-                data + 6
+            0x26 => match self.context.dialect {
+                Dialect::Biff8 => {
+                    let count = usize::from(u16_at(self.extra, self.extra_at)?);
+                    self.extra_at += 2 + count * 8;
+                    data + 6
+                }
+                Dialect::Biff12 => {
+                    let count = usize::try_from(u32::from_le_bytes(
+                        self.extra
+                            .get(self.extra_at..self.extra_at + 4)?
+                            .try_into()
+                            .ok()?,
+                    ))
+                    .ok()?;
+                    self.extra_at += 4 + count * 16;
+                    data + 8
+                }
+            },
+            0x27 | 0x28 => {
+                data + if self.context.dialect == Dialect::Biff8 {
+                    6
+                } else {
+                    8
+                }
             }
-            0x27 | 0x28 => data + 6,
             0x29 => data + 2,
             0x2A => {
                 self.stack.push("#REF!".to_owned());
-                data + 4
+                data + self.context.dialect.cell_size()
             }
             0x2B => {
                 self.stack.push("#REF!".to_owned());
-                data + 8
+                data + self.context.dialect.area_size()
             }
             0x39 => {
-                let name = self.external_name(self.word(data)?, self.word(data + 2)?)?;
+                let name = match self.context.dialect {
+                    Dialect::Biff8 => self.external_name(self.word(data)?, self.word(data + 2)?),
+                    Dialect::Biff12 => {
+                        let index = u16::try_from(self.dword(data + 2)?).ok()?;
+                        self.external_name(self.word(data)?, index)
+                    }
+                }?;
                 self.stack.push(name);
                 data + 6
             }
@@ -274,23 +396,23 @@ impl Decompiler<'_> {
                 let sheet = self.sheet(self.word(data)?)?;
                 let cell = self.cell(data + 2, false)?;
                 self.stack.push(format!("{sheet}{cell}"));
-                data + 6
+                data + 2 + self.context.dialect.cell_size()
             }
             0x3B => {
                 let sheet = self.sheet(self.word(data)?)?;
                 let area = self.area(data + 2, false)?;
                 self.stack.push(format!("{sheet}{area}"));
-                data + 10
+                data + 2 + self.context.dialect.area_size()
             }
             0x3C => {
                 let sheet = self.sheet(self.word(data)?)?;
                 self.stack.push(format!("{sheet}#REF!"));
-                data + 6
+                data + 2 + self.context.dialect.cell_size()
             }
             0x3D => {
                 let sheet = self.sheet(self.word(data)?)?;
                 self.stack.push(format!("{sheet}#REF!"));
-                data + 10
+                data + 2 + self.context.dialect.area_size()
             }
             // `Exp` and `Tbl` point at a shared, array or table formula; the
             // caller resolves those before coming here. Everything else is a
@@ -326,15 +448,41 @@ impl Decompiler<'_> {
     fn array(&mut self) -> Option<String> {
         let extra = self.extra;
         let at = self.extra_at;
-        let cols = usize::from(*extra.get(at)?) + 1;
-        let rows = usize::from(u16_at(extra, at + 1)?) + 1;
-        let mut pos = at + 3;
+        // BIFF8 counts the rows and columns one short and in three bytes;
+        // BIFF12 writes both as counts in four bytes each.
+        let (cols, rows, mut pos) = match self.context.dialect {
+            Dialect::Biff8 => (
+                usize::from(*extra.get(at)?) + 1,
+                usize::from(u16_at(extra, at + 1)?) + 1,
+                at + 3,
+            ),
+            Dialect::Biff12 => {
+                let word = |at: usize| -> Option<usize> {
+                    usize::try_from(u32::from_le_bytes(extra.get(at..at + 4)?.try_into().ok()?))
+                        .ok()
+                };
+                // Rows first here, and both are counts rather than one less.
+                (word(at + 4)?, word(at)?, at + 8)
+            }
+        };
         let mut lines = Vec::with_capacity(rows.min(1024));
         for _ in 0..rows {
             let mut line = Vec::with_capacity(cols.min(1024));
             for _ in 0..cols {
                 let kind = *extra.get(pos)?;
                 pos += 1;
+                // BIFF12 numbers the kinds of an array's values afresh, with
+                // no slot for an empty one.
+                let kind = match self.context.dialect {
+                    Dialect::Biff8 => kind,
+                    Dialect::Biff12 => match kind {
+                        0x00 => 0x01,
+                        0x01 => 0x02,
+                        0x02 => 0x04,
+                        0x04 => 0x10,
+                        _ => return None,
+                    },
+                };
                 let value = match kind {
                     0x00 => {
                         pos += 8;
@@ -346,9 +494,22 @@ impl Decompiler<'_> {
                         number(value)
                     }
                     0x02 => {
-                        let count = usize::from(u16_at(extra, pos)?);
-                        let wide = *extra.get(pos + 2)? & 1 != 0;
-                        let (text, end) = chars(extra, pos + 3, count, wide)?;
+                        let (count, wide, from) = match self.context.dialect {
+                            Dialect::Biff8 => (
+                                usize::from(u16_at(extra, pos)?),
+                                *extra.get(pos + 2)? & 1 != 0,
+                                pos + 3,
+                            ),
+                            Dialect::Biff12 => (
+                                usize::try_from(u32::from_le_bytes(
+                                    extra.get(pos..pos + 4)?.try_into().ok()?,
+                                ))
+                                .ok()?,
+                                true,
+                                pos + 4,
+                            ),
+                        };
+                        let (text, end) = chars(extra, from, count, wide)?;
                         pos = end;
                         format!("\"{}\"", text.replace('"', "\"\""))
                     }
@@ -376,21 +537,19 @@ impl Decompiler<'_> {
     ///
     /// In a relative token (`RefN`, `AreaN`) a relative row or column is an
     /// offset from the base cell rather than a position.
-    fn position(&self, row: u16, col_field: u16, relative: bool) -> Option<(String, String)> {
+    fn position(&self, row: u32, col_field: u16, relative: bool) -> Option<(String, String)> {
         let col_relative = col_field & 0x4000 != 0;
         let row_relative = col_field & 0x8000 != 0;
-        let col = col_field & 0x00FF;
+        let dialect = self.context.dialect;
+        let col = u32::from(col_field & dialect.column_mask());
         let (row, col) = if relative {
             let row = if row_relative {
-                #[expect(clippy::cast_possible_wrap, reason = "the field is a signed offset")]
-                self.base.row.wrapping_add_signed(row as i16)
+                self.offset_row(row)
             } else {
                 row
             };
             let col = if col_relative {
-                #[expect(clippy::cast_possible_wrap, reason = "the low byte is a signed offset")]
-                let offset = i16::from(col as u8 as i8);
-                self.base.col.wrapping_add_signed(offset) & 0x00FF
+                self.offset_column(col)
             } else {
                 col
             };
@@ -398,28 +557,67 @@ impl Decompiler<'_> {
         } else {
             (row, col)
         };
-        let letters = Col::new(u32::from(col))?.to_letters();
+        let letters = Col::new(col)?.to_letters();
         let dollar = |relative: bool| if relative { "" } else { "$" };
         Some((
             format!("{}{letters}", dollar(col_relative)),
-            format!("{}{}", dollar(row_relative), u32::from(row) + 1),
+            format!("{}{}", dollar(row_relative), row + 1),
         ))
     }
 
+    /// A relative row: an offset from the base cell, wrapping in the width the
+    /// dialect writes it in.
+    fn offset_row(&self, field: u32) -> u32 {
+        match self.context.dialect {
+            #[expect(clippy::cast_possible_truncation, reason = "BIFF8 rows are two bytes")]
+            #[expect(clippy::cast_possible_wrap, reason = "the field is a signed offset")]
+            Dialect::Biff8 => {
+                u32::from((self.base.row as u16).wrapping_add_signed(field as u16 as i16))
+            }
+            #[expect(clippy::cast_possible_wrap, reason = "the field is a signed offset")]
+            Dialect::Biff12 => self.base.row.wrapping_add_signed(field as i32),
+        }
+    }
+
+    /// The same for a column, whose offset is signed in the bits the dialect
+    /// gives it: eight in BIFF8, fourteen in BIFF12.
+    fn offset_column(&self, field: u32) -> u32 {
+        let dialect = self.context.dialect;
+        let mask = u32::from(dialect.column_mask());
+        let sign = (mask + 1) >> 1;
+        let offset = if field & sign == 0 {
+            field
+        } else {
+            field.wrapping_sub(mask + 1)
+        };
+        #[expect(clippy::cast_possible_wrap, reason = "the field is a signed offset")]
+        let shifted = self.base.col.wrapping_add_signed(offset as i32);
+        shifted & mask
+    }
+
     fn cell(&self, at: usize, relative: bool) -> Option<String> {
-        let (col, row) = self.position(self.word(at)?, self.word(at + 2)?, relative)?;
+        let (col, row) = self.position(
+            self.row_field(at)?,
+            self.word(at + self.row_size())?,
+            relative,
+        )?;
         Some(format!("{col}{row}"))
     }
 
     /// An area, written as whole columns or whole rows where it spans the
     /// sheet, the way Excel shows `A:A` and `1:1`.
     fn area(&self, at: usize, relative: bool) -> Option<String> {
-        let (first_row, last_row) = (self.word(at)?, self.word(at + 2)?);
-        let (first_col, last_col) = (self.word(at + 4)?, self.word(at + 6)?);
+        let dialect = self.context.dialect;
+        // Rows first, both of them, then both columns.
+        let width = self.row_size();
+        let (first_row, last_row) = (self.row_field(at)?, self.row_field(at + width)?);
+        let (first_col, last_col) = (self.word(at + 2 * width)?, self.word(at + 2 * width + 2)?);
         let (col1, row1) = self.position(first_row, first_col, relative)?;
         let (col2, row2) = self.position(last_row, last_col, relative)?;
-        let whole_columns = first_row == 0 && last_row == 0xFFFF;
-        let whole_rows = first_col.trailing_zeros() >= 8 && last_col & 0xFF == 0xFF;
+        let (last_row_of_sheet, last_col_of_sheet) = dialect.limits();
+        let whole_columns = first_row == 0 && last_row == last_row_of_sheet;
+        let mask = dialect.column_mask();
+        let whole_rows = first_col & mask == 0 && last_col & mask == last_col_of_sheet;
         Some(if whole_columns && !relative {
             format!("{col1}:{col2}")
         } else if whole_rows && !relative {
@@ -547,6 +745,7 @@ mod tests {
 
     fn context() -> Context {
         Context {
+            dialect: Dialect::Biff8,
             sheets: vec!["Main".into(), "Data 2".into(), "R1C1".into()],
             externs: vec![(0, 1, 1), (0, 0, 2), (1, 0, 0), (0, 0xFFFF, 0xFFFF)],
             books: vec![

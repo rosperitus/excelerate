@@ -45,6 +45,10 @@ pub enum Error {
     #[error("xlsx: {0}")]
     Xlsx(String),
 
+    /// The xlsb package is malformed, truncated, or not an xlsb at all.
+    #[error("xlsb: {0}")]
+    Xlsb(String),
+
     /// A CSV file could not be read or written.
     #[error("csv: {0}")]
     Csv(String),

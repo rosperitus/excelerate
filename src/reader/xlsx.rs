@@ -222,11 +222,11 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
 }
 
 /// One entry of a `.rels` part.
-struct Relationship {
-    kind: String,
-    target: String,
+pub(crate) struct Relationship {
+    pub(crate) kind: String,
+    pub(crate) target: String,
     /// Whether the target lives outside the package and so is never a part.
-    external: bool,
+    pub(crate) external: bool,
 }
 
 /// The relationships of a part that point at something this crate does not
@@ -363,7 +363,7 @@ fn read_part<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Result
 }
 
 /// The `.rels` path belonging to a part: `xl/workbook.xml` -> `xl/_rels/workbook.xml.rels`.
-fn rels_path_for(part: &str) -> String {
+pub(crate) fn rels_path_for(part: &str) -> String {
     match part.rsplit_once('/') {
         Some((dir, file)) => format!("{dir}/_rels/{file}.rels"),
         None => format!("_rels/{part}.rels"),
@@ -372,7 +372,7 @@ fn rels_path_for(part: &str) -> String {
 
 /// Resolves a relationship target against the directory of the part that
 /// declared it. Absolute targets (`/xl/styles.xml`) are taken as package paths.
-fn resolve(base: &str, target: &str) -> String {
+pub(crate) fn resolve(base: &str, target: &str) -> String {
     if let Some(abs) = target.strip_prefix('/') {
         return abs.to_owned();
     }
@@ -394,7 +394,7 @@ fn resolve(base: &str, target: &str) -> String {
 }
 
 /// Parses a `.rels` part into id -> relationship.
-fn read_relationships<R: Read + Seek>(
+pub(crate) fn read_relationships<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     path: &str,
 ) -> Result<HashMap<String, Relationship>> {
@@ -439,7 +439,7 @@ fn read_relationships<R: Read + Seek>(
 }
 
 /// Finds the workbook part through the package root relationships.
-fn find_workbook_part<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) -> Result<String> {
+pub(crate) fn find_workbook_part<R: Read + Seek>(zip: &mut zip::ZipArchive<R>) -> Result<String> {
     let rels = read_relationships(zip, "_rels/.rels")?;
     rels.values()
         .find(|r| r.kind.ends_with("/officeDocument"))

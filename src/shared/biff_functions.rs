@@ -2241,6 +2241,138 @@ pub fn by_index(index: u16) -> Option<&'static Function> {
         .and_then(|at| FUNCTIONS.get(at))
 }
 
+/// The functions numbered past the BIFF8 table.
+///
+/// Excel 2007 gave a number to the analysis add-in functions, which older
+/// files reached by name, and to the handful it added itself
+/// (`IFERROR`, `COUNTIFS`, `AVERAGEIF`); xlsb formulas use those numbers. The
+/// pairs come from `SheetJS`, an independent implementation, and the ones this
+/// crate has seen in a workbook written by Excel are checked against the same
+/// workbook saved as xlsx, where the function stands written by name.
+///
+/// The count is how many arguments the function takes when it is written as
+/// the fixed-argument token; `None` means only the counted token was seen for
+/// it, and the fixed form of such a function is left unread rather than
+/// guessed at.
+static EXTENDED: &[(u16, &str, Option<u8>)] = &[
+    (380, "CUBEVALUE", None),
+    (381, "CUBEMEMBER", None),
+    (382, "CUBEMEMBERPROPERTY", Some(3)),
+    (383, "CUBERANKEDMEMBER", None),
+    (384, "HEX2BIN", None),
+    (385, "HEX2DEC", Some(1)),
+    (386, "HEX2OCT", None),
+    (387, "DEC2BIN", None),
+    (388, "DEC2HEX", None),
+    (389, "DEC2OCT", None),
+    (390, "OCT2BIN", None),
+    (391, "OCT2HEX", None),
+    (392, "OCT2DEC", Some(1)),
+    (393, "BIN2DEC", Some(1)),
+    (394, "BIN2OCT", None),
+    (395, "BIN2HEX", None),
+    (396, "IMSUB", Some(2)),
+    (397, "IMDIV", Some(2)),
+    (398, "IMPOWER", Some(2)),
+    (399, "IMABS", Some(1)),
+    (400, "IMSQRT", Some(1)),
+    (401, "IMLN", Some(1)),
+    (402, "IMLOG2", Some(1)),
+    (403, "IMLOG10", Some(1)),
+    (404, "IMSIN", Some(1)),
+    (405, "IMCOS", Some(1)),
+    (406, "IMEXP", Some(1)),
+    (407, "IMARGUMENT", Some(1)),
+    (408, "IMCONJUGATE", Some(1)),
+    (409, "IMAGINARY", Some(1)),
+    (410, "IMREAL", Some(1)),
+    (411, "COMPLEX", None),
+    (412, "IMSUM", None),
+    (413, "IMPRODUCT", None),
+    (414, "SERIESSUM", Some(4)),
+    (415, "FACTDOUBLE", Some(1)),
+    (416, "SQRTPI", Some(1)),
+    (417, "QUOTIENT", Some(2)),
+    (418, "DELTA", None),
+    (419, "GESTEP", None),
+    (420, "ISEVEN", Some(1)),
+    (421, "ISODD", Some(1)),
+    (422, "MROUND", Some(2)),
+    (423, "ERF", None),
+    (424, "ERFC", Some(1)),
+    (425, "BESSELJ", Some(2)),
+    (426, "BESSELK", Some(2)),
+    (427, "BESSELY", Some(2)),
+    (428, "BESSELI", Some(2)),
+    (429, "XIRR", None),
+    (430, "XNPV", Some(3)),
+    (431, "PRICEMAT", None),
+    (432, "YIELDMAT", None),
+    (433, "INTRATE", None),
+    (434, "RECEIVED", None),
+    (435, "DISC", None),
+    (436, "PRICEDISC", None),
+    (437, "YIELDDISC", None),
+    (438, "TBILLEQ", Some(3)),
+    (439, "TBILLPRICE", Some(3)),
+    (440, "TBILLYIELD", Some(3)),
+    (441, "PRICE", None),
+    (442, "YIELD", None),
+    (443, "DOLLARDE", Some(2)),
+    (444, "DOLLARFR", Some(2)),
+    (445, "NOMINAL", Some(2)),
+    (446, "EFFECT", Some(2)),
+    (447, "CUMPRINC", Some(6)),
+    (448, "CUMIPMT", Some(6)),
+    (449, "EDATE", Some(2)),
+    (450, "EOMONTH", Some(2)),
+    (451, "YEARFRAC", None),
+    (452, "COUPDAYBS", None),
+    (453, "COUPDAYS", None),
+    (454, "COUPDAYSNC", None),
+    (455, "COUPNCD", None),
+    (456, "COUPNUM", None),
+    (457, "COUPPCD", None),
+    (458, "DURATION", None),
+    (459, "MDURATION", None),
+    (460, "ODDLPRICE", None),
+    (461, "ODDLYIELD", None),
+    (462, "ODDFPRICE", None),
+    (463, "ODDFYIELD", None),
+    (464, "RANDBETWEEN", Some(2)),
+    (465, "WEEKNUM", None),
+    (466, "AMORDEGRC", None),
+    (467, "AMORLINC", None),
+    (468, "CONVERT", Some(3)),
+    (469, "ACCRINT", None),
+    (470, "ACCRINTM", None),
+    (471, "WORKDAY", None),
+    (472, "NETWORKDAYS", None),
+    (473, "GCD", None),
+    (474, "MULTINOMIAL", None),
+    (475, "LCM", None),
+    (476, "FVSCHEDULE", Some(2)),
+    (477, "CUBEKPIMEMBER", None),
+    (478, "CUBESET", None),
+    (479, "CUBESETCOUNT", Some(1)),
+    (480, "IFERROR", Some(2)),
+    (481, "COUNTIFS", None),
+    (482, "SUMIFS", None),
+    (483, "AVERAGEIF", None),
+    (484, "AVERAGEIFS", None),
+];
+
+/// The name and fixed argument count of a function numbered past the BIFF8
+/// table. Only formula text uses these: evaluation knows these functions by
+/// name, and their argument classes are not in the table.
+#[must_use]
+pub fn extended(index: u16) -> Option<(&'static str, Option<u8>)> {
+    EXTENDED
+        .binary_search_by_key(&index, |(number, _, _)| *number)
+        .ok()
+        .map(|at| (EXTENDED[at].1, EXTENDED[at].2))
+}
+
 /// The numbered function a name stands for, ignoring case.
 ///
 /// Asked on every function call the engine makes, so the table is indexed

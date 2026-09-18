@@ -16,6 +16,15 @@
 
 ### Added
 
+- **xlsb (BIFF12) is read.** `reader::read` picks it up by the parts inside
+  the package, not by the extension, so a renamed file still opens; the wasm
+  `Book.read` gets it for free. Values, shared strings, formulas (shared and
+  array ones expanded), defined names, number formats, column widths, merges
+  and sheet visibility come across; fonts, fills and borders do not. Checked
+  against the same workbook saved as xlsx: 3769 cells agree, formula for
+  formula. See `docs/formats.md` for the two kinds of formula it leaves as
+  their cached value.
+
 - Number formats read the Cyrillic date codes a Russian Excel is typed in:
   `ТЕКСТ(A1;"ДД.ММ.ГГГГ")` is a date, as it is in Excel, rather than the
   letters `ДД` beside the serial number. Month and weekday names now match

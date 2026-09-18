@@ -8,6 +8,8 @@ use crate::model::Spreadsheet;
 pub enum Format {
     /// xlsx, the OOXML package.
     Xlsx,
+    /// xlsb, the same package with binary parts.
+    Xlsb,
     /// BIFF8, the old binary Excel file.
     Xls,
     /// `OpenDocument` spreadsheet.
@@ -30,6 +32,7 @@ impl Format {
     pub fn from_extension(extension: &str) -> Option<Self> {
         Some(match extension.to_ascii_lowercase().as_str() {
             "xlsx" | "xlsm" | "xltx" | "xltm" => Self::Xlsx,
+            "xlsb" => Self::Xlsb,
             "xls" | "xlt" => Self::Xls,
             "ods" | "ots" => Self::Ods,
             "csv" | "txt" | "tsv" => Self::Csv,
@@ -85,6 +88,22 @@ impl Format {
     }
 }
 
+/// Which of the two binary-or-XML packages an archive is.
+///
+/// xlsx and xlsb are the same zip with the same part names bar the extension,
+/// and neither says so in its first bytes, so the archive's own listing is
+/// what tells them apart.
+fn zip_flavour<R: std::io::Read + std::io::Seek>(source: R) -> Format {
+    let Ok(zip) = zip::ZipArchive::new(source) else {
+        return Format::Xlsx;
+    };
+    if super::zipxml::resolve(&zip, "xl/workbook.bin").is_some() {
+        Format::Xlsb
+    } else {
+        Format::Xlsx
+    }
+}
+
 /// Where `needle` sits in `haystack`.
 fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
@@ -106,6 +125,7 @@ pub fn read(path: impl AsRef<std::path::Path>) -> Result<Spreadsheet> {
     let format = format_of(path)?;
     match format {
         Format::Xlsx => super::xlsx::read_xlsx(path),
+        Format::Xlsb => super::xlsb::read_xlsb(path),
         Format::Xls => super::xls::read_xls(path),
         Format::Ods => super::ods::read_ods(path),
         Format::Csv => super::csv::read_csv(path),
@@ -162,6 +182,13 @@ pub fn read_bytes_limited_with(
 ) -> Result<Spreadsheet> {
     let path = name.map(std::path::Path::new);
     let format = Format::from_signature(bytes)
+        .map(|format| {
+            if format == Format::Xlsx {
+                zip_flavour(std::io::Cursor::new(bytes))
+            } else {
+                format
+            }
+        })
         .or_else(|| {
             path.and_then(std::path::Path::extension)
                 .and_then(std::ffi::OsStr::to_str)
@@ -172,6 +199,9 @@ pub fn read_bytes_limited_with(
     match format {
         Format::Xlsx => {
             super::xlsx::read_xlsx_from_with(std::io::Cursor::new(bytes), max_expanded, options)
+        }
+        Format::Xlsb => {
+            super::xlsb::read_xlsb_from_limited(std::io::Cursor::new(bytes), max_expanded)
         }
         Format::Xls => super::xls::read_xls_from(bytes),
         Format::Ods => super::ods::read_ods_from(std::io::Cursor::new(bytes)),
@@ -205,7 +235,12 @@ pub fn format_of(path: impl AsRef<std::path::Path>) -> Result<Format> {
     let mut file = std::fs::File::open(path).map_err(|e| Error::Io(e.to_string()))?;
     let read = file.read(&mut head).map_err(|e| Error::Io(e.to_string()))?;
 
-    Ok(Format::from_signature(&head[..read])
+    let signature = Format::from_signature(&head[..read]);
+    if signature == Some(Format::Xlsx) {
+        let file = std::fs::File::open(path).map_err(|e| Error::Io(e.to_string()))?;
+        return Ok(zip_flavour(std::io::BufReader::new(file)));
+    }
+    Ok(signature
         .or_else(|| {
             path.extension()
                 .and_then(std::ffi::OsStr::to_str)

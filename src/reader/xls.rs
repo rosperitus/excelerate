@@ -523,7 +523,10 @@ impl<'a> Reader<'a> {
         let length = usize::from(u16_at(data, 20));
         let tokens = data.get(22..22 + length)?;
         let extra = data.get(22 + length..).unwrap_or(&[]);
-        let base = Base { row, col };
+        let base = Base {
+            row: row.into(),
+            col: col.into(),
+        };
         if tokens.first() == Some(&0x01) {
             let first = (u16_at(tokens, 1), u16_at(tokens, 3));
             let (tokens, extra, relative) = self.shared.get(&first)?;

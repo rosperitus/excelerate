@@ -9,11 +9,15 @@ drops on the floor, and where the sharp edges are.
 
 | Signature | Format |
 |---|---|
-| `PK...` | xlsx, or ods when the uncompressed `mimetype` says so |
+| `PK...` | xlsx, xlsb or ods - the parts inside decide |
 | `D0 CF 11 E0` | xls (compound file) |
 | `1f 8b` | Gnumeric (gzip) |
 | `ID;P` | SYLK |
 | `<` | SpreadsheetML 2003 or HTML |
+
+xlsx and xlsb are the same zip with the same part names, so neither gives
+itself away in its first bytes; the archive's listing does - `xl/workbook.bin`
+means xlsb.
 
 Only when the bytes stay quiet does the extension get a say, and text with an
 unknown extension is read as CSV. An extension that lies loses to the
@@ -167,6 +171,32 @@ The catch nobody escapes: **a page has no cell addresses.** The grid always
 starts at `A1`, so a sheet whose used range began at row 5 comes back shifted
 up. Images, comments and document properties are not carried; relative CSS
 units (`em`, `%`) and `direction` are ignored.
+
+## xlsb - BIFF12
+
+Read-only. The xlsx package with its XML parts replaced by record streams: a
+record is a number, a length and that many bytes, both numbers written seven
+bits at a time.
+
+What comes across: values of every type, shared strings, formulas (decompiled
+from their tokens, shared and array formulas expanded onto every cell that
+uses them), defined names, number formats, column widths, merges and sheet
+visibility. What does not: fonts, fills, borders and alignment, and everything
+built on parts this reader does not open - tables, pivot tables, drawings,
+conditional formatting.
+
+Two sharp edges:
+
+- **Functions numbered past the BIFF8 table.** xlsb numbers the analysis
+  add-in functions and the ones Excel 2007 added (`IFERROR`, `COUNTIFS`,
+  `AVERAGEIF`). Those numbers are known; a number outside both tables leaves
+  the formula unread and its cached value standing, which is true as far as
+  it goes.
+- **Structured references** (`Sales[Amount]`) are a token kind of their own
+  and are not decompiled yet, so such a formula also keeps its cached value.
+- A function Excel itself does not know is written `_xludf.MAXIFS` in xlsx and
+  bare in xlsb. Bare is what you get here - this crate's own engine knows
+  `MAXIFS` under that name.
 
 ## SYLK, Gnumeric, SpreadsheetML 2003
 
