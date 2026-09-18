@@ -51,6 +51,15 @@
 
 ### Fixed
 
+- A full recalculation computed most formulas twice. The pass computed them
+  in dependency order but did not keep what each one worked out, so the next
+  formula reading that cell computed it again from scratch. COIN's 651,614
+  formulas went from 16.9 s to 14.6 s on one thread with this alone.
+- A recalculation of more than twenty thousand formulas now parses them and
+  computes them on up to eight threads, in waves of formulas that read
+  nothing of each other: COIN takes 8.2 s instead of 16.9 s, cell for cell
+  the same values. A caller's own functions, a smaller workbook and
+  WebAssembly keep the single-threaded pass.
 - Writing a workbook with a changed chart, picture, shape, comment or pivot
   copied every cell of it first. The cells of a sheet are now shared by a
   clone until one of them changes: saving a million-cell export with one new

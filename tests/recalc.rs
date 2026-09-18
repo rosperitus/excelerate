@@ -448,3 +448,38 @@ fn implicit_intersection_reaches_operators_and_parameters() {
     ));
     assert_eq!(cached(&book, 0, "I1"), Some(-12.0));
 }
+
+/// Past twenty thousand formulas a pass runs on several threads, each with an
+/// engine of its own. What it works out has to be what one thread does.
+#[test]
+fn a_book_large_enough_for_threads_adds_up_the_same() {
+    use excelerate::coordinate::{Col, Row};
+
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    let cell = |col: u32, row: u32| CellRef::new(Col::new(col).unwrap(), Row::new(row).unwrap());
+    // Four columns over eight thousand rows: a constant, a chain of three
+    // across it, and a column read by a total at the bottom of each run.
+    let rows = 8_000;
+    for row in 0..rows {
+        sheet.set(cell(0, row), CellValue::Number(f64::from(row) + 1.0));
+        let r = row + 1;
+        sheet.set(cell(1, row), formula(&format!("A{r}*2")));
+        sheet.set(cell(2, row), formula(&format!("B{r}+A{r}")));
+        sheet.set(cell(3, row), formula(&format!("SUM(A{r}:C{r})")));
+    }
+    sheet.set(cell(4, 0), formula(&format!("SUM(D1:D{rows})")));
+    book.add_sheet(sheet).unwrap();
+
+    let computed = recalculate(&mut book, None, &Options::default());
+    assert_eq!(computed, (rows * 3 + 1) as usize);
+    for row in [0, 1, 4_999, rows - 1] {
+        let r = row + 1;
+        let a = f64::from(row) + 1.0;
+        assert_eq!(cached(&book, 0, &format!("B{r}")), Some(a * 2.0));
+        assert_eq!(cached(&book, 0, &format!("C{r}")), Some(a * 3.0));
+        assert_eq!(cached(&book, 0, &format!("D{r}")), Some(a * 6.0));
+    }
+    let total = f64::from(rows) * (f64::from(rows) + 1.0) / 2.0 * 6.0;
+    assert_eq!(cached(&book, 0, "E1"), Some(total));
+}

@@ -64,7 +64,7 @@ fn bare(name: &str) -> String {
 /// A value as rows of cells.
 fn grid(value: Value) -> Vec<Vec<Value>> {
     match value {
-        Value::Array(rows) => std::rc::Rc::unwrap_or_clone(rows),
+        Value::Array(rows) => std::sync::Arc::unwrap_or_clone(rows),
         other => vec![vec![other]],
     }
 }

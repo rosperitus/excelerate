@@ -1306,7 +1306,7 @@ fn aggregate_by_code(
 fn without_errors(value: Value) -> Value {
     match value {
         Value::Array(rows) => Value::array(
-            std::rc::Rc::unwrap_or_clone(rows)
+            std::sync::Arc::unwrap_or_clone(rows)
                 .into_iter()
                 .map(|row| {
                     row.into_iter()

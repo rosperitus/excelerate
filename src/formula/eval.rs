@@ -15,7 +15,7 @@ use crate::formula::value::{Value, compare};
 use crate::model::{CellValue, Spreadsheet};
 use crate::progress::{Options, Stage};
 use std::collections::{HashMap, HashSet};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// Where a formula sits: which sheet it belongs to and which cell holds it.
 ///
@@ -101,13 +101,51 @@ pub struct Engine<'a> {
     /// Formula texts already parsed that are read again and again: what a
     /// defined name stands for, and the text `INDIRECT` is handed. `None` for
     /// a text that does not parse.
-    parsed: HashMap<String, Option<Rc<Expr>>>,
+    parsed: HashMap<String, Option<Arc<Expr>>>,
     /// Whether a range given where one value goes narrows to one cell: on
     /// while a formula that is not an array formula runs.
     implicit: bool,
     /// The top left cells of the workbook's array formulas, built on first
     /// use.
     array_starts: Option<HashSet<(usize, CellRef)>>,
+    /// Results other engines finished in a parallel pass, looked at before a
+    /// formula cell is computed here.
+    shared: Option<&'a Shared>,
+}
+
+/// The results of a parallel pass, one slot per formula of the index, which
+/// every engine of the pass reads and the one that computes a formula fills.
+pub(crate) struct Shared {
+    slots: HashMap<(usize, CellRef), usize>,
+    values: Vec<std::sync::OnceLock<Value>>,
+    /// Rectangles read, as `Engine::ranges` keeps them for one engine: a
+    /// table sixteen engines each read into a copy of their own was sixteen
+    /// copies.
+    ranges: std::sync::RwLock<HashMap<(usize, Range), Value>>,
+}
+
+impl Shared {
+    fn slot(&self, sheet: usize, at: CellRef) -> Option<usize> {
+        self.slots.get(&(sheet, at)).copied()
+    }
+
+    fn range(&self, sheet: usize, range: Range) -> Option<Value> {
+        self.ranges.read().ok()?.get(&(sheet, range)).cloned()
+    }
+
+    fn keep_range(&self, sheet: usize, range: Range, value: &Value) {
+        if let Ok(mut ranges) = self.ranges.write() {
+            ranges
+                .entry((sheet, range))
+                .or_insert_with(|| value.clone());
+        }
+    }
+
+    fn get(&self, sheet: usize, at: CellRef) -> Option<&Value> {
+        self.slots
+            .get(&(sheet, at))
+            .and_then(|&slot| self.values[slot].get())
+    }
 }
 
 impl<'a> Engine<'a> {
@@ -130,6 +168,7 @@ impl<'a> Engine<'a> {
             parsed: HashMap::new(),
             implicit: false,
             array_starts: None,
+            shared: None,
         }
     }
 
@@ -387,6 +426,7 @@ impl<'a> Engine<'a> {
     }
 
     fn spilled_once(&mut self, sheet: usize, at: CellRef) -> Value {
+        let hits = self.cycle_hits;
         if let Some(v) = self.cache.get(&(sheet, at)) {
             return v.clone();
         }
@@ -405,6 +445,11 @@ impl<'a> Engine<'a> {
             }
             Some(CellValue::Bool(b)) => Value::Bool(b),
             Some(CellValue::Error(e)) => Value::Error(e),
+            Some(CellValue::Formula { .. })
+                if let Some(done) = self.shared.and_then(|sh| sh.get(sheet, at)) =>
+            {
+                done.clone()
+            }
             Some(CellValue::Formula { formula, .. }) => {
                 // A formula that refers back to its own cell would recurse for
                 // ever. Excel answers 0 and warns; making it visible is more
@@ -426,9 +471,30 @@ impl<'a> Engine<'a> {
             }
         };
         if self.deferred.is_none() {
-            self.cache.insert((sheet, at), value.clone());
+            // In a parallel pass a formula's result goes where every engine
+            // sees it, and not into this one's cache as well.
+            match self
+                .shared
+                .and_then(|sh| sh.slot(sheet, at).map(|slot| (sh, slot)))
+            {
+                Some((sh, slot)) if self.cycle_hits == hits => {
+                    let _ = sh.values[slot].set(value.clone());
+                }
+                _ => {
+                    self.cache.insert((sheet, at), value.clone());
+                }
+            }
         }
         value
+    }
+
+    /// Keeps what a formula cell worked out to, computed from the top of a
+    /// pass, for the formulas after it that read the cell. Without this each
+    /// of them computed it again.
+    pub(crate) fn remember(&mut self, sheet: usize, at: CellRef, value: &Value) {
+        if self.deferred.is_none() {
+            self.cache.insert((sheet, at), value.clone());
+        }
     }
 
     /// Computes an already parsed expression.
@@ -503,7 +569,7 @@ impl<'a> Engine<'a> {
         if args.len() != lambda.params.len() {
             return Value::Error(CellError::Value);
         }
-        let lambda = std::rc::Rc::clone(lambda);
+        let lambda = std::sync::Arc::clone(lambda);
         // What the lambda captured where it was written comes first, so its
         // own parameters shadow it.
         let mut bindings = lambda.captured.clone();
@@ -594,11 +660,11 @@ impl<'a> Engine<'a> {
     }
 
     /// A formula text parsed once however often it is asked for.
-    pub(crate) fn parsed(&mut self, text: &str) -> Option<Rc<Expr>> {
+    pub(crate) fn parsed(&mut self, text: &str) -> Option<Arc<Expr>> {
         if let Some(expr) = self.parsed.get(text) {
             return expr.clone();
         }
-        let expr = parse(text).ok().map(Rc::new);
+        let expr = parse(text).ok().map(Arc::new);
         self.parsed.insert(text.to_owned(), expr.clone());
         expr
     }
@@ -725,6 +791,9 @@ impl<'a> Engine<'a> {
         if let Some(value) = self.ranges.get(&(index, range)) {
             return value.clone();
         }
+        if let Some(value) = self.shared.and_then(|sh| sh.range(index, range)) {
+            return value;
+        }
         let hits = self.cycle_hits;
         let rows = (range.start.row.index()..=range.end.row.index())
             .filter_map(Row::new)
@@ -736,8 +805,13 @@ impl<'a> Engine<'a> {
             })
             .collect();
         let value = Value::array(rows);
-        if self.cycle_hits == hits {
-            self.ranges.insert((index, range), value.clone());
+        if self.cycle_hits == hits && self.deferred.is_none() {
+            match self.shared {
+                Some(sh) => sh.keep_range(index, range, &value),
+                None => {
+                    self.ranges.insert((index, range), value.clone());
+                }
+            }
         }
         value
     }
@@ -883,7 +957,7 @@ impl<'a> Engine<'a> {
         let mut rows = Vec::new();
         for v in areas {
             match v {
-                Value::Array(r) => rows.extend(std::rc::Rc::unwrap_or_clone(r)),
+                Value::Array(r) => rows.extend(std::sync::Arc::unwrap_or_clone(r)),
                 other => rows.push(vec![other]),
             }
         }
@@ -1104,18 +1178,52 @@ pub fn recalculate(book: &mut Spreadsheet, sheet: Option<usize>, options: &Optio
             .iter()
             .map(|&i| (deps.formulas[i].sheet, deps.formulas[i].at))
             .collect();
+        let (levels, tail) = deps.levels(&indexed);
+        let threads = workers(indexed.len(), options);
+        let shared = (threads > 1).then(|| Shared {
+            slots: indexed
+                .iter()
+                .enumerate()
+                .map(|(slot, &i)| ((deps.formulas[i].sheet, deps.formulas[i].at), slot))
+                .collect(),
+            values: indexed.iter().map(|_| std::sync::OnceLock::new()).collect(),
+            ranges: std::sync::RwLock::default(),
+        });
         let mut engine = match options.functions() {
             Some(custom) => Engine::with_functions(book, custom),
             None => Engine::new(book),
         };
         let total = indexed.len();
-        for (done, i) in deps.ordered(&indexed).into_iter().enumerate() {
+        let mut done = 0;
+        let mut compute = |engine: &mut Engine<'_>, i: usize, results: &mut Vec<_>| {
             options.report(Stage::Recalculating, done, Some(total), "");
+            done += 1;
             let Node {
                 sheet: index, at, ..
             } = deps.formulas[i];
             let value = engine.eval_tree(Origin::new(index, at), &trees[i]);
+            engine.remember(index, at, &value);
             results.push((index, at, value));
+        };
+        if let Some(shared) = &shared {
+            parallel(
+                book, &deps, &trees, &indexed, &levels, shared, threads, options,
+            );
+            // What is left goes round a cycle, and only one engine can see
+            // that happen.
+            engine.shared = Some(shared);
+            for (slot, &i) in indexed.iter().enumerate() {
+                if let Some(value) = shared.values[slot].get() {
+                    results.push((deps.formulas[i].sheet, deps.formulas[i].at, value.clone()));
+                }
+            }
+            for &i in &tail {
+                compute(&mut engine, i, &mut results);
+            }
+        } else {
+            for i in levels.into_iter().flatten().chain(tail) {
+                compute(&mut engine, i, &mut results);
+            }
         }
         for (index, s) in book.sheets().iter().enumerate() {
             if sheet.is_some_and(|only| only != index) {
@@ -1191,6 +1299,85 @@ pub fn recalculate_cell_with(
     true
 }
 
+/// How many threads a pass over `formulas` formulas should use: one for a
+/// small book, for a caller's functions (which need not be safe to share), and
+/// in WebAssembly, which has no threads.
+fn workers(formulas: usize, options: &Options<'_>) -> usize {
+    // Below this a pass is quicker than starting the threads.
+    const MIN_PARALLEL: usize = 20_000;
+    if cfg!(target_arch = "wasm32") || formulas < MIN_PARALLEL || options.functions().is_some() {
+        return 1;
+    }
+    // Past eight the engines spend more time on each other than on formulas:
+    // COIN computes slower on sixteen than on eight.
+    std::thread::available_parallelism().map_or(1, |n| n.get().min(8))
+}
+
+/// Computes the waves of formulas on `threads` threads, each with an engine of
+/// its own, into `shared`.
+///
+/// A wave with few formulas is computed by the calling thread alone while the
+/// others wait for the next large one: waking eight threads for one formula
+/// costs more than the formula.
+#[expect(clippy::too_many_arguments, reason = "the parts of one pass, borrowed")]
+fn parallel(
+    book: &Spreadsheet,
+    deps: &Dependencies,
+    trees: &[Expr],
+    indexed: &[usize],
+    levels: &[Vec<usize>],
+    shared: &Shared,
+    threads: usize,
+    options: &Options<'_>,
+) {
+    use std::sync::Barrier;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    const MIN_WAVE: usize = 256;
+    let slot_of: HashMap<usize, usize> = indexed
+        .iter()
+        .enumerate()
+        .map(|(slot, &i)| (i, slot))
+        .collect();
+    let cursors: Vec<AtomicUsize> = levels.iter().map(|_| AtomicUsize::new(0)).collect();
+    let done = AtomicUsize::new(0);
+    let barrier = Barrier::new(threads);
+    let total = indexed.len();
+    let work = |main: bool, report: &dyn Fn(usize)| {
+        let mut engine = Engine::new(book);
+        engine.shared = Some(shared);
+        for (level, wave) in levels.iter().enumerate() {
+            let large = wave.len() >= MIN_WAVE;
+            if !large && !main {
+                continue;
+            }
+            if large {
+                barrier.wait();
+            }
+            loop {
+                let k = cursors[level].fetch_add(1, Ordering::Relaxed);
+                let Some(&i) = wave.get(k) else { break };
+                let Node { sheet, at, .. } = deps.formulas[i];
+                let value = engine.eval_tree(Origin::new(sheet, at), &trees[i]);
+                let _ = shared.values[slot_of[&i]].set(value);
+                let finished = done.fetch_add(1, Ordering::Relaxed);
+                report(finished);
+            }
+            if large {
+                // Everyone finishes the wave before the next one starts.
+                barrier.wait();
+            }
+        }
+    };
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            scope.spawn(|| work(false, &|_| {}));
+        }
+        work(true, &|finished| {
+            options.report(Stage::Recalculating, finished, Some(total), "");
+        });
+    });
+}
+
 /// A computed value as a cell holds it: an array shows its top-left value,
 /// and a function, which no cell can hold, the error Excel shows instead.
 pub(crate) fn stored(value: &Value) -> CellValue {
@@ -1261,13 +1448,42 @@ impl Dependencies {
     fn of_with_trees(book: &Spreadsheet) -> (Self, Vec<Expr>) {
         let mut formulas = Vec::new();
         let mut trees = Vec::new();
-        for (index, sheet) in book.sheets().iter().enumerate() {
-            for (at, cell) in sheet.iter() {
-                if let Some((node, tree)) = node_of(book, index, at, &cell.value) {
-                    formulas.push(node);
-                    trees.push(tree);
-                }
-            }
+        let cells: Vec<(usize, CellRef, &CellValue)> = book
+            .sheets()
+            .iter()
+            .enumerate()
+            .flat_map(|(index, sheet)| {
+                sheet
+                    .iter()
+                    .filter(|(_, cell)| matches!(cell.value, CellValue::Formula { .. }))
+                    .map(move |(at, cell)| (index, at, &cell.value))
+            })
+            .collect();
+        // Parsing is most of what building the index costs, and every formula
+        // parses on its own, so the cells are split between threads.
+        let parse_chunk = |chunk: &[(usize, CellRef, &CellValue)]| {
+            let mut refs = Refs::new(book);
+            chunk
+                .iter()
+                .filter_map(|&(index, at, value)| node_of(&mut refs, index, at, value))
+                .collect::<Vec<_>>()
+        };
+        let threads = workers(cells.len(), &Options::default());
+        let parts: Vec<Vec<(Node, Expr)>> = if threads > 1 {
+            let size = cells.len().div_ceil(threads);
+            std::thread::scope(|scope| {
+                let handles: Vec<_> = cells
+                    .chunks(size)
+                    .map(|chunk| scope.spawn(move || parse_chunk(chunk)))
+                    .collect();
+                handles.into_iter().filter_map(|h| h.join().ok()).collect()
+            })
+        } else {
+            vec![parse_chunk(&cells)]
+        };
+        for (node, tree) in parts.into_iter().flatten() {
+            formulas.push(node);
+            trees.push(tree);
         }
         (Self { formulas }, trees)
     }
@@ -1290,7 +1506,7 @@ impl Dependencies {
         self.formulas
             .retain(|node| node.sheet != sheet || node.at != at);
         if let Some(value) = book.sheet(sheet).and_then(|s| s.get(at)).map(|c| &c.value)
-            && let Some((node, _)) = node_of(book, sheet, at, value)
+            && let Some((node, _)) = node_of(&mut Refs::new(book), sheet, at, value)
         {
             self.formulas.push(node);
         }
@@ -1307,6 +1523,13 @@ impl Dependencies {
     /// Formulas caught in a cycle cannot be ordered; they are left at the end,
     /// where the engine answers them `#REF!` the way it always has.
     fn ordered(&self, nodes: &[usize]) -> Vec<usize> {
+        let (levels, tail) = self.levels(nodes);
+        levels.into_iter().flatten().chain(tail).collect()
+    }
+
+    /// The formulas among `nodes` in waves, each after the waves it reads,
+    /// and the ones no wave could take - the formulas on a cycle - apart.
+    fn levels(&self, nodes: &[usize]) -> (Vec<Vec<usize>>, Vec<usize>) {
         let inside: HashMap<(usize, CellRef), usize> = nodes
             .iter()
             .map(|&i| ((self.formulas[i].sheet, self.formulas[i].at), i))
@@ -1359,35 +1582,47 @@ impl Dependencies {
             }
         }
 
-        let mut queue: Vec<usize> = nodes.iter().copied().filter(|i| waiting[i] == 0).collect();
-        // A range with no formula inside is ready from the start.
+        // Kahn's walk in waves: a wave is every formula whose inputs the waves
+        // before it finished, so the formulas of one wave can be computed in
+        // any order, or at the same time.
+        let mut wave: Vec<usize> = nodes.iter().copied().filter(|i| waiting[i] == 0).collect();
         let mut ready: Vec<usize> = (0..range_left.len())
             .filter(|&id| range_left[id] == 0)
             .collect();
-        let mut order = Vec::with_capacity(nodes.len());
-        loop {
+        let mut release = |ready: &mut Vec<usize>, next: &mut Vec<usize>| {
             while let Some(id) = ready.pop() {
                 for &r in &range_readers[id] {
                     if let Some(left) = waiting.get_mut(&r) {
                         *left -= 1;
                         if *left == 0 {
-                            queue.push(r);
+                            next.push(r);
                         }
                     }
                 }
             }
-            let Some(i) = queue.pop() else { break };
-            order.push(i);
-            for &id in member_of.get(&i).into_iter().flatten() {
-                range_left[id] -= 1;
-                if range_left[id] == 0 {
-                    ready.push(id);
+        };
+        release(&mut ready, &mut wave);
+        let mut levels: Vec<Vec<usize>> = Vec::new();
+        while !wave.is_empty() {
+            let mut next = Vec::new();
+            for &i in &wave {
+                for &id in member_of.get(&i).into_iter().flatten() {
+                    range_left[id] -= 1;
+                    if range_left[id] == 0 {
+                        ready.push(id);
+                    }
                 }
             }
+            release(&mut ready, &mut next);
+            levels.push(std::mem::replace(&mut wave, next));
         }
-        let placed: HashSet<usize> = order.iter().copied().collect();
-        order.extend(nodes.iter().copied().filter(|i| !placed.contains(i)));
-        order
+        let placed: HashSet<usize> = levels.iter().flatten().copied().collect();
+        let tail = nodes
+            .iter()
+            .copied()
+            .filter(|i| !placed.contains(i))
+            .collect();
+        (levels, tail)
     }
 
     /// Recomputes every formula that reads one of `changed`, directly or
@@ -1457,7 +1692,9 @@ impl Dependencies {
                 else {
                     continue;
                 };
-                results.push((sheet, at, engine.eval(Origin::new(sheet, at), formula)));
+                let value = engine.eval(Origin::new(sheet, at), formula);
+                engine.remember(sheet, at, &value);
+                results.push((sheet, at, value));
             }
         }
 
@@ -1507,7 +1744,7 @@ fn formulas_in(
 
 /// The index entry for a cell, if it holds a formula that parses.
 fn node_of(
-    book: &Spreadsheet,
+    refs: &mut Refs<'_>,
     sheet: usize,
     at: CellRef,
     value: &CellValue,
@@ -1517,7 +1754,7 @@ fn node_of(
     };
     let expr = parse(formula).ok()?;
     let (mut reads, mut always) = (Vec::new(), false);
-    collect_refs(&expr, sheet, book, &mut reads, &mut always);
+    collect_refs(&expr, sheet, refs, &mut reads, &mut always);
     Some((
         Node {
             sheet,
@@ -1551,12 +1788,17 @@ pub fn recalculate_from_with(
 }
 
 /// Every cell range an expression reads, with the sheet each one lives on.
-/// `always` is set if the formula reads a defined name (which is not followed)
-/// or calls a volatile function: either way `reads` does not describe it.
+/// `always` is set if the formula reads a defined name or calls a volatile
+/// function: either way `reads` may not describe it.
+///
+/// A name that stands for ranges, and `INDIRECT` handed a literal text, add
+/// what they point at as well. The formula stays `always`, but the order of a
+/// pass knows to compute those cells first; without it every engine of a
+/// parallel pass computed them again for itself.
 fn collect_refs(
     expr: &Expr,
     own_sheet: usize,
-    book: &Spreadsheet,
+    refs: &mut Refs<'_>,
     out: &mut Vec<(usize, Range)>,
     always: &mut bool,
 ) {
@@ -1564,7 +1806,8 @@ fn collect_refs(
         Expr::Range { sheet, range, .. } => {
             let index = match sheet {
                 None => Some(own_sheet),
-                Some(name) => book
+                Some(name) => refs
+                    .book
                     .sheets()
                     .iter()
                     .position(|s| same_name(s.title(), name)),
@@ -1573,36 +1816,124 @@ fn collect_refs(
                 out.push((index, *range));
             }
         }
+        Expr::Name(name) => {
+            *always = true;
+            out.extend(refs.name(own_sheet, name));
+        }
         // A table names its cells rather than pointing at them, and where
         // those cells are is a property of the table, not of the formula. So
         // the formula is recalculated whatever moved, the same as one reading
         // a defined name.
-        Expr::Name(_) | Expr::Structured(_) => *always = true,
-        Expr::Unary(_, inner) => collect_refs(inner, own_sheet, book, out, always),
+        Expr::Structured(_) => *always = true,
+        Expr::Unary(_, inner) => collect_refs(inner, own_sheet, refs, out, always),
         Expr::Binary(_, a, b) => {
-            collect_refs(a, own_sheet, book, out, always);
-            collect_refs(b, own_sheet, book, out, always);
+            collect_refs(a, own_sheet, refs, out, always);
+            collect_refs(b, own_sheet, refs, out, always);
         }
         Expr::Call { name, args } => {
-            if VOLATILE.contains(&name.to_ascii_uppercase().as_str()) {
+            let upper = name.to_ascii_uppercase();
+            if VOLATILE.contains(&upper.as_str()) {
                 *always = true;
             }
+            if upper == "INDIRECT"
+                && args.len() == 1
+                && let Some(text) = refs.text_of(own_sheet, &args[0])
+                && let Ok(target) = parse(&text)
+                && matches!(target, Expr::Range { .. } | Expr::Name(_))
+            {
+                collect_refs(&target, own_sheet, refs, out, always);
+            }
             for arg in args {
-                collect_refs(arg, own_sheet, book, out, always);
+                collect_refs(arg, own_sheet, refs, out, always);
             }
         }
         Expr::Apply { callee, args } => {
-            collect_refs(callee, own_sheet, book, out, always);
+            collect_refs(callee, own_sheet, refs, out, always);
             for arg in args {
-                collect_refs(arg, own_sheet, book, out, always);
+                collect_refs(arg, own_sheet, refs, out, always);
             }
         }
         Expr::Array(rows) => {
             for cell in rows.iter().flatten() {
-                collect_refs(cell, own_sheet, book, out, always);
+                collect_refs(cell, own_sheet, refs, out, always);
             }
         }
         Expr::Number(_) | Expr::Text(_) | Expr::Bool(_) | Expr::Error(_) | Expr::Missing => {}
+    }
+}
+
+/// The workbook a dependency walk reads, and what its names were found to
+/// point at, so seven hundred names are not parsed again for every formula.
+pub(crate) struct Refs<'b> {
+    book: &'b Spreadsheet,
+    names: HashMap<(usize, String), Vec<(usize, Range)>>,
+    depth: usize,
+}
+
+impl<'b> Refs<'b> {
+    fn new(book: &'b Spreadsheet) -> Self {
+        Self {
+            book,
+            names: HashMap::new(),
+            depth: 0,
+        }
+    }
+
+    /// The text an argument spells before anything is computed: a literal, or
+    /// what a single cell holds - its cached result, if it is a formula. Only
+    /// the order of a pass rests on it, so a stale cache costs work, never a
+    /// wrong answer.
+    fn text_of(&self, own_sheet: usize, arg: &Expr) -> Option<String> {
+        match arg {
+            Expr::Text(text) => Some(text.clone()),
+            Expr::Range { sheet, range, .. } if range.start == range.end => {
+                let index = match sheet {
+                    None => own_sheet,
+                    Some(name) => self
+                        .book
+                        .sheets()
+                        .iter()
+                        .position(|s| same_name(s.title(), name))?,
+                };
+                match &self.book.sheet(index)?.get(range.start)?.value {
+                    CellValue::Text(text) => Some(text.to_string()),
+                    CellValue::Formula { cached, .. } => match cached.as_deref()? {
+                        CellValue::Text(text) => Some(text.to_string()),
+                        _ => None,
+                    },
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// The ranges a defined name stands for, read from the sheet `sheet`.
+    fn name(&mut self, sheet: usize, name: &str) -> Vec<(usize, Range)> {
+        // A name that names a name is followed a few steps, not forever.
+        const MAX_NAME_DEPTH: usize = 8;
+        let key = (sheet, name.to_lowercase());
+        if let Some(found) = self.names.get(&key) {
+            return found.clone();
+        }
+        if self.depth >= MAX_NAME_DEPTH {
+            return Vec::new();
+        }
+        let defined = self
+            .book
+            .defined_names
+            .iter()
+            .filter(|n| n.name.eq_ignore_ascii_case(name) || n.name.to_lowercase() == key.1)
+            .min_by_key(|n| n.sheet != Some(sheet));
+        let mut out = Vec::new();
+        if let Some(expr) = defined.and_then(|n| parse(&n.formula).ok()) {
+            self.depth += 1;
+            let mut always = false;
+            collect_refs(&expr, sheet, self, &mut out, &mut always);
+            self.depth -= 1;
+        }
+        self.names.insert(key, out.clone());
+        out
     }
 }
 

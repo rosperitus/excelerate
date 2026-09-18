@@ -11,7 +11,7 @@ use crate::error::CellError;
 use crate::formula::eval::{Engine, Origin};
 use crate::formula::parser::Expr;
 use crate::formula::value::{Lambda, Value};
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// `LAMBDA([param, ...], body)` - a function written in the formula language.
 ///
@@ -32,7 +32,7 @@ pub fn lambda(engine: &mut Engine<'_>, _origin: Origin, args: &[Expr]) -> Value 
             _ => return Value::Error(CellError::Value),
         }
     }
-    Value::Lambda(Rc::new(Lambda {
+    Value::Lambda(Arc::new(Lambda {
         params: names,
         body: body.clone(),
         captured: engine.captured(),

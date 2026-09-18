@@ -7,7 +7,7 @@ use crate::formula::parser::Expr;
 use crate::formula::value::{Value, compare};
 use crate::{CellRef, Col, Range, Row};
 use std::cmp::Ordering;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// `ROW([reference])` - the row of the reference, or of the cell asking.
 ///
@@ -357,18 +357,18 @@ fn table_lookup(args: &[Arg], vertical: bool) -> Value {
 /// A value as a rectangle of its own, for a function that reorders or
 /// rebuilds the rows.
 fn owned_grid(v: &Value) -> Vec<Vec<Value>> {
-    Rc::unwrap_or_clone(as_grid(v))
+    Arc::unwrap_or_clone(as_grid(v))
 }
 
 /// A value as a rectangle, so a scalar and a range can be walked the same way.
 ///
 /// Shared with the value, not copied: `INDEX` picking one cell out of a
 /// table of forty thousand must not copy the forty thousand. A function that
-/// reorders the rows takes its own copy with [`Rc::unwrap_or_clone`].
-fn as_grid(v: &Value) -> Rc<Vec<Vec<Value>>> {
+/// reorders the rows takes its own copy with [`Arc::unwrap_or_clone`].
+fn as_grid(v: &Value) -> Arc<Vec<Vec<Value>>> {
     match v {
-        Value::Array(rows) => Rc::clone(rows),
-        other => Rc::new(vec![vec![other.clone()]]),
+        Value::Array(rows) => Arc::clone(rows),
+        other => Arc::new(vec![vec![other.clone()]]),
     }
 }
 

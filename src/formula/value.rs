@@ -3,7 +3,7 @@
 
 use crate::error::CellError;
 use crate::formula::parser::Expr;
-use std::rc::Rc;
+use std::sync::Arc;
 
 /// A function written in the formula language itself, as `LAMBDA` builds one.
 ///
@@ -39,21 +39,21 @@ pub enum Value {
     /// Shared rather than owned: a range is read once and handed to every
     /// formula that asks for it, and `INDEX(Data,ROW(),1)` down forty thousand
     /// rows must not copy the whole of `Data` forty thousand times. Use
-    /// [`Value::array`] to make one and [`Rc::unwrap_or_clone`] to take the
+    /// [`Value::array`] to make one and [`Arc::unwrap_or_clone`] to take the
     /// rows out.
-    Array(Rc<Vec<Vec<Value>>>),
+    Array(Arc<Vec<Vec<Value>>>),
     /// A function, which `LAMBDA` makes and `MAP` and its kin call.
     ///
     /// A cell cannot hold one: it is a value only while a formula is running,
     /// and a formula that answers with one shows `#CALC!`, as Excel does.
-    Lambda(Rc<Lambda>),
+    Lambda(Arc<Lambda>),
 }
 
 impl Value {
     /// An array value from its rows.
     #[must_use]
     pub fn array(rows: Vec<Vec<Self>>) -> Self {
-        Self::Array(Rc::new(rows))
+        Self::Array(Arc::new(rows))
     }
 }
 
@@ -68,7 +68,7 @@ impl PartialEq for Value {
             (Self::Bool(a), Self::Bool(b)) => a == b,
             (Self::Error(a), Self::Error(b)) => a == b,
             (Self::Array(a), Self::Array(b)) => a == b,
-            (Self::Lambda(a), Self::Lambda(b)) => Rc::ptr_eq(a, b),
+            (Self::Lambda(a), Self::Lambda(b)) => Arc::ptr_eq(a, b),
             _ => false,
         }
     }
