@@ -6,9 +6,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use excelerate::model::{CellValue, Spreadsheet};
+use excelerate::model::autofilter::{ColumnFilter, CustomFilter, FilterOperator};
+use excelerate::model::{CellValue, PanePosition, PaneState, Spreadsheet};
 use excelerate::reader::Format;
-use excelerate::style::NumberFormat;
+use excelerate::style::{NumberFormat, Pattern, StyleId};
+use excelerate::{Range, Row};
 use std::path::Path;
 
 /// The workbook in both formats, or `None` when the corpus is not there.
@@ -72,6 +74,16 @@ fn a_binary_workbook_reads_as_the_same_workbook_saved_as_xml() {
     // where ours has seven. That is a difference between the workbooks, not
     // between the readers, so the comparison stops at the sheets people typed.
     for (mine, theirs) in binary.sheets().iter().zip(xml.sheets()).take(3) {
+        // Row heights and hidden rows, the saved view, and the auto filter
+        // with the one comparison it keeps.
+        assert_eq!(mine.rows, theirs.rows, "{}: rows", theirs.title());
+        assert_eq!(mine.view, theirs.view, "{}: view", theirs.title());
+        assert_eq!(
+            mine.auto_filter,
+            theirs.auto_filter,
+            "{}: auto filter",
+            theirs.title()
+        );
         for (at, cell) in theirs.iter() {
             cells += 1;
             let ours = mine.get(at).map(|c| c.value.clone()).unwrap_or_default();
@@ -109,9 +121,25 @@ fn a_binary_workbook_reads_as_the_same_workbook_saved_as_xml() {
     }
     assert!(cells > 3000, "the workbook has cells: {cells}");
     assert_eq!(unread, 2, "only the two structured references go unread");
+}
 
-    // The style a cell points at carries its number format, which is what
-    // makes one of these numbers a date.
+#[test]
+fn the_sheet_furniture_and_the_styles_read_as_they_do_from_the_xml() {
+    let Some((binary, xml)) = pair() else {
+        return;
+    };
+    // Every cell style, piece for piece: the number format that makes a
+    // number a date, the font, the fill, the borders, the alignment and the
+    // protection bits.
+    assert_eq!(binary.styles.len(), xml.styles.len());
+    for index in 0..binary.styles.len() {
+        let id = StyleId::from_index(u32::try_from(index).unwrap());
+        assert_eq!(
+            binary.styles.get(id),
+            xml.styles.get(id),
+            "cell style {index}"
+        );
+    }
     let ledger = binary.sheet(0).unwrap();
     let dated = ledger
         .get(excelerate::CellRef::parse("B3").unwrap())
@@ -120,6 +148,38 @@ fn a_binary_workbook_reads_as_the_same_workbook_saved_as_xml() {
         binary.styles.get(dated.style).unwrap().number_format,
         NumberFormat::Custom("yyyy\\-mm\\-dd".to_owned())
     );
+    // The pieces of the sheet the assertions above compare in bulk, named
+    // once so a change in them is read as a change and not as a diff.
+    let pane = ledger.view.pane.clone().expect("the header row is frozen");
+    assert_eq!(pane.y_split, 1);
+    assert_eq!(pane.state, PaneState::Frozen);
+    assert_eq!(pane.active_pane, PanePosition::BottomLeft);
+    let filter = ledger.auto_filter.clone().expect("the ledger filters");
+    assert_eq!(filter.range, Range::parse("A1:M241").unwrap());
+    assert_eq!(
+        filter.columns.first().map(|c| (c.col_id, c.filter.clone())),
+        Some((
+            12,
+            Some(ColumnFilter::Custom {
+                and: false,
+                rules: vec![CustomFilter {
+                    operator: FilterOperator::GreaterThan,
+                    value: "1".to_owned(),
+                }],
+            })
+        ))
+    );
+    assert!(
+        ledger.rows[&Row::from_one_based(2).unwrap()].hidden,
+        "row 2 is hidden"
+    );
+
+    let heading = ledger
+        .get(excelerate::CellRef::parse("A1").unwrap())
+        .unwrap();
+    let heading = binary.styles.get(heading.style).unwrap();
+    assert!(heading.font.bold, "the header row is bold");
+    assert_eq!(heading.fill.pattern, Pattern::Solid);
 }
 
 /// The sheet's name, for the message of a failed assertion.

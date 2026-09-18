@@ -19,7 +19,13 @@ use super::xls_formula::{self, Base, Book, BookKind, Context, Dialect};
 use super::xlsx::{find_workbook_part, read_relationships, rels_path_for, resolve};
 use super::zipxml;
 use crate::error::{Error, Result};
-use crate::model::{CellValue, ColumnRun, DefinedName, SheetVisibility, Spreadsheet, Worksheet};
+use crate::model::autofilter::{
+    AutoFilter, ColumnFilter, CustomFilter, FilterColumn, FilterOperator,
+};
+use crate::model::{
+    CellValue, ColumnRun, DefinedName, Pane, PanePosition, PaneState, RowProperties, Selection,
+    SheetView, SheetVisibility, Spreadsheet, Worksheet,
+};
 use crate::shared::date::Epoch;
 use crate::style::{NumberFormat, Style, StyleId, StyleTable};
 use crate::{CellRef, Col, Range, Row};
@@ -42,8 +48,19 @@ mod record {
     pub const FMLA_ERROR: u16 = 11;
     pub const SST_ITEM: u16 = 19;
     pub const FMT: u16 = 44;
+    pub const FONT: u16 = 43;
+    pub const FILL: u16 = 45;
+    pub const BORDER: u16 = 46;
     pub const XF: u16 = 47;
     pub const COL_INFO: u16 = 60;
+    pub const WS_FMT_INFO: u16 = 485;
+    pub const WS_VIEW: u16 = 137;
+    pub const PANE: u16 = 151;
+    pub const SEL: u16 = 152;
+    pub const BEGIN_AFILTER: u16 = 161;
+    pub const BEGIN_FILTER_COLUMN: u16 = 163;
+    pub const BEGIN_CUSTOM_FILTERS: u16 = 172;
+    pub const CUSTOM_FILTER: u16 = 174;
     pub const MERGE_CELL: u16 = 176;
     pub const NAME: u16 = 39;
     pub const BUNDLE_SH: u16 = 156;
@@ -98,10 +115,11 @@ pub fn read_xlsb_from_limited<R: Read + Seek>(source: R, max_expanded: u64) -> R
         Some(r) => shared_strings(&part(&mut zip, &resolve(base, &r.target))?),
         None => Vec::new(),
     };
-    let (styles, formats) = match rels.values().find(|r| r.kind.ends_with("/styles")) {
+    let styles = match rels.values().find(|r| r.kind.ends_with("/styles")) {
         Some(r) => styles(&part(&mut zip, &resolve(base, &r.target))?),
-        None => (StyleTable::default(), Vec::new()),
+        None => StyleTable::default(),
     };
+    let style_count = styles.len();
 
     let bytes = part(&mut zip, &workbook_path)?;
     let header = workbook(&bytes)?;
@@ -121,7 +139,7 @@ pub fn read_xlsb_from_limited<R: Read + Seek>(source: R, max_expanded: u64) -> R
             continue;
         };
         let bytes = part(&mut zip, &resolve(base, &rel.target))?;
-        let mut sheet = worksheet(&bytes, &strings, &formats, &context);
+        let mut sheet = worksheet(&bytes, &strings, style_count, &context);
         sheet.set_title(&entry.name)?;
         sheet.visibility = entry.visibility;
         sheet.shrink_to_fit();
@@ -139,6 +157,9 @@ pub fn read_xlsb_from_limited<R: Read + Seek>(source: R, max_expanded: u64) -> R
 fn part<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Result<Vec<u8>> {
     zipxml::read_bytes(zip, path).map_err(Error::Xlsb)
 }
+
+/// The row height a sheet falls back on, in twips: fifteen points.
+const DEFAULT_ROW_HEIGHT: u16 = 300;
 
 /// The records of a stream: each a number and its bytes.
 struct Records<'a> {
@@ -245,15 +266,16 @@ fn shared_strings(data: &[u8]) -> Vec<CellValue> {
         .collect()
 }
 
-/// The style table of `styles.bin` and, beside it, the number format of every
-/// cell style, which is the only part of a style this reader takes.
+/// The style table of `styles.bin`.
 ///
-// ponytail: number formats only; fonts, fills and borders are each their own
-// record vocabulary, and a reader is asked for dates far more often than for
-// colours. Add them when a caller needs `cellStyle` out of an xlsb.
-fn styles(data: &[u8]) -> (StyleTable, Vec<NumberFormat>) {
+/// The pieces arrive before the entries that point at them - fonts, fills and
+/// borders each in their own run of records, then one `BrtXF` per cell style -
+/// so they are collected and resolved at the end, exactly as the xlsx reader
+/// does with `<fonts>`, `<fills>` and `<borders>`.
+fn styles(data: &[u8]) -> StyleTable {
     let mut custom: HashMap<u16, String> = HashMap::new();
-    let mut formats = Vec::new();
+    let (mut fonts, mut fills, mut borders, mut xfs) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut in_cell_xfs = false;
     for (id, body) in records(data) {
         match id {
@@ -262,31 +284,253 @@ fn styles(data: &[u8]) -> (StyleTable, Vec<NumberFormat>) {
                     custom.insert(index, code);
                 }
             }
+            record::FONT => fonts.push(font(body).unwrap_or_default()),
+            record::FILL => fills.push(fill(body).unwrap_or_default()),
+            record::BORDER => borders.push(cell_borders(body).unwrap_or_default()),
             record::BEGIN_CELL_XFS => in_cell_xfs = true,
             record::END_CELL_XFS => in_cell_xfs = false,
             // The same record spells a named style's entry and a cell's; only
             // the cells' table is indexed by a cell.
-            record::XF if in_cell_xfs => {
-                let index = u16_at(body, 2).unwrap_or(0);
-                formats.push(match (index, custom.get(&index)) {
-                    (_, Some(code)) => NumberFormat::Custom(code.clone()),
-                    (0, None) => NumberFormat::General,
-                    (id, None) => NumberFormat::Builtin(id),
-                });
-            }
+            record::XF if in_cell_xfs => xfs.push(body.to_vec()),
             _ => {}
         }
     }
-    let table = StyleTable::from_styles(
-        formats
-            .iter()
-            .map(|number_format| Style {
-                number_format: number_format.clone(),
-                ..Style::default()
+
+    StyleTable::from_styles(
+        xfs.iter()
+            .map(|xf| {
+                let piece = |at: usize, count: usize| {
+                    u16_at(xf, at).map(usize::from).filter(|i| *i < count)
+                };
+                let format = u16_at(xf, 2).unwrap_or(0);
+                Style {
+                    number_format: match (format, custom.get(&format)) {
+                        (_, Some(code)) => NumberFormat::Custom(code.clone()),
+                        (0, None) => NumberFormat::General,
+                        (id, None) => NumberFormat::Builtin(id),
+                    },
+                    font: piece(4, fonts.len())
+                        .map(|i| fonts[i].clone())
+                        .unwrap_or_default(),
+                    fill: piece(6, fills.len())
+                        .map(|i| fills[i].clone())
+                        .unwrap_or_default(),
+                    borders: piece(8, borders.len())
+                        .map(|i| borders[i].clone())
+                        .unwrap_or_default(),
+                    alignment: alignment(xf),
+                    protection: protection(xf),
+                }
             })
             .collect(),
+    )
+}
+
+/// A `BrtColor`: what kind of colour it is, an index into the palette or the
+/// theme, a tint, and the colour itself.
+fn color(data: &[u8], at: usize) -> Option<crate::style::Color> {
+    use crate::style::Color;
+    let kind = (data.get(at)? >> 1) & 0x7F;
+    let index = u32::from(*data.get(at + 1)?);
+    #[expect(clippy::cast_possible_wrap, reason = "the tint is signed")]
+    let tint = i32::from(u16_at(data, at + 2)? as i16);
+    let (red, green, blue, alpha) = (
+        u32::from(*data.get(at + 4)?),
+        u32::from(*data.get(at + 5)?),
+        u32::from(*data.get(at + 6)?),
+        u32::from(*data.get(at + 7)?),
     );
-    (table, formats)
+    Some(match kind {
+        // Past the 56-entry palette are the system colours - window text,
+        // window background, "automatic" - which this crate calls `Auto`, as
+        // it does for xls, and which xlsx says by writing no colour at all.
+        1 if index >= u32::from(crate::shared::palette::END) => Color::Auto,
+        1 => Color::Indexed(index),
+        2 => Color::Argb((alpha << 24) | (red << 16) | (green << 8) | blue),
+        // The tint runs from -32767 to 32767 where xlsx writes -1.0 to 1.0,
+        // and this crate keeps it in millionths.
+        3 => Color::Theme {
+            id: index,
+            tint: (tint * 1_000_000) / 32767,
+        },
+        _ => Color::Auto,
+    })
+}
+
+/// A `BrtFont`.
+fn font(data: &[u8]) -> Option<crate::style::Font> {
+    use crate::style::{Font, FontScheme, Script, Underline};
+    let flags = u16_at(data, 2)?;
+    let (name, _) = wide_string(data, 21)?;
+    Some(Font {
+        name,
+        // The height is in twips, a twentieth of a point; the model keeps
+        // hundredths of one.
+        size: u32::from(u16_at(data, 0)?) * 5,
+        bold: u16_at(data, 4)? >= 700,
+        italic: flags & 0x02 != 0,
+        strike: flags & 0x08 != 0,
+        script: match u16_at(data, 6)? {
+            1 => Script::Superscript,
+            2 => Script::Subscript,
+            _ => Script::Baseline,
+        },
+        underline: match data.get(8)? {
+            1 => Underline::Single,
+            2 => Underline::Double,
+            0x21 => Underline::SingleAccounting,
+            0x22 => Underline::DoubleAccounting,
+            _ => Underline::None,
+        },
+        // Zero is "not said" for both of these: xlsx leaves the element out
+        // rather than writing the zero.
+        family: Some(u32::from(*data.get(9)?)).filter(|v| *v != 0),
+        charset: Some(u32::from(*data.get(10)?)).filter(|v| *v != 0),
+        color: color(data, 12)?,
+        scheme: match data.get(20)? {
+            1 => Some(FontScheme::Major),
+            2 => Some(FontScheme::Minor),
+            _ => None,
+        },
+    })
+}
+
+/// A `BrtFill`. Gradient fills are not modelled and read as no fill, which is
+/// what the xlsx reader makes of them too.
+fn fill(data: &[u8]) -> Option<crate::style::Fill> {
+    use crate::style::{Fill, Pattern};
+    /// The patterns in the order the format numbers them.
+    const PATTERNS: [&str; 19] = [
+        "none",
+        "solid",
+        "mediumGray",
+        "darkGray",
+        "lightGray",
+        "darkHorizontal",
+        "darkVertical",
+        "darkDown",
+        "darkUp",
+        "darkGrid",
+        "darkTrellis",
+        "lightHorizontal",
+        "lightVertical",
+        "lightDown",
+        "lightUp",
+        "lightGrid",
+        "lightTrellis",
+        "gray125",
+        "gray0625",
+    ];
+    let index = usize::try_from(u32_at(data, 0)?).ok()?;
+    Some(Fill {
+        pattern: PATTERNS
+            .get(index)
+            .map_or(Pattern::None, |p| Pattern::parse(p)),
+        foreground: color(data, 4)?,
+        background: color(data, 12)?,
+    })
+}
+
+/// A `BrtBorder`: two bits saying which way a diagonal runs, then five sides.
+fn cell_borders(data: &[u8]) -> Option<crate::style::Borders> {
+    use crate::style::{Border, BorderStyle, Borders, DiagonalDirection};
+    /// The line styles in the order the format numbers them.
+    const STYLES: [&str; 14] = [
+        "none",
+        "thin",
+        "medium",
+        "dashed",
+        "dotted",
+        "thick",
+        "double",
+        "hair",
+        "mediumDashed",
+        "dashDot",
+        "mediumDashDot",
+        "dashDotDot",
+        "mediumDashDotDot",
+        "slantDashDot",
+    ];
+    let flags = *data.first()?;
+    // Each side is a line style, a byte of nothing, and a colour.
+    let side = |index: usize| -> Option<Border> {
+        let at = 1 + index * 10;
+        let style = usize::from(*data.get(at)?);
+        Some(Border {
+            style: STYLES
+                .get(style)
+                .map_or(BorderStyle::None, |s| BorderStyle::parse(s)),
+            color: color(data, at + 2)?,
+        })
+    };
+    let (down, up) = (flags & 0x01 != 0, flags & 0x02 != 0);
+    Some(Borders {
+        // The sides come top, bottom, left, right, diagonal - not the order
+        // xlsx writes them in.
+        top: side(0)?,
+        bottom: side(1)?,
+        left: side(2)?,
+        right: side(3)?,
+        diagonal: side(4)?,
+        diagonal_direction: match (down, up) {
+            (true, true) => DiagonalDirection::Both,
+            (true, false) => DiagonalDirection::Down,
+            (false, true) => DiagonalDirection::Up,
+            (false, false) => DiagonalDirection::None,
+        },
+    })
+}
+
+/// The alignment bits of a `BrtXF`.
+fn alignment(xf: &[u8]) -> crate::style::Alignment {
+    use crate::style::{Alignment, HorizontalAlign, VerticalAlign};
+    let flags = u16_at(xf, 12).unwrap_or(0);
+    Alignment {
+        horizontal: match flags & 0x07 {
+            1 => HorizontalAlign::Left,
+            2 => HorizontalAlign::Center,
+            3 => HorizontalAlign::Right,
+            4 => HorizontalAlign::Fill,
+            5 => HorizontalAlign::Justify,
+            6 => HorizontalAlign::CenterContinuous,
+            7 => HorizontalAlign::Distributed,
+            _ => HorizontalAlign::General,
+        },
+        vertical: match (flags >> 3) & 0x07 {
+            0 => VerticalAlign::Top,
+            1 => VerticalAlign::Center,
+            3 => VerticalAlign::Justify,
+            4 => VerticalAlign::Distributed,
+            _ => VerticalAlign::Bottom,
+        },
+        wrap_text: flags & 0x0040 != 0,
+        shrink_to_fit: flags & 0x0100 != 0,
+        indent: xf.get(11).copied().map_or(0, u32::from),
+        text_rotation: xf.get(10).copied().map_or(0, u32::from),
+        reading_order: u32::from((flags >> 10) & 0x03),
+    }
+}
+
+/// The protection bits of a `BrtXF`.
+///
+/// The record always holds both, while xlsx writes `<protection>` only where
+/// a cell departs from the default - locked, not hidden. Saying `Inherit` for
+/// the default keeps the two readers agreeing on the same workbook.
+fn protection(xf: &[u8]) -> crate::style::Protection {
+    use crate::style::{Protection, ProtectionState};
+    let flags = u16_at(xf, 12).unwrap_or(0);
+    Protection {
+        locked: if flags & 0x1000 == 0 {
+            ProtectionState::Off
+        } else {
+            ProtectionState::Inherit
+        },
+        hidden: if flags & 0x2000 == 0 {
+            ProtectionState::Inherit
+        } else {
+            ProtectionState::On
+        },
+    }
 }
 
 /// A sheet of the workbook: its name, the relationship pointing at its part,
@@ -469,44 +713,73 @@ struct GroupFormula<'a> {
 fn worksheet(
     data: &[u8],
     strings: &[CellValue],
-    formats: &[NumberFormat],
+    style_count: usize,
     context: &Context,
 ) -> Worksheet {
-    // Shared and array formulas are records of their own, written after the
-    // first cell that uses them, so they are collected before the cells are.
-    let mut groups: HashMap<(u32, u32), GroupFormula<'_>> = HashMap::new();
-    for (id, body) in records(data) {
-        if id != record::SHR_FMLA && id != record::ARR_FMLA {
-            continue;
-        }
-        let (Some(first_row), Some(last_row), Some(first_col), Some(last_col)) = (
-            u32_at(body, 0),
-            u32_at(body, 4),
-            u32_at(body, 8),
-            u32_at(body, 12),
-        ) else {
-            continue;
-        };
-        // An array formula has a flag byte between its area and its tokens.
-        let at = if id == record::ARR_FMLA { 17 } else { 16 };
-        if let Some((tokens, extra)) = parsed_formula(body, at) {
-            groups.insert(
-                (first_row, first_col),
-                GroupFormula {
-                    tokens,
-                    extra,
-                    array: id == record::ARR_FMLA,
-                    last: (last_row, last_col),
-                },
-            );
-        }
-    }
+    let groups = group_formulas(data);
 
     let mut sheet = Worksheet::default();
     let mut row = 0u32;
+    // Every row record carries a height, where xlsx writes one only for a row
+    // that departs from the sheet default; the default is what tells the two
+    // apart.
+    let mut default_height = DEFAULT_ROW_HEIGHT;
     for (id, body) in records(data) {
         match id {
-            record::ROW_HDR => row = u32_at(body, 0).unwrap_or(0),
+            record::WS_FMT_INFO => {
+                default_height = u16_at(body, 6).unwrap_or(DEFAULT_ROW_HEIGHT);
+            }
+            record::ROW_HDR => {
+                row = u32_at(body, 0).unwrap_or(0);
+                if let Ok(at) = Row::from_one_based(u64::from(row) + 1) {
+                    let properties = row_properties(body, default_height);
+                    if properties.is_meaningful() {
+                        sheet.rows.insert(at, properties);
+                    }
+                }
+            }
+            record::WS_VIEW => sheet_view(&mut sheet.view, body),
+            record::PANE => sheet.view.pane = pane(body),
+            record::SEL => {
+                // Excel writes a selection for every pane, the untouched ones
+                // included; xlsx leaves out the one that sits on A1 with
+                // nothing selected, because the default says as much.
+                if let Some(selection) = selection(body, sheet.view.pane.is_some())
+                    && !is_corner(&selection)
+                {
+                    sheet.view.selections.push(selection);
+                }
+            }
+            record::BEGIN_AFILTER => {
+                if let (Some(first), Some(last)) = (
+                    cell_ref(u32_at(body, 0).unwrap_or(0), u32_at(body, 8).unwrap_or(0)),
+                    cell_ref(u32_at(body, 4).unwrap_or(0), u32_at(body, 12).unwrap_or(0)),
+                ) {
+                    sheet.auto_filter = Some(AutoFilter::new(Range::new(first, last)));
+                }
+            }
+            record::BEGIN_FILTER_COLUMN => {
+                if let (Some(filter), Some(col_id)) = (sheet.auto_filter.as_mut(), u32_at(body, 0))
+                {
+                    filter.columns.push(FilterColumn::new(col_id));
+                }
+            }
+            record::BEGIN_CUSTOM_FILTERS => {
+                if let Some(column) = last_filter_column(&mut sheet) {
+                    column.filter = Some(ColumnFilter::Custom {
+                        and: u32_at(body, 0) == Some(1),
+                        rules: Vec::new(),
+                    });
+                }
+            }
+            record::CUSTOM_FILTER => {
+                if let Some(rule) = custom_filter(body)
+                    && let Some(ColumnFilter::Custom { rules, .. }) =
+                        last_filter_column(&mut sheet).and_then(|c| c.filter.as_mut())
+                {
+                    rules.push(rule);
+                }
+            }
             record::COL_INFO => column_info(&mut sheet, body),
             record::MERGE_CELL => {
                 if let (Some(first), Some(last)) = (
@@ -535,7 +808,7 @@ fn worksheet(
                 let style = u32_at(body, 4).unwrap_or(0) & 0x00FF_FFFF;
                 let cell = sheet.entry(at);
                 cell.value = value;
-                if (style as usize) < formats.len() {
+                if (style as usize) < style_count {
                     cell.style = StyleId::from_index(style);
                 }
             }
@@ -543,6 +816,182 @@ fn worksheet(
         }
     }
     sheet
+}
+
+/// The formulas several cells share and the ones that fill an area, by the
+/// cell they hang on.
+///
+/// Both are records of their own, written after the first cell that uses
+/// them, so the sheet is read twice: once for these, once for the cells that
+/// point at them.
+fn group_formulas(data: &[u8]) -> HashMap<(u32, u32), GroupFormula<'_>> {
+    let mut groups = HashMap::new();
+    for (id, body) in records(data) {
+        if id != record::SHR_FMLA && id != record::ARR_FMLA {
+            continue;
+        }
+        let (Some(first_row), Some(last_row), Some(first_col), Some(last_col)) = (
+            u32_at(body, 0),
+            u32_at(body, 4),
+            u32_at(body, 8),
+            u32_at(body, 12),
+        ) else {
+            continue;
+        };
+        // An array formula has a flag byte between its area and its tokens.
+        let at = if id == record::ARR_FMLA { 17 } else { 16 };
+        if let Some((tokens, extra)) = parsed_formula(body, at) {
+            groups.insert(
+                (first_row, first_col),
+                GroupFormula {
+                    tokens,
+                    extra,
+                    array: id == record::ARR_FMLA,
+                    last: (last_row, last_col),
+                },
+            );
+        }
+    }
+    groups
+}
+
+/// The column the auto filter is filling in, which is the last one it added.
+fn last_filter_column(sheet: &mut Worksheet) -> Option<&mut FilterColumn> {
+    sheet.auto_filter.as_mut()?.columns.last_mut()
+}
+
+/// A `BrtRowHdr`, past the row number: its height and what is done to it.
+fn row_properties(body: &[u8], default_height: u16) -> RowProperties {
+    let flags = body.get(11).copied().unwrap_or(0);
+    RowProperties {
+        // The height is in twips, a twentieth of a point, and is kept only
+        // where it says something the sheet default does not.
+        height: u16_at(body, 8)
+            .filter(|twips| *twips != default_height)
+            .map(|twips| f64::from(twips) / 20.0),
+        custom_height: flags & 0x20 != 0,
+        hidden: flags & 0x10 != 0,
+        // The row's own style is not read: which bit says the row has one
+        // rather than inheriting it is not settled, and a wrong one would
+        // paint every row with the style of whatever `ixfe` happened to hold.
+        style: None,
+        outline_level: flags & 0x07,
+        collapsed: flags & 0x08 != 0,
+    }
+}
+
+/// A `BrtBeginWsView`: what the sheet shows and where it is scrolled to.
+///
+/// The zoom is not read: every sheet of the workbook this was checked against
+/// sits at 100 %, so which of the record's numbers is the zoom could not be
+/// told apart from the ones that are not.
+fn sheet_view(view: &mut SheetView, body: &[u8]) {
+    let Some(flags) = u16_at(body, 0) else {
+        return;
+    };
+    view.show_grid_lines = flags & 0x0004 != 0;
+    view.show_row_col_headers = flags & 0x0008 != 0;
+    view.show_zeros = flags & 0x0010 != 0;
+    view.right_to_left = flags & 0x0020 != 0;
+    view.tab_selected = flags & 0x0040 != 0;
+    if let (Some(row), Some(col)) = (u32_at(body, 6), u32_at(body, 10))
+        && (row, col) != (0, 0)
+    {
+        view.top_left_cell = cell_ref(row, col);
+    }
+}
+
+/// A `BrtPane`: where the sheet is split and whether the split is frozen.
+fn pane(body: &[u8]) -> Option<Pane> {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a split is a small count of rows or columns, written as a double"
+    )]
+    let split = |at: usize| f64_at(body, at).unwrap_or(0.0).max(0.0) as u32;
+    let flags = *body.get(28)?;
+    Some(Pane {
+        x_split: split(0),
+        y_split: split(8),
+        top_left_cell: cell_ref(u32_at(body, 16)?, u32_at(body, 20)?),
+        active_pane: pane_position(u32_at(body, 24)?),
+        // The two bits are "frozen" and "frozen without a split to drag".
+        state: if flags & 0x01 == 0 {
+            PaneState::Split
+        } else if flags & 0x02 == 0 {
+            PaneState::FrozenSplit
+        } else {
+            PaneState::Frozen
+        },
+    })
+}
+
+/// A `BrtSel`: which pane, where the cursor is, and what is selected.
+fn selection(body: &[u8], split: bool) -> Option<Selection> {
+    let position = pane_position(u32_at(body, 0)?);
+    let count = usize::try_from(u32_at(body, 16)?).ok()?;
+    let mut sqref = Vec::with_capacity(count.min(1024));
+    for i in 0..count {
+        let at = 20 + i * 16;
+        let (Some(first), Some(last)) = (
+            cell_ref(u32_at(body, at)?, u32_at(body, at + 8)?),
+            cell_ref(u32_at(body, at + 4)?, u32_at(body, at + 12)?),
+        ) else {
+            break;
+        };
+        sqref.push(Range::new(first, last));
+    }
+    Some(Selection {
+        // An unsplit sheet has one selection, and which pane it belongs to is
+        // then not worth saying - xlsx writes no `pane` attribute for it.
+        pane: split.then_some(position),
+        active_cell: cell_ref(u32_at(body, 4)?, u32_at(body, 8)?),
+        sqref,
+    })
+}
+
+/// Whether a selection says no more than the default does: the cursor on A1
+/// and that one cell selected.
+fn is_corner(selection: &Selection) -> bool {
+    let Some(corner) = cell_ref(0, 0) else {
+        return false;
+    };
+    selection.active_cell == Some(corner)
+        && selection
+            .sqref
+            .iter()
+            .all(|range| range.start == corner && range.end == corner)
+}
+
+/// Which pane a number names.
+fn pane_position(value: u32) -> PanePosition {
+    match value {
+        1 => PanePosition::TopRight,
+        2 => PanePosition::BottomLeft,
+        3 => PanePosition::TopLeft,
+        _ => PanePosition::BottomRight,
+    }
+}
+
+/// A `BrtCustomFilter`: how to compare, and against what.
+fn custom_filter(body: &[u8]) -> Option<CustomFilter> {
+    let operator = match body.get(1)? {
+        1 => FilterOperator::LessThan,
+        3 => FilterOperator::LessThanOrEqual,
+        4 => FilterOperator::GreaterThan,
+        5 => FilterOperator::NotEqual,
+        6 => FilterOperator::GreaterThanOrEqual,
+        _ => FilterOperator::Equal,
+    };
+    // The value is a number or a string, by the byte before the operator.
+    let value = match body.first()? {
+        // As the shortest text that reads back as the same number, which is
+        // how xlsx spells the attribute.
+        0x04 => format!("{}", f64_at(body, 2)?),
+        0x06 => wide_string(body, 2)?.0,
+        _ => return None,
+    };
+    Some(CustomFilter { operator, value })
 }
 
 /// What one cell record holds.

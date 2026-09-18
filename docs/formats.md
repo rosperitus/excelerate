@@ -180,10 +180,13 @@ bits at a time.
 
 What comes across: values of every type, shared strings, formulas (decompiled
 from their tokens, shared and array formulas expanded onto every cell that
-uses them), defined names, number formats, column widths, merges and sheet
-visibility. What does not: fonts, fills, borders and alignment, and everything
-built on parts this reader does not open - tables, pivot tables, drawings,
-conditional formatting.
+uses them), defined names, the full cell style - number format, font, fill,
+borders, alignment, protection - row heights and hidden rows, column widths,
+merges, the saved view (frozen panes, scroll position, selection), the auto
+filter, and sheet visibility. What does not: hyperlinks and data validation
+(no workbook to check them against yet), and everything built on parts this
+reader does not open - tables, pivot tables, drawings, conditional
+formatting.
 
 Two sharp edges:
 
@@ -197,6 +200,10 @@ Two sharp edges:
 - A function Excel itself does not know is written `_xludf.MAXIFS` in xlsx and
   bare in xlsb. Bare is what you get here - this crate's own engine knows
   `MAXIFS` under that name.
+- The binary always says what the XML leaves to the default: every row carries
+  a height, every fill an automatic foreground, every pane its selection. Those
+  are read as the default, so the same workbook in either format gives the
+  same model rather than one full of noise.
 
 ## SYLK, Gnumeric, SpreadsheetML 2003
 

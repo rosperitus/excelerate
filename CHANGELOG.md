@@ -20,9 +20,11 @@
   the package, not by the extension, so a renamed file still opens; the wasm
   `Book.read` gets it for free. Values, shared strings, formulas (shared and
   array ones expanded), defined names, number formats, column widths, merges
-  and sheet visibility come across; fonts, fills and borders do not. Checked
-  against the same workbook saved as xlsx: 3769 cells agree, formula for
-  formula. See `docs/formats.md` for the two kinds of formula it leaves as
+  the full cell style (number format, font, fill, borders, alignment,
+  protection), row heights and hidden rows, the saved view with its frozen
+  panes and selection, and the auto filter come across. Checked against the
+  same workbook saved as xlsx: 3769 cells, every cell style, every row and
+  every sheet view agree. See `docs/formats.md` for the two kinds of formula it leaves as
   their cached value.
 
 - Number formats read the Cyrillic date codes a Russian Excel is typed in:
