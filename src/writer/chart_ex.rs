@@ -253,14 +253,27 @@ fn render_frame(chart: &ChartEx, id: u32, rel: &str) -> String {
             r#"<xdr:cNvGraphicFramePr/></xdr:nvGraphicFramePr>"#,
             r#"<xdr:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></xdr:xfrm>"#,
             r#"<a:graphic><a:graphicData uri="{ns}">"#,
-            r#"<cx:chart xmlns:cx="{ns}" r:id="{rel}"/></a:graphicData></a:graphic>"#,
-            r#"</xdr:graphicFrame></mc:Choice></mc:AlternateContent><xdr:clientData/>"#
+            // Every namespace the element uses is declared on the element
+            // itself, as Excel writes it: a reader that lifts the chosen
+            // branch out of the switch has nothing to look up in.
+            r#"<cx:chart xmlns:cx="{ns}" xmlns:r="{rel_ns}" r:id="{rel}"/>"#,
+            r#"</a:graphicData></a:graphic></xdr:graphicFrame></mc:Choice>"#,
+            // What a reader that does not know 2016 charts shows instead.
+            r#"<mc:Fallback><xdr:sp macro="" textlink=""><xdr:nvSpPr>"#,
+            r#"<xdr:cNvPr id="{id}" name="{name}"/><xdr:cNvSpPr><a:spLocks noTextEdit="1"/>"#,
+            r#"</xdr:cNvSpPr></xdr:nvSpPr><xdr:spPr><a:xfrm><a:off x="0" y="0"/>"#,
+            r#"<a:ext cx="0" cy="0"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom>"#,
+            r#"<a:solidFill><a:prstClr val="white"/></a:solidFill></xdr:spPr><xdr:txBody>"#,
+            r#"<a:bodyPr vertOverflow="clip" horzOverflow="clip"/><a:lstStyle/><a:p><a:r>"#,
+            r#"<a:rPr lang="en-US"/><a:t>{name}</a:t></a:r></a:p></xdr:txBody></xdr:sp>"#,
+            r#"</mc:Fallback></mc:AlternateContent><xdr:clientData/>"#
         ),
         prefix = prefix,
         requires = requires,
         id = id,
         name = escape(&name),
         ns = CHART_EX_NS,
+        rel_ns = REL_NS,
         rel = escape(rel),
     )
 }

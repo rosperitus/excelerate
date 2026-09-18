@@ -524,14 +524,16 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
 /// Every cell of the sheet, in the order the records go out.
 fn cells(out: &mut Vec<u8>, sheet: &Worksheet, index: usize, plan: &Plan) {
     for (at, cell) in sheet.iter() {
-        let array = sheet.array_formulas.iter().find(|r| r.start == at).copied();
-        // A cell inside somebody else's array holds its part of the result,
-        // not a formula: BIFF says the expression once, in the `ARRAY` record.
-        let covered = sheet
+        // Every cell of an array holds a formula record pointing at the top
+        // left of it; the expression itself is said once, in the `ARRAY`
+        // record beside that first cell. A value record inside the area
+        // instead - which is what this wrote at first - crashes Excel 2019.
+        let area = sheet
             .array_formulas
             .iter()
-            .any(|r| r.contains(at) && r.start != at);
-        cell_record(out, index, at, cell, plan, array, covered);
+            .find(|r| r.contains(at))
+            .copied();
+        cell_record(out, index, at, cell, plan, area);
     }
 }
 
@@ -543,7 +545,6 @@ fn cell_record(
     cell: &crate::model::Cell,
     plan: &Plan,
     array: Option<crate::coordinate::Range>,
-    covered: bool,
 ) {
     let xf = cell_format(plan, cell.style);
     let head = |data: &mut Vec<u8>| {
@@ -552,9 +553,20 @@ fn cell_record(
         data.extend_from_slice(&xf.to_le_bytes());
     };
 
-    if let Some(compiled) = plan.compiled.get(&(sheet, at)).filter(|_| !covered) {
+    let inside = array.filter(|area| area.start != at);
+    if let Some(compiled) = plan.compiled.get(&(sheet, at)).filter(|_| inside.is_none()) {
         let result = plan.resolved.get(&(sheet, at)).unwrap_or(&CellValue::Empty);
         formula_record(out, at, xf, result, compiled, array);
+        return;
+    }
+    if let Some(area) = inside {
+        // Inside the area: the same pointer, no expression of its own.
+        let result = plan
+            .resolved
+            .get(&(sheet, at))
+            .cloned()
+            .unwrap_or_else(|| cell.value.clone());
+        formula_record(out, at, xf, &result, &Compiled::default(), Some(area));
         return;
     }
 
@@ -668,7 +680,8 @@ fn formula_record(
         data.extend_from_slice(&compiled.extra);
     }
     record(out, 0x0006, &data);
-    if let Some(area) = array.filter(|_| pointer.is_some()) {
+    // The expression is said once, beside the cell the array starts in.
+    if let Some(area) = array.filter(|area| area.start == at) {
         record(out, 0x0221, &array_record(area, compiled));
     }
     if let Some(text) = text {

@@ -15,6 +15,65 @@ use crate::shared::date::{Epoch, from_serial};
 use crate::style::NumberFormat;
 use std::fmt::Write as _;
 
+/// A format string with the Cyrillic date codes turned into the Latin ones
+/// the rest of this module reads.
+///
+/// A format string is typed by a person, so Excel reads it in the language it
+/// runs in: a Russian Excel wants `ДД.ММ.ГГГГ` where an English one wants
+/// `dd.mm.yyyy`, and `ТЕКСТ(A1;"ДД.ММ.ГГГГ")` is what a Russian workbook
+/// holds. Quoted text, escapes and `[...]` tags are left alone, so `"г."`
+/// after a year stays the letter it is.
+fn latin_codes(code: &str) -> std::borrow::Cow<'_, str> {
+    const CODES: [(char, char); 10] = [
+        ('Д', 'd'),
+        ('д', 'd'),
+        ('М', 'm'),
+        ('м', 'm'),
+        ('Г', 'y'),
+        ('г', 'y'),
+        ('Ч', 'h'),
+        ('ч', 'h'),
+        ('С', 's'),
+        ('с', 's'),
+    ];
+    let translate = |c: char| CODES.iter().find(|(from, _)| *from == c).map(|(_, to)| *to);
+    if !code.chars().any(|c| translate(c).is_some()) {
+        return std::borrow::Cow::Borrowed(code);
+    }
+    let mut out = String::with_capacity(code.len());
+    let mut chars = code.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                out.push(c);
+                for q in chars.by_ref() {
+                    out.push(q);
+                    if q == '"' {
+                        break;
+                    }
+                }
+            }
+            '\\' | '_' | '*' => {
+                out.push(c);
+                if let Some(next) = chars.next() {
+                    out.push(next);
+                }
+            }
+            '[' => {
+                out.push(c);
+                for b in chars.by_ref() {
+                    out.push(b);
+                    if b == ']' {
+                        break;
+                    }
+                }
+            }
+            c => out.push(translate(c).unwrap_or(c)),
+        }
+    }
+    std::borrow::Cow::Owned(out)
+}
+
 /// The format code Excel uses when a cell has no explicit format.
 pub const GENERAL: &str = "General";
 
@@ -89,7 +148,8 @@ pub enum Value<'a> {
 /// The epoch matters only for date formats; pass the workbook's.
 #[must_use]
 pub fn format(value: Value<'_>, code: &str, epoch: Epoch) -> String {
-    let sections = Sections::split(code);
+    let code = latin_codes(code);
+    let sections = Sections::split(&code);
     let (section, negate) = sections.pick(value);
 
     match value {
@@ -794,6 +854,7 @@ pub fn is_date_format(section: &str) -> bool {
     if section.trim().eq_ignore_ascii_case(GENERAL) || section.trim().is_empty() {
         return false;
     }
+    let section = latin_codes(section);
     let mut chars = section.chars().peekable();
     while let Some(c) = chars.next() {
         match c {
@@ -1071,25 +1132,24 @@ fn month(month: u32, width: usize, language: Language) -> String {
         "November",
         "December",
     ];
-    // The names excelize gives the Russian locale; no Excel was at hand to
-    // check them against.
+    // As Excel 2019 shows them: the full name in the nominative and
+    // capitalised, the short one lower case and without a dot.
     const RUSSIAN: [&str; 12] = [
-        "январь",
-        "февраль",
-        "март",
-        "апрель",
-        "май",
-        "июнь",
-        "июль",
-        "август",
-        "сентябрь",
-        "октябрь",
-        "ноябрь",
-        "декабрь",
+        "Январь",
+        "Февраль",
+        "Март",
+        "Апрель",
+        "Май",
+        "Июнь",
+        "Июль",
+        "Август",
+        "Сентябрь",
+        "Октябрь",
+        "Ноябрь",
+        "Декабрь",
     ];
     const RUSSIAN_SHORT: [&str; 12] = [
-        "янв.", "фев.", "март", "апр.", "май", "июнь", "июль", "авг.", "сен.", "окт.", "ноя.",
-        "дек.",
+        "янв", "фев", "мар", "апр", "май", "июн", "июл", "авг", "сен", "окт", "ноя", "дек",
     ];
     let index = (month.max(1) - 1) as usize % 12;
     let (name, short) = match language {
@@ -1321,20 +1381,24 @@ mod tests {
         assert_eq!(render(1234.5, "#,##0.00 [$₽-419]"), "1,234.50 ₽");
         assert_eq!(render(5.0, "[$€-407] 0.00"), "€ 5.00");
         assert_eq!(render(45_658.0, "[$-409]mmmm"), "January");
-        // Checked against excelize: 1 January 2025 was a Wednesday.
-        assert_eq!(render(45_658.0, "[$-419]d mmmm yyyy"), "1 январь 2025");
-        assert_eq!(render(45_658.0, "[$-419]mmm dddd ddd"), "янв. среда Ср");
-        assert_eq!(render(45_658.0, "[$-ru-RU]mmmmm"), "я");
+        // As Excel 2019 answers them: 1 January 2025 was a Wednesday.
+        assert_eq!(render(45_658.0, "[$-419]d mmmm yyyy"), "1 Январь 2025");
+        assert_eq!(render(45_658.0, "[$-419]mmm dddd ddd"), "янв среда Ср");
+        assert_eq!(render(45_658.0, "[$-ru-RU]mmmmm"), "Я");
+        // And the same written in the codes a Russian Excel is typed in.
+        assert_eq!(render(45_658.0, "ДД.ММ.ГГГГ"), "01.01.2025");
+        assert_eq!(render(45_658.0, "[$-419]Д ММММ ГГГГ"), "1 Январь 2025");
+        assert_eq!(render(45_658.5, "Ч:ММ:СС"), "12:00:00");
     }
 
     #[test]
     fn a_separator_outside_the_number_stays_a_character() {
-        // A format typed in a language Excel does not know is mostly literal.
-        // The first run of placeholders - here a lone `.` - is where the
-        // number goes; the dots after it are just dots.
+        // A format typed in a language this module does not know is mostly
+        // literal. The first run of placeholders - here a lone `.` - is where
+        // the number goes; the dots after it are just dots.
         assert_eq!(
-            format(Value::Number(693_597.0), "ДД.ММ.ГГГГ", Epoch::Windows1900),
-            "ДД693597.ММ.ГГГГ"
+            format(Value::Number(693_597.0), "ТТ.ЩЩ.ЩЩЩЩ", Epoch::Windows1900),
+            "ТТ693597.ЩЩ.ЩЩЩЩ"
         );
         // Inside one run they still belong to the number.
         assert_eq!(

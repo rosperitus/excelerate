@@ -16,6 +16,11 @@
 
 ### Added
 
+- Number formats read the Cyrillic date codes a Russian Excel is typed in:
+  `ТЕКСТ(A1;"ДД.ММ.ГГГГ")` is a date, as it is in Excel, rather than the
+  letters `ДД` beside the serial number. Month and weekday names now match
+  what Excel 2019 shows for a Russian locale tag: `Январь`, `янв`, `среда`,
+  `Ср`, `Я`.
 - An array formula keeps the area it fills in every format that can say it:
   an `ARRAY` record in xls and a matrix span in `OpenDocument`, which are also
   read back. Before, only xlsx carried it, and a workbook that went through
@@ -63,6 +68,14 @@
 
 ### Fixed
 
+- Excel 2019 crashed on an xls holding an array formula: the cells the array
+  covers were written as values, where BIFF wants a formula record pointing at
+  the cell the array starts in. Each of them now carries that pointer, and the
+  expression is said once, in the `ARRAY` record.
+- A 2016 chart written from the model declares every namespace it uses on the
+  element that uses it and carries the `mc:Fallback` Excel writes. Excel
+  dropped the whole drawing of such a file, and this is the difference against
+  the ones it writes itself.
 - A rewrite dropped `<tableStyles>` and `<colors>` from the stylesheet. Slicers
   are painted with a style named there, so Excel removed all fourteen slicers
   of a dashboard this crate had rewritten; the palette an `indexed` colour
