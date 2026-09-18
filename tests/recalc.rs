@@ -483,3 +483,60 @@ fn a_book_large_enough_for_threads_adds_up_the_same() {
     let total = f64::from(rows) * (f64::from(rows) + 1.0) / 2.0 * 6.0;
     assert_eq!(cached(&book, 0, "E1"), Some(total));
 }
+
+/// A formula reading a defined name follows it: the edit that changes what the
+/// name points at reaches the formula, and an edit elsewhere does not.
+#[test]
+fn a_name_is_followed_to_the_cells_it_stands_for() {
+    use excelerate::model::DefinedName;
+
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    sheet.set(at("B1"), 10.0);
+    sheet.set(at("C1"), 100.0);
+    sheet.set(at("A1"), formula("Rate*2"));
+    sheet.set(at("A2"), formula("A1+1"));
+    book.add_sheet(sheet).unwrap();
+    book.defined_names.push(DefinedName {
+        name: "Rate".into(),
+        sheet: None,
+        formula: "S!$B$1".into(),
+        hidden: false,
+    });
+    recalculate(&mut book, None, &Options::default());
+    assert_eq!(cached(&book, 0, "A1"), Some(20.0));
+
+    book.sheet_mut(0).unwrap().set(at("B1"), 11.0);
+    assert_eq!(recalculate_from(&mut book, &[(0, at("B1"))]), 2);
+    assert_eq!(cached(&book, 0, "A1"), Some(22.0));
+    assert_eq!(cached(&book, 0, "A2"), Some(23.0));
+
+    // `C1` is nothing to either of them.
+    book.sheet_mut(0).unwrap().set(at("C1"), 101.0);
+    assert_eq!(recalculate_from(&mut book, &[(0, at("C1"))]), 0);
+}
+
+/// An edit computes the formulas it reached and trusts what the rest of the
+/// book already says - which is the promise of `recalculate_from`: the cached
+/// values around the edit are the ones from before it.
+#[test]
+fn an_edit_stands_on_the_values_already_stored() {
+    let mut book = book();
+    recalculate(&mut book, None, &Options::default());
+    assert_eq!(cached(&book, 0, "A3"), Some(5.0));
+
+    // A cache nobody asked to refresh: `A3` says 500 though `A1+A2` is 5.
+    if let CellValue::Formula { cached, .. } = &mut book.sheet_mut(0).unwrap().entry(at("A3")).value
+    {
+        *cached = Some(Box::new(CellValue::Number(500.0)));
+    }
+    // The edit below reaches `A4`, which reads `A3` - and takes `A3` as it
+    // stands rather than computing it again.
+    book.sheet_mut(1).unwrap().set(at("B1"), 1.0);
+    let computed = recalculate_from(&mut book, &[(1, at("B1"))]);
+    assert_eq!(computed, 0, "nothing reads Second!B1");
+    book.sheet_mut(0).unwrap().set(at("A2"), 3.0);
+    recalculate_from(&mut book, &[(0, at("A2"))]);
+    assert_eq!(cached(&book, 0, "A3"), Some(5.0), "A3 was recomputed");
+    assert_eq!(cached(&book, 0, "A4"), Some(50.0));
+}

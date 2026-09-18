@@ -111,6 +111,10 @@ pub struct Engine<'a> {
     /// Results other engines finished in a parallel pass, looked at before a
     /// formula cell is computed here.
     shared: Option<&'a Shared>,
+    /// The formula cells this pass recomputes. Any other formula cell answers
+    /// with the result stored beside it, which is what makes an edit cost the
+    /// formulas it touched rather than everything above them as well.
+    stale: Option<&'a HashSet<(usize, CellRef)>>,
 }
 
 /// The results of a parallel pass, one slot per formula of the index, which
@@ -169,6 +173,7 @@ impl<'a> Engine<'a> {
             implicit: false,
             array_starts: None,
             shared: None,
+            stale: None,
         }
     }
 
@@ -449,6 +454,15 @@ impl<'a> Engine<'a> {
                 if let Some(done) = self.shared.and_then(|sh| sh.get(sheet, at)) =>
             {
                 done.clone()
+            }
+            Some(CellValue::Formula {
+                cached: Some(cached),
+                ..
+            }) if self
+                .stale
+                .is_some_and(|stale| !stale.contains(&(sheet, at))) =>
+            {
+                stored_value(&cached)
             }
             Some(CellValue::Formula { formula, .. }) => {
                 // A formula that refers back to its own cell would recurse for
@@ -1166,65 +1180,22 @@ pub fn recalculate(book: &mut Spreadsheet, sheet: Option<usize>, options: &Optio
     // The trees are kept beside the index for this one pass, so each formula
     // is parsed once rather than once to index it and again to compute it.
     let (deps, trees) = Dependencies::of_with_trees(book);
-    let mut results = Vec::new();
+    // Formulas the index knows come first, each after what it reads; one that
+    // does not parse is not in the index and is computed after, where it
+    // answers `#NAME?` on its own.
+    let indexed: Vec<usize> = (0..deps.formulas.len())
+        .filter(|&i| sheet.is_none_or(|only| only == deps.formulas[i].sheet))
+        .collect();
+    let mut results = pass(book, &deps, &indexed, &|i| &trees[i], None, options);
+    let known: HashSet<(usize, CellRef)> = indexed
+        .iter()
+        .map(|&i| (deps.formulas[i].sheet, deps.formulas[i].at))
+        .collect();
     {
-        // Formulas the index knows come first, each after what it reads; one
-        // that does not parse is not in the index and is computed after, where
-        // it answers `#NAME?` on its own.
-        let indexed: Vec<usize> = (0..deps.formulas.len())
-            .filter(|&i| sheet.is_none_or(|only| only == deps.formulas[i].sheet))
-            .collect();
-        let known: HashSet<(usize, CellRef)> = indexed
-            .iter()
-            .map(|&i| (deps.formulas[i].sheet, deps.formulas[i].at))
-            .collect();
-        let (levels, tail) = deps.levels(&indexed);
-        let threads = workers(indexed.len(), options);
-        let shared = (threads > 1).then(|| Shared {
-            slots: indexed
-                .iter()
-                .enumerate()
-                .map(|(slot, &i)| ((deps.formulas[i].sheet, deps.formulas[i].at), slot))
-                .collect(),
-            values: indexed.iter().map(|_| std::sync::OnceLock::new()).collect(),
-            ranges: std::sync::RwLock::default(),
-        });
         let mut engine = match options.functions() {
             Some(custom) => Engine::with_functions(book, custom),
             None => Engine::new(book),
         };
-        let total = indexed.len();
-        let mut done = 0;
-        let mut compute = |engine: &mut Engine<'_>, i: usize, results: &mut Vec<_>| {
-            options.report(Stage::Recalculating, done, Some(total), "");
-            done += 1;
-            let Node {
-                sheet: index, at, ..
-            } = deps.formulas[i];
-            let value = engine.eval_tree(Origin::new(index, at), &trees[i]);
-            engine.remember(index, at, &value);
-            results.push((index, at, value));
-        };
-        if let Some(shared) = &shared {
-            parallel(
-                book, &deps, &trees, &indexed, &levels, shared, threads, options,
-            );
-            // What is left goes round a cycle, and only one engine can see
-            // that happen.
-            engine.shared = Some(shared);
-            for (slot, &i) in indexed.iter().enumerate() {
-                if let Some(value) = shared.values[slot].get() {
-                    results.push((deps.formulas[i].sheet, deps.formulas[i].at, value.clone()));
-                }
-            }
-            for &i in &tail {
-                compute(&mut engine, i, &mut results);
-            }
-        } else {
-            for i in levels.into_iter().flatten().chain(tail) {
-                compute(&mut engine, i, &mut results);
-            }
-        }
         for (index, s) in book.sheets().iter().enumerate() {
             if sheet.is_some_and(|only| only != index) {
                 continue;
@@ -1239,16 +1210,85 @@ pub fn recalculate(book: &mut Spreadsheet, sheet: Option<usize>, options: &Optio
             }
         }
     }
+    store(book, results)
+}
 
+/// Computes `nodes` and answers what each one worked out, in waves so that a
+/// formula comes after everything it reads.
+///
+/// `stale` is the set of formula cells the pass recomputes; outside it a
+/// formula answers with the result stored beside it rather than being
+/// computed again. `None` recomputes whatever is read, which is what a full
+/// pass wants.
+fn pass<'t>(
+    book: &Spreadsheet,
+    deps: &Dependencies,
+    nodes: &[usize],
+    tree_of: &(dyn Fn(usize) -> &'t Expr + Sync),
+    stale: Option<&HashSet<(usize, CellRef)>>,
+    options: &Options<'_>,
+) -> Vec<(usize, CellRef, Value)> {
+    let (levels, tail) = deps.levels(nodes);
+    let threads = workers(nodes.len(), options);
+    let shared = (threads > 1).then(|| Shared {
+        slots: nodes
+            .iter()
+            .enumerate()
+            .map(|(slot, &i)| ((deps.formulas[i].sheet, deps.formulas[i].at), slot))
+            .collect(),
+        values: nodes.iter().map(|_| std::sync::OnceLock::new()).collect(),
+        ranges: std::sync::RwLock::default(),
+    });
+    let mut engine = match options.functions() {
+        Some(custom) => Engine::with_functions(book, custom),
+        None => Engine::new(book),
+    };
+    engine.stale = stale;
+    let mut results = Vec::with_capacity(nodes.len());
+    let total = nodes.len();
+    let mut done = 0;
+    let mut compute = |engine: &mut Engine<'_>, i: usize, results: &mut Vec<_>| {
+        options.report(Stage::Recalculating, done, Some(total), "");
+        done += 1;
+        let Node { sheet, at, .. } = deps.formulas[i];
+        let value = engine.eval_tree(Origin::new(sheet, at), tree_of(i));
+        engine.remember(sheet, at, &value);
+        results.push((sheet, at, value));
+    };
+    if let Some(shared) = &shared {
+        parallel(
+            book, deps, tree_of, nodes, &levels, shared, stale, threads, options,
+        );
+        // What is left goes round a cycle, and only one engine can see that
+        // happen.
+        engine.shared = Some(shared);
+        for (slot, &i) in nodes.iter().enumerate() {
+            if let Some(value) = shared.values[slot].get() {
+                results.push((deps.formulas[i].sheet, deps.formulas[i].at, value.clone()));
+            }
+        }
+        for &i in &tail {
+            compute(&mut engine, i, &mut results);
+        }
+    } else {
+        for i in levels.into_iter().flatten().chain(tail) {
+            compute(&mut engine, i, &mut results);
+        }
+    }
+    results
+}
+
+/// Writes what a pass worked out into the cells' caches, and answers how many
+/// there were.
+fn store(book: &mut Spreadsheet, results: Vec<(usize, CellRef, Value)>) -> usize {
     let computed = results.len();
     for (index, at, value) in results {
-        let Some(s) = book.sheet_mut(index) else {
+        let Some(sheet) = book.sheet_mut(index) else {
             continue;
         };
-        let CellValue::Formula { cached, .. } = &mut s.entry(at).value else {
-            continue;
-        };
-        *cached = Some(Box::new(stored(&value)));
+        if let CellValue::Formula { cached, .. } = &mut sheet.entry(at).value {
+            *cached = Some(Box::new(stored(&value)));
+        }
     }
     computed
 }
@@ -1320,13 +1360,14 @@ fn workers(formulas: usize, options: &Options<'_>) -> usize {
 /// others wait for the next large one: waking eight threads for one formula
 /// costs more than the formula.
 #[expect(clippy::too_many_arguments, reason = "the parts of one pass, borrowed")]
-fn parallel(
+fn parallel<'t>(
     book: &Spreadsheet,
     deps: &Dependencies,
-    trees: &[Expr],
+    tree_of: &(dyn Fn(usize) -> &'t Expr + Sync),
     indexed: &[usize],
     levels: &[Vec<usize>],
     shared: &Shared,
+    stale: Option<&HashSet<(usize, CellRef)>>,
     threads: usize,
     options: &Options<'_>,
 ) {
@@ -1345,6 +1386,7 @@ fn parallel(
     let work = |main: bool, report: &dyn Fn(usize)| {
         let mut engine = Engine::new(book);
         engine.shared = Some(shared);
+        engine.stale = stale;
         for (level, wave) in levels.iter().enumerate() {
             let large = wave.len() >= MIN_WAVE;
             if !large && !main {
@@ -1357,7 +1399,7 @@ fn parallel(
                 let k = cursors[level].fetch_add(1, Ordering::Relaxed);
                 let Some(&i) = wave.get(k) else { break };
                 let Node { sheet, at, .. } = deps.formulas[i];
-                let value = engine.eval_tree(Origin::new(sheet, at), &trees[i]);
+                let value = engine.eval_tree(Origin::new(sheet, at), tree_of(i));
                 let _ = shared.values[slot_of[&i]].set(value);
                 let finished = done.fetch_add(1, Ordering::Relaxed);
                 report(finished);
@@ -1378,6 +1420,21 @@ fn parallel(
     });
 }
 
+/// What a value stored in a cell is to a formula reading it.
+fn stored_value(cell: &CellValue) -> Value {
+    match cell {
+        CellValue::Number(n) => Value::Number(*n),
+        CellValue::Text(t) => Value::Text(t.to_string()),
+        // Formatting inside the cell is presentation; a formula reads the
+        // text it spells.
+        rich @ CellValue::RichText(_) => Value::Text(rich.plain_text().unwrap_or_default()),
+        CellValue::Bool(b) => Value::Bool(*b),
+        CellValue::Error(e) => Value::Error(*e),
+        // A formula holding a formula is not something a file says.
+        CellValue::Empty | CellValue::Formula { .. } => Value::Blank,
+    }
+}
+
 /// A computed value as a cell holds it: an array shows its top-left value,
 /// and a function, which no cell can hold, the error Excel shows instead.
 pub(crate) fn stored(value: &Value) -> CellValue {
@@ -1395,6 +1452,22 @@ pub(crate) fn stored(value: &Value) -> CellValue {
             .and_then(|r| r.first())
             .map_or(CellValue::Empty, stored),
     }
+}
+
+/// The formulas and the rectangles between them, as [`Dependencies::graph`]
+/// builds them.
+#[derive(Default)]
+struct Graph {
+    /// Which rectangle each id stands for.
+    ranges: Vec<(usize, Range)>,
+    /// The formulas inside each rectangle.
+    members: Vec<Vec<usize>>,
+    /// The formulas reading each rectangle.
+    readers: Vec<Vec<usize>>,
+    /// The rectangles each formula reads.
+    reads: HashMap<usize, Vec<usize>>,
+    /// The rectangles each formula sits in.
+    member_of: HashMap<usize, Vec<usize>>,
 }
 
 /// One formula of a workbook: where it sits, what it reads, and whether it
@@ -1527,60 +1600,115 @@ impl Dependencies {
         levels.into_iter().flatten().chain(tail).collect()
     }
 
-    /// The formulas among `nodes` in waves, each after the waves it reads,
-    /// and the ones no wave could take - the formulas on a cycle - apart.
-    fn levels(&self, nodes: &[usize]) -> (Vec<Vec<usize>>, Vec<usize>) {
-        let inside: HashMap<(usize, CellRef), usize> = nodes
-            .iter()
-            .map(|&i| ((self.formulas[i].sheet, self.formulas[i].at), i))
-            .collect();
+    /// Every formula that has to be computed again after `changed` was
+    /// written: the ones reading those cells, the ones reading those, and the
+    /// ones that are recomputed whatever moved (a defined name, a volatile
+    /// function).
+    ///
+    /// Walked over the graph, so each formula and each rectangle is looked at
+    /// once. Asking every formula whether any dirty cell is inside what it
+    /// reads, and asking it again on every round, cost the dirty set times the
+    /// reads: one edit in a workbook of 650,000 formulas did not finish.
+    fn affected(&self, changed: &[(usize, CellRef)]) -> Vec<usize> {
+        let all: Vec<usize> = (0..self.formulas.len()).collect();
+        let graph = self.graph(&all);
+        let mut dirty = vec![false; self.formulas.len()];
+        let mut queue: Vec<usize> = Vec::new();
+        let mut dirty_range = vec![false; graph.members.len()];
+        let mut ranges: Vec<usize> = Vec::new();
+        // The edited cells themselves: which rectangles hold them.
+        for (id, &(sheet, range)) in graph.ranges.iter().enumerate() {
+            if changed
+                .iter()
+                .any(|&(s, at)| s == sheet && range.contains(at))
+            {
+                dirty_range[id] = true;
+                ranges.push(id);
+            }
+        }
+        for (i, node) in self.formulas.iter().enumerate() {
+            if node.always {
+                dirty[i] = true;
+                queue.push(i);
+            }
+        }
+        while !queue.is_empty() || !ranges.is_empty() {
+            while let Some(id) = ranges.pop() {
+                for &r in &graph.readers[id] {
+                    if !dirty[r] {
+                        dirty[r] = true;
+                        queue.push(r);
+                    }
+                }
+            }
+            while let Some(i) = queue.pop() {
+                for &id in graph.member_of.get(&i).into_iter().flatten() {
+                    if !dirty_range[id] {
+                        dirty_range[id] = true;
+                        ranges.push(id);
+                    }
+                }
+            }
+        }
+        all.into_iter().filter(|&i| dirty[i]).collect()
+    }
+
+    /// The graph a pass walks: the formulas and the rectangles between them.
+    ///
+    /// Edges run through the ranges rather than straight from formula to
+    /// formula: a formula reads each distinct range and a range holds the
+    /// formulas inside it. Edges straight between formulas number the reads
+    /// times the formulas inside each, and fifty thousand formulas reading one
+    /// table of fifty thousand is billions of them; through the range it is
+    /// fifty thousand plus fifty thousand.
+    fn graph(&self, nodes: &[usize]) -> Graph {
         // Formulas of one sheet in address order, so a range finds the ones
         // inside it without a scan of the whole workbook.
         let mut by_sheet: HashMap<usize, Vec<(CellRef, usize)>> = HashMap::new();
-        for (&(sheet, at), &i) in &inside {
-            by_sheet.entry(sheet).or_default().push((at, i));
+        for &i in nodes {
+            by_sheet
+                .entry(self.formulas[i].sheet)
+                .or_default()
+                .push((self.formulas[i].at, i));
         }
         for list in by_sheet.values_mut() {
             list.sort_unstable();
         }
-
-        // The graph goes through the ranges rather than straight from formula
-        // to formula: a formula waits on each distinct range it reads, and a
-        // range waits on the formulas inside it. Edges straight between
-        // formulas number the reads times the formulas inside each, and fifty
-        // thousand formulas reading one table of fifty thousand is billions of
-        // them; through the range it is fifty thousand plus fifty thousand.
-        //
-        // A formula reading a range it sits in waits on itself. That is a
-        // circular reference, and it is left for the tail below with the
-        // others, where the engine answers it.
-        let mut range_ids: HashMap<(usize, Range), usize> = HashMap::new();
-        // Per range: how many formulas inside it are not placed yet, and the
-        // formulas reading it.
-        let mut range_left: Vec<usize> = Vec::new();
-        let mut range_readers: Vec<Vec<usize>> = Vec::new();
-        // Per formula: the ranges it sits in, and how many ranges it waits on.
-        let mut member_of: HashMap<usize, Vec<usize>> = HashMap::new();
-        let mut waiting: HashMap<usize, usize> = nodes.iter().map(|&i| (i, 0)).collect();
+        let mut graph = Graph::default();
+        let mut ids: HashMap<(usize, Range), usize> = HashMap::new();
         for &i in nodes {
             let mut seen = HashSet::new();
             for &(sheet, range) in &self.formulas[i].reads {
-                let id = *range_ids.entry((sheet, range)).or_insert_with(|| {
-                    let id = range_left.len();
+                let id = *ids.entry((sheet, range)).or_insert_with(|| {
+                    let id = graph.members.len();
                     let members = formulas_in(&by_sheet, sheet, range);
                     for &j in &members {
-                        member_of.entry(j).or_default().push(id);
+                        graph.member_of.entry(j).or_default().push(id);
                     }
-                    range_left.push(members.len());
-                    range_readers.push(Vec::new());
+                    graph.members.push(members);
+                    graph.readers.push(Vec::new());
+                    graph.ranges.push((sheet, range));
                     id
                 });
                 if seen.insert(id) {
-                    range_readers[id].push(i);
-                    *waiting.entry(i).or_default() += 1;
+                    graph.readers[id].push(i);
+                    graph.reads.entry(i).or_default().push(id);
                 }
             }
         }
+        graph
+    }
+
+    /// The formulas among `nodes` in waves, each after the waves it reads,
+    /// and the ones no wave could take - the formulas on a cycle - apart.
+    fn levels(&self, nodes: &[usize]) -> (Vec<Vec<usize>>, Vec<usize>) {
+        let graph = self.graph(nodes);
+        let mut range_left: Vec<usize> = graph.members.iter().map(Vec::len).collect();
+        let mut waiting: HashMap<usize, usize> = nodes
+            .iter()
+            .map(|&i| (i, graph.reads.get(&i).map_or(0, Vec::len)))
+            .collect();
+        let (range_readers, member_of) = (&graph.readers, &graph.member_of);
 
         // Kahn's walk in waves: a wave is every formula whose inputs the waves
         // before it finished, so the formulas of one wave can be computed in
@@ -1642,43 +1770,56 @@ impl Dependencies {
         changed: &[(usize, CellRef)],
         options: &Options<'_>,
     ) -> usize {
-        let mut dirty: HashSet<(usize, CellRef)> = changed.iter().copied().collect();
-        let mut done: HashSet<usize> = HashSet::new();
-        // A formula that reads a dirty cell is itself dirty, which can dirty
-        // the formula reading *it*: keep going until a pass finds nothing new.
-        loop {
-            let mut grew = false;
-            for (i, node) in self.formulas.iter().enumerate() {
-                if done.contains(&i) {
-                    continue;
+        let nodes = self.affected(changed);
+        let stale: HashSet<(usize, CellRef)> = nodes
+            .iter()
+            .map(|&i| (self.formulas[i].sheet, self.formulas[i].at))
+            .collect();
+        // The index holds what each formula reads, not the formula itself, so
+        // the ones this pass computes are parsed here - beside each other, and
+        // on several threads when there are enough of them.
+        let texts: Vec<&str> = nodes
+            .iter()
+            .filter_map(|&i| {
+                let Node { sheet, at, .. } = self.formulas[i];
+                match book.sheet(sheet).and_then(|s| s.get(at)).map(|c| &c.value) {
+                    Some(CellValue::Formula { formula, .. }) => Some(formula.as_str()),
+                    _ => None,
                 }
-                let touched = node.always
-                    || node.reads.iter().any(|(sheet, range)| {
-                        // Most references are a single cell, and asking the set
-                        // about one is far cheaper than walking it: the dirty
-                        // set grows with the batch of edits, the scan does not.
-                        if range.start == range.end {
-                            dirty.contains(&(*sheet, range.start))
-                        } else {
-                            dirty
-                                .iter()
-                                .any(|(s, cell)| s == sheet && range.contains(*cell))
-                        }
-                    });
-                if touched {
-                    done.insert(i);
-                    dirty.insert((node.sheet, node.at));
-                    grew = true;
-                }
-            }
-            if !grew {
-                break;
-            }
+            })
+            .collect();
+        if texts.len() != nodes.len() {
+            // A cell that lost its formula since the index was built; the
+            // slow path answers correctly whatever happened to the book.
+            return self.recompute_one_by_one(book, &nodes, options);
         }
+        let trees = parse_all(&texts, options);
+        let placed: HashMap<usize, usize> =
+            nodes.iter().enumerate().map(|(k, &i)| (i, k)).collect();
+        let blank = Expr::Missing;
+        let results = pass(
+            book,
+            self,
+            &nodes,
+            &|i| placed.get(&i).map_or(&blank, |&k| &trees[k]),
+            Some(&stale),
+            options,
+        );
+        store(book, results)
+    }
 
+    /// The pass as it was before the waves: one formula at a time, in an order
+    /// that puts each after what it reads. Kept for a workbook that changed
+    /// under the index.
+    fn recompute_one_by_one(
+        &self,
+        book: &mut Spreadsheet,
+        nodes: &[usize],
+        options: &Options<'_>,
+    ) -> usize {
+        let order = self.ordered(nodes);
         let mut results = Vec::new();
         {
-            let order = self.ordered(&done.iter().copied().collect::<Vec<_>>());
             let mut engine = match options.functions() {
                 Some(custom) => Engine::with_functions(book, custom),
                 None => Engine::new(book),
@@ -1697,17 +1838,7 @@ impl Dependencies {
                 results.push((sheet, at, value));
             }
         }
-
-        let computed = results.len();
-        for (index, at, value) in results {
-            let Some(s) = book.sheet_mut(index) else {
-                continue;
-            };
-            if let CellValue::Formula { cached, .. } = &mut s.entry(at).value {
-                *cached = Some(Box::new(stored(&value)));
-            }
-        }
-        computed
+        store(book, results)
     }
 }
 
@@ -1766,6 +1897,28 @@ fn node_of(
     ))
 }
 
+/// Parses a batch of formulas, on several threads when there are enough of
+/// them. A formula that does not parse becomes `#NAME?` where it is computed.
+fn parse_all(texts: &[&str], options: &Options<'_>) -> Vec<Expr> {
+    let one = |text: &&str| parse(text).unwrap_or(Expr::Error(CellError::Name));
+    let threads = workers(texts.len(), options);
+    if threads <= 1 {
+        return texts.iter().map(one).collect();
+    }
+    let size = texts.len().div_ceil(threads);
+    std::thread::scope(|scope| {
+        let handles: Vec<_> = texts
+            .chunks(size)
+            .map(|chunk| scope.spawn(move || chunk.iter().map(one).collect::<Vec<_>>()))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|h| h.join().ok())
+            .flatten()
+            .collect()
+    })
+}
+
 /// Recomputes only the formulas that depend on `changed`, directly or through
 /// other formulas, and stores their results. Returns how many were computed.
 ///
@@ -1817,8 +1970,14 @@ fn collect_refs(
             }
         }
         Expr::Name(name) => {
-            *always = true;
-            out.extend(refs.name(own_sheet, name));
+            // A name whose ranges are known is a reference like any other. One
+            // that stands for something built at evaluation time, or for
+            // nothing this walk can see, keeps the formula in every pass.
+            let (ranges, dynamic) = refs.name(own_sheet, name);
+            if ranges.is_empty() || dynamic {
+                *always = true;
+            }
+            out.extend(ranges);
         }
         // A table names its cells rather than pointing at them, and where
         // those cells are is a property of the table, not of the formula. So
@@ -1862,11 +2021,15 @@ fn collect_refs(
     }
 }
 
+/// What a defined name was found to stand for: the rectangles, and whether
+/// any part of it is built at evaluation time.
+type NameReads = (Vec<(usize, Range)>, bool);
+
 /// The workbook a dependency walk reads, and what its names were found to
 /// point at, so seven hundred names are not parsed again for every formula.
 pub(crate) struct Refs<'b> {
     book: &'b Spreadsheet,
-    names: HashMap<(usize, String), Vec<(usize, Range)>>,
+    names: HashMap<(usize, String), NameReads>,
     depth: usize,
 }
 
@@ -1908,8 +2071,9 @@ impl<'b> Refs<'b> {
         }
     }
 
-    /// The ranges a defined name stands for, read from the sheet `sheet`.
-    fn name(&mut self, sheet: usize, name: &str) -> Vec<(usize, Range)> {
+    /// The ranges a defined name stands for, read from the sheet `sheet`, and
+    /// whether what it stands for is built at evaluation time.
+    fn name(&mut self, sheet: usize, name: &str) -> NameReads {
         // A name that names a name is followed a few steps, not forever.
         const MAX_NAME_DEPTH: usize = 8;
         let key = (sheet, name.to_lowercase());
@@ -1917,7 +2081,7 @@ impl<'b> Refs<'b> {
             return found.clone();
         }
         if self.depth >= MAX_NAME_DEPTH {
-            return Vec::new();
+            return (Vec::new(), true);
         }
         let defined = self
             .book
@@ -1926,14 +2090,14 @@ impl<'b> Refs<'b> {
             .filter(|n| n.name.eq_ignore_ascii_case(name) || n.name.to_lowercase() == key.1)
             .min_by_key(|n| n.sheet != Some(sheet));
         let mut out = Vec::new();
+        let mut dynamic = defined.is_none();
         if let Some(expr) = defined.and_then(|n| parse(&n.formula).ok()) {
             self.depth += 1;
-            let mut always = false;
-            collect_refs(&expr, sheet, self, &mut out, &mut always);
+            collect_refs(&expr, sheet, self, &mut out, &mut dynamic);
             self.depth -= 1;
         }
-        self.names.insert(key, out.clone());
-        out
+        self.names.insert(key, (out.clone(), dynamic));
+        (out, dynamic)
     }
 }
 

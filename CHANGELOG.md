@@ -51,6 +51,16 @@
 
 ### Fixed
 
+- `recalculate_from` did not finish on a large workbook. Finding what an edit
+  reaches asked every formula, on every round, whether any dirty cell was
+  inside what it read; one edit in a book of 651,614 formulas ran for over ten
+  minutes. It now walks the dependency graph once, computes the formulas it
+  found in waves on several threads, and takes the results already stored
+  beside the other cells rather than computing them again: the same edit is
+  9.3 s, of which 1.1 s is building the index.
+- A formula reading a defined name is recomputed when the cells that name
+  stands for change, rather than on every edit anywhere. A name built at
+  evaluation time, and a volatile function, still mean every pass.
 - A full recalculation computed most formulas twice. The pass computed them
   in dependency order but did not keep what each one worked out, so the next
   formula reading that cell computed it again from scratch. COIN's 651,614
