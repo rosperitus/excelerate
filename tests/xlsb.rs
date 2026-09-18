@@ -100,10 +100,10 @@ fn a_binary_workbook_reads_as_the_same_workbook_saved_as_xml() {
                             assert_eq!(theirs, cached, "{} {at}", theirs_title(mine));
                         }
                     }
-                    // A formula whose tokens this crate cannot read leaves the
-                    // cached value standing. Two cells here do: both hold a
-                    // structured reference to a table that was deleted, which
-                    // is a token kind the decompiler does not know.
+                    // A formula whose tokens this crate cannot read leaves
+                    // the cached value standing. None of this workbook's do;
+                    // the arm stays so that one starting to says so here
+                    // rather than quietly.
                     other => {
                         assert_eq!(
                             Some(other),
@@ -120,7 +120,7 @@ fn a_binary_workbook_reads_as_the_same_workbook_saved_as_xml() {
         }
     }
     assert!(cells > 3000, "the workbook has cells: {cells}");
-    assert_eq!(unread, 2, "only the two structured references go unread");
+    assert_eq!(unread, 0, "every formula of the workbook reads");
 }
 
 #[test]

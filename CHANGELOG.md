@@ -19,13 +19,12 @@
 - **xlsb (BIFF12) is read.** `reader::read` picks it up by the parts inside
   the package, not by the extension, so a renamed file still opens; the wasm
   `Book.read` gets it for free. Values, shared strings, formulas (shared and
-  array ones expanded), defined names, number formats, column widths, merges
-  the full cell style (number format, font, fill, borders, alignment,
-  protection), row heights and hidden rows, the saved view with its frozen
-  panes and selection, and the auto filter come across. Checked against the
+  array ones expanded), defined names, merges, sheet visibility, the full cell
+  style (number format, font, fill, borders, alignment, protection), row
+  heights and hidden rows, column widths, the saved view with its frozen panes
+  and selection, and the auto filter all come across. Checked against the
   same workbook saved as xlsx: 3769 cells, every cell style, every row and
-  every sheet view agree. See `docs/formats.md` for the two kinds of formula it leaves as
-  their cached value.
+  every sheet view agree, and so does every formula.
 
 - Number formats read the Cyrillic date codes a Russian Excel is typed in:
   `ТЕКСТ(A1;"ДД.ММ.ГГГГ")` is a date, as it is in Excel, rather than the

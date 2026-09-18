@@ -414,6 +414,22 @@ impl Decompiler<'_> {
                 self.stack.push(format!("{sheet}#REF!"));
                 data + 2 + self.context.dialect.area_size()
             }
+            // A structured reference to a table, which BIFF12 spells with a
+            // token of its own. Only the broken kind is read: a table that was
+            // deleted, which Excel shows as `#REF!` and writes into xlsx that
+            // way. A live one names its table and column, and nothing here
+            // knows those, so the formula is left unread rather than made up.
+            0x18 if self.context.dialect == Dialect::Biff12 => {
+                let list = self.byte(data)?;
+                if list != 0x19 {
+                    return None;
+                }
+                if self.dword(data + 5)? != u32::MAX {
+                    return None;
+                }
+                self.stack.push("#REF!".to_owned());
+                data + 13
+            }
             // `Exp` and `Tbl` point at a shared, array or table formula; the
             // caller resolves those before coming here. Everything else is a
             // token this module does not read.

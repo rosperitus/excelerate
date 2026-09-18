@@ -195,8 +195,11 @@ Two sharp edges:
   `AVERAGEIF`). Those numbers are known; a number outside both tables leaves
   the formula unread and its cached value standing, which is true as far as
   it goes.
-- **Structured references** (`Sales[Amount]`) are a token kind of their own
-  and are not decompiled yet, so such a formula also keeps its cached value.
+- **Structured references** (`Sales[Amount]`) are a token kind of their own.
+  One whose table was deleted reads as `#REF!`, the way Excel writes it into
+  xlsx; a live one needs the table's name and columns, which means reading the
+  table parts, and that is not done yet - such a formula keeps its cached
+  value rather than a guess.
 - A function Excel itself does not know is written `_xludf.MAXIFS` in xlsx and
   bare in xlsb. Bare is what you get here - this crate's own engine knows
   `MAXIFS` under that name.
