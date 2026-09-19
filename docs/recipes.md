@@ -70,6 +70,7 @@ use excelerate::CellRef;
 # let mut book = Spreadsheet::empty();
 # book.add_sheet(Worksheet::new("Sheet1")?)?;
 println!("{}", book.formatted(0, CellRef::parse("A1")?));
+println!("{}", book.formatted_at(0, 1, 1));   // the same cell, by numbers
 # Ok::<(), excelerate::Error>(())
 ```
 
@@ -122,6 +123,37 @@ for (col, cell) in sheet.row_cells(Row::new(0).unwrap()) {
 }
 # Ok::<(), excelerate::Error>(())
 ```
+
+## Fill a sheet from records
+
+A row at a time rather than a cell at a time, and the value with the style it
+is shown in:
+
+```rust
+use excelerate::model::{CellValue, Spreadsheet, Worksheet};
+use excelerate::style::Style;
+use excelerate::CellRef;
+
+let mut book = Spreadsheet::empty();
+let mut sheet = Worksheet::new("Продажи")?;
+let mut bold = Style::default();
+bold.font.bold = true;
+let bold = book.styles.intern(bold);
+
+sheet.set_styled(CellRef::parse("A1")?, "Товар", bold);
+sheet.set_styled(CellRef::parse("B1")?, "Сумма", bold);
+
+for (index, (name, sum)) in [("Чай", 180.0), ("Кофе", 350.0)].into_iter().enumerate() {
+    let row = 2 + u32::try_from(index).unwrap();
+    let first = CellRef::parse(&format!("A{row}"))?;
+    sheet.set_row(first, [CellValue::text(name), CellValue::Number(sum)]);
+}
+book.add_sheet(sheet)?;
+# Ok::<(), excelerate::Error>(())
+```
+
+`set_row` stops at the last column of the sheet rather than wrapping round to
+column A.
 
 ## Find where the data is
 

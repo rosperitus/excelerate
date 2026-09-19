@@ -13,7 +13,7 @@ use excelerate::formula::eval::recalculate;
 use excelerate::model::protection::PasswordHash;
 use excelerate::model::table::{Table, TableColumn};
 use excelerate::model::{
-    ColumnRun, Comment, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet,
+    CellValue, ColumnRun, Comment, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet,
 };
 use excelerate::progress::Options;
 use excelerate::style::{Color, Fill, NumberFormat, Pattern, Style};
@@ -55,14 +55,11 @@ fn main() {
     let header = book.styles.intern(header);
 
     // A heading across the table, merged.
-    sheet.set(at("A1"), "Отчёт за квартал");
-    sheet.entry(at("A1")).style = heading;
+    sheet.set_styled(at("A1"), "Отчёт за квартал", heading);
     sheet.merges.push(Range::new(at("A1"), at("C1")));
 
     for (letter, name) in [("A", "Товар"), ("B", "Штук"), ("C", "Сумма")] {
-        let cell = at(&format!("{letter}2"));
-        sheet.set(cell, name);
-        sheet.entry(cell).style = header;
+        sheet.set_styled(at(&format!("{letter}2")), name, header);
     }
 
     let rows = [
@@ -72,25 +69,26 @@ fn main() {
     ];
     for (index, (name, count, price)) in rows.iter().enumerate() {
         let row = 3 + u32::try_from(index).expect("three rows");
-        sheet.set(at(&format!("A{row}")), *name);
-        sheet.set(at(&format!("B{row}")), *count);
         // A formula written without its answer: `recalculate` fills the cache
         // below, so the file opens with numbers in it rather than blanks.
-        sheet.set(
-            at(&format!("C{row}")),
-            excelerate::model::CellValue::formula(format!("B{row}*{price}")),
+        sheet.set_row(
+            at(&format!("A{row}")),
+            [
+                CellValue::text(*name),
+                CellValue::Number(*count),
+                CellValue::formula(format!("B{row}*{price}")),
+            ],
         );
         sheet.entry(at(&format!("C{row}"))).style = money;
     }
 
     let total = 3 + u32::try_from(rows.len()).expect("three rows");
-    sheet.set(at(&format!("A{total}")), "Итого");
-    sheet.entry(at(&format!("A{total}"))).style = header;
-    sheet.set(
+    sheet.set_styled(at(&format!("A{total}")), "Итого", header);
+    sheet.set_styled(
         at(&format!("C{total}")),
-        excelerate::model::CellValue::formula(format!("SUM(C3:C{})", total - 1)),
+        CellValue::formula(format!("SUM(C3:C{})", total - 1)),
+        money,
     );
-    sheet.entry(at(&format!("C{total}"))).style = money;
 
     // Column widths, in characters of the default font.
     for (letter, width) in [("A", 18.0), ("B", 10.0), ("C", 16.0)] {

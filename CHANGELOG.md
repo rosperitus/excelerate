@@ -11,6 +11,11 @@
   it, and `as_number`, `as_str`, `as_bool` and `as_error` look through it to
   one type. An uncomputed formula reads as `Empty` rather than as an error.
   A boolean is not a number, as Excel keeps the two apart.
+- `Worksheet::set_styled(at, value, style)` writes both in one lookup of the
+  cell, and `Worksheet::set_row(from, values)` writes a run along a row. The
+  run stops at the last column rather than wrapping round to column A.
+- `Spreadsheet::formatted_at(sheet, row, column)` is `formatted` by 1-based
+  numbers, for callers that count rows rather than parse addresses.
 - `CellValue::display(code, epoch)` renders a value through a number format,
   and `Spreadsheet::formatted(sheet, at)` does it with the cell's own format
   and the workbook's epoch already looked up. The second was previously

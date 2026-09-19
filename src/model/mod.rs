@@ -1637,6 +1637,71 @@ impl Worksheet {
         self.entry(at).value = value.into();
     }
 
+    /// Writes a value and the style it is shown in.
+    ///
+    /// The pair written separately costs a second lookup of the same cell,
+    /// which on a sheet being built column by column is the whole of the
+    /// difference.
+    ///
+    /// ```
+    /// use excelerate::model::{Spreadsheet, Worksheet};
+    /// use excelerate::style::{Style, StyleId};
+    /// use excelerate::CellRef;
+    ///
+    /// let mut book = Spreadsheet::empty();
+    /// let mut sheet = Worksheet::new("Sheet1")?;
+    /// let mut bold = Style::default();
+    /// bold.font.bold = true;
+    /// let bold = book.styles.intern(bold);
+    ///
+    /// sheet.set_styled(CellRef::parse("A1")?, "Итого", bold);
+    /// # assert_ne!(bold, StyleId::default());
+    /// # Ok::<(), excelerate::Error>(())
+    /// ```
+    pub fn set_styled(&mut self, at: CellRef, value: impl Into<CellValue>, style: StyleId) {
+        let cell = self.entry(at);
+        cell.value = value.into();
+        cell.style = style;
+    }
+
+    /// Writes a run of values along a row, starting at `from`.
+    ///
+    /// Building a sheet from records means writing a row at a time, and doing
+    /// that a cell at a time means building an address per cell. The run stops
+    /// at the last column of the sheet rather than wrapping round to the first.
+    ///
+    /// ```
+    /// use excelerate::model::{CellValue, Worksheet};
+    /// use excelerate::{CellRef, Row};
+    ///
+    /// let mut sheet = Worksheet::new("Sheet1")?;
+    /// let a2 = CellRef::parse("A2")?;
+    /// sheet.set_row(a2, ["Чай".into(), CellValue::Number(42.0)]);
+    ///
+    /// assert_eq!(sheet.get(a2).map(|c| c.value.as_str()), Some(Some("Чай")));
+    /// assert_eq!(
+    ///     sheet.get(CellRef::parse("B2")?).and_then(|c| c.value.as_number()),
+    ///     Some(42.0),
+    /// );
+    /// # let _ = Row::new(0);
+    /// # Ok::<(), excelerate::Error>(())
+    /// ```
+    pub fn set_row<V: Into<CellValue>>(
+        &mut self,
+        from: CellRef,
+        values: impl IntoIterator<Item = V>,
+    ) {
+        for (offset, value) in values.into_iter().enumerate() {
+            let Ok(offset) = u32::try_from(offset) else {
+                return;
+            };
+            let Some(col) = from.col.index().checked_add(offset).and_then(Col::new) else {
+                return;
+            };
+            self.set(CellRef::new(col, from.row), value);
+        }
+    }
+
     /// The cell at `at` for modification, created empty if absent.
     pub fn entry(&mut self, at: CellRef) -> &mut Cell {
         // A new row reserves room for as many cells as the row before it
@@ -1955,6 +2020,21 @@ impl Spreadsheet {
         cell.value.display(code, self.epoch)
     }
 
+    /// The same by 1-based row and column, the way a user counts them.
+    ///
+    /// A row or column outside the sheet's grid gives an empty string, the
+    /// same answer an empty cell gives.
+    #[must_use]
+    pub fn formatted_at(&self, sheet: usize, row: u32, column: u32) -> String {
+        let (Ok(row), Ok(column)) = (
+            Row::from_one_based(u64::from(row)),
+            Col::from_one_based(u64::from(column)),
+        ) else {
+            return String::new();
+        };
+        self.formatted(sheet, CellRef::new(column, row))
+    }
+
     /// Tab index of the active sheet.
     #[must_use]
     pub const fn active_index(&self) -> usize {
@@ -2219,5 +2299,53 @@ mod tests {
         // A cell that is not there, and a sheet that is not there.
         assert_eq!(book.formatted(0, CellRef::parse("Z99").unwrap()), "");
         assert_eq!(book.formatted(7, at), "");
+    }
+
+    /// A run of values written along a row, and what happens at the edge of
+    /// the sheet: the run stops rather than wrapping round to column A.
+    #[test]
+    fn a_row_of_values_stops_at_the_last_column() {
+        let mut sheet = Worksheet::new("Sheet1").unwrap();
+        let last = CellRef::new(
+            crate::Col::new(crate::coordinate::MAX_COL - 1).unwrap(),
+            crate::Row::new(0).unwrap(),
+        );
+        sheet.set_row(last, [1.0, 2.0, 3.0]);
+        assert_eq!(sheet.get(last).and_then(|c| c.value.as_number()), Some(1.0));
+        assert_eq!(sheet.len(), 1, "the other two had nowhere to go");
+
+        let a1 = CellRef::parse("A1").unwrap();
+        sheet.set_row(a1, ["a", "b", "c"]);
+        assert_eq!(
+            sheet
+                .get(CellRef::parse("C1").unwrap())
+                .unwrap()
+                .value
+                .as_str(),
+            Some("c")
+        );
+    }
+
+    /// Writing the value and the style together leaves the same cell as
+    /// writing them one after the other.
+    #[test]
+    fn a_value_and_its_style_are_written_together() {
+        use crate::style::Style;
+
+        let mut book = Spreadsheet::empty();
+        let mut sheet = Worksheet::new("Sheet1").unwrap();
+        let mut bold = Style::default();
+        bold.font.bold = true;
+        let bold = book.styles.intern(bold);
+
+        let at = CellRef::parse("A1").unwrap();
+        sheet.set_styled(at, "Итого", bold);
+        assert_eq!(sheet.get(at).unwrap().style, bold);
+        assert_eq!(sheet.get(at).unwrap().value.as_str(), Some("Итого"));
+
+        // And by numbers, the way a user counts rows and columns.
+        book.add_sheet(sheet).unwrap();
+        assert_eq!(book.formatted_at(0, 1, 1), "Итого");
+        assert_eq!(book.formatted_at(0, 0, 1), "", "row zero is not a row");
     }
 }
