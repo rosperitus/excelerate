@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `CellValue::formula(text)` builds a formula with no result yet, the way
+  `CellValue::text` builds text. `cached: None` was written out 26 times in
+  this repository alone.
+- `CellValue::result()` looks through a formula to the value last computed for
+  it, and `as_number`, `as_str`, `as_bool` and `as_error` look through it to
+  one type. An uncomputed formula reads as `Empty` rather than as an error.
+  A boolean is not a number, as Excel keeps the two apart.
+- `CellValue::display(code, epoch)` renders a value through a number format,
+  and `Spreadsheet::formatted(sheet, at)` does it with the cell's own format
+  and the workbook's epoch already looked up. The second was previously
+  reachable only from JavaScript, as `getFormatted`; in Rust it took twenty
+  lines. The wasm wrapper and the HTML writer now call the same code.
+
 ## 0.10.0
 
 ### Added

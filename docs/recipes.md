@@ -32,10 +32,49 @@ match sheet.get(CellRef::parse("A1")?).map(|c| &c.value) {
 # Ok::<(), excelerate::Error>(())
 ```
 
+## Read a number without caring whether it is a formula
+
+`result()` looks through a formula to what it computed, and the `as_*` family
+looks through it to one type. A formula nobody has computed yet reads as empty
+rather than as an error.
+
+```rust
+use excelerate::CellRef;
+use excelerate::model::CellValue;
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut sheet = Worksheet::new("Sheet1")?;
+# sheet.set(CellRef::parse("A1")?, 1.5);
+
+let total: f64 = sheet
+    .iter()
+    .filter_map(|(_, cell)| cell.value.as_number())
+    .sum();
+# let _ = total;
+
+// And writing one back, with no result until something computes it:
+sheet.set(CellRef::parse("B1")?, CellValue::formula("A1*2"));
+# Ok::<(), excelerate::Error>(())
+```
+
 ## Show a number the way Excel shows it
 
 The value is 45292, the cell shows `01.01.2024`. The difference is the number
 format, and `style::format::format` applies one:
+
+For a cell of a workbook you have, `Spreadsheet::formatted` looks up the
+cell's own format and the workbook's epoch for you:
+
+```rust
+use excelerate::CellRef;
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# book.add_sheet(Worksheet::new("Sheet1")?)?;
+println!("{}", book.formatted(0, CellRef::parse("A1")?));
+# Ok::<(), excelerate::Error>(())
+```
+
+With a format string of your own, `style::format::format` applies one to a
+bare value:
 
 ```rust
 use excelerate::shared::date::Epoch;

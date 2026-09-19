@@ -18,7 +18,6 @@ use crate::formula::eval::{Dependencies, Engine, Origin};
 #[cfg(feature = "formulas")]
 use crate::formula::value::Value;
 use crate::model::{CellValue, Spreadsheet, Worksheet};
-use crate::style::format::{Value as FormatValue, format};
 #[cfg(feature = "write")]
 use crate::writer::csv::write_csv_to;
 #[cfg(feature = "write")]
@@ -569,33 +568,10 @@ impl Book {
     }
 
     fn formatted(&self, sheet: usize, at: CellRef) -> Result<String, JsError> {
-        let ws = self
-            .book
-            .sheet(sheet)
-            .ok_or_else(|| JsError::new("no such sheet"))?;
-        let Some(cell) = ws.get(at) else {
-            return Ok(String::new());
-        };
-        let code = self
-            .book
-            .styles
-            .get(cell.style)
-            .map_or(crate::style::format::GENERAL, |s| s.number_format.code());
-        let shown = match &cell.value {
-            CellValue::Formula { cached, .. } => cached.as_deref().cloned().unwrap_or_default(),
-            other => other.clone(),
-        };
-        Ok(match &shown {
-            CellValue::Number(n) => format(FormatValue::Number(*n), code, self.book.epoch),
-            CellValue::Bool(b) => (if *b { "TRUE" } else { "FALSE" }).to_owned(),
-            CellValue::Error(e) => e.as_str().to_owned(),
-            CellValue::Empty => String::new(),
-            other => format(
-                FormatValue::Text(&other.plain_text().unwrap_or_default()),
-                code,
-                self.book.epoch,
-            ),
-        })
+        if self.book.sheet(sheet).is_none() {
+            return Err(JsError::new("no such sheet"));
+        }
+        Ok(self.book.formatted(sheet, at))
     }
 
     /// The indent of a cell, in Excel's indent steps (0 when it has none).

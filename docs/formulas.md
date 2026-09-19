@@ -91,10 +91,7 @@ deps.recalculate_from(&mut book, &[(0, a1)]);
 
 // Changed a *formula*, not a value? The index has to be told.
 let b1 = CellRef::parse("B1")?;
-book.sheet_mut(0).unwrap().set(b1, CellValue::Formula {
-    formula: "A1*100".into(),
-    cached: None,
-});
+book.sheet_mut(0).unwrap().set(b1, CellValue::formula("A1*100"));
 deps.note(&book, 0, b1);
 # Ok::<(), excelerate::Error>(())
 ```

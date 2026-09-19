@@ -78,10 +78,7 @@ fn main() {
         // below, so the file opens with numbers in it rather than blanks.
         sheet.set(
             at(&format!("C{row}")),
-            excelerate::model::CellValue::Formula {
-                formula: format!("B{row}*{price}"),
-                cached: None,
-            },
+            excelerate::model::CellValue::formula(format!("B{row}*{price}")),
         );
         sheet.entry(at(&format!("C{row}"))).style = money;
     }
@@ -91,10 +88,7 @@ fn main() {
     sheet.entry(at(&format!("A{total}"))).style = header;
     sheet.set(
         at(&format!("C{total}")),
-        excelerate::model::CellValue::Formula {
-            formula: format!("SUM(C3:C{})", total - 1),
-            cached: None,
-        },
+        excelerate::model::CellValue::formula(format!("SUM(C3:C{})", total - 1)),
     );
     sheet.entry(at(&format!("C{total}"))).style = money;
 

@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use crate::formula::eval::{Engine, Origin};
 use crate::formula::value::Value as FormulaValue;
 use crate::model::{CellValue, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet};
-use crate::style::format::{GENERAL, Value as FormatValue, format};
+use crate::style::format::GENERAL;
 use crate::style::{
     Alignment, Border, BorderStyle, Color, Fill, Font, HorizontalAlign, Pattern, Script, Style,
     Underline, VerticalAlign,
@@ -307,12 +307,11 @@ fn displayed(engine: &mut Engine<'_>, sheet: usize, at: CellRef, value: &CellVal
 /// A value through its number format, escaped and ready for the page.
 ///
 fn rendered(value: &CellValue, code: &str, epoch: crate::shared::date::Epoch) -> String {
+    // Rich text is written as runs elsewhere in this writer, so it renders as
+    // nothing here rather than as the string its runs spell out.
     let text = match value {
-        CellValue::Number(n) => format(FormatValue::Number(*n), code, epoch),
-        CellValue::Text(t) => format(FormatValue::Text(t), code, epoch),
-        CellValue::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_owned(),
-        CellValue::Error(e) => e.as_str().to_owned(),
-        CellValue::Empty | CellValue::RichText(_) | CellValue::Formula { .. } => String::new(),
+        CellValue::RichText(_) => String::new(),
+        other => other.display(code, epoch),
     };
     let escaped = escape(&text);
     match colour_prefix(code) {

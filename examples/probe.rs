@@ -54,10 +54,7 @@ fn cell(col: u32, row: u32) -> CellRef {
 }
 
 fn formula(text: &str) -> CellValue {
-    CellValue::Formula {
-        formula: text.to_owned(),
-        cached: None,
-    }
+    CellValue::formula(text.to_owned())
 }
 
 /// What this engine answers for a formula, as text, so a human comparing by

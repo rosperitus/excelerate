@@ -75,10 +75,7 @@ Setting values is `impl Into<CellValue>`, so the common cases are short:
 sheet.set(at("A1"), 42.0);          // number
 sheet.set(at("A2"), "hello");       // text
 sheet.set(at("A3"), true);          // bool
-sheet.set(at("A4"), CellValue::Formula {
-    formula: "SUM(A1:A3)".into(),
-    cached: None,
-});
+sheet.set(at("A4"), CellValue::formula("SUM(A1:A3)"));   // no result yet
 # Ok::<(), excelerate::Error>(())
 ```
 

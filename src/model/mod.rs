@@ -110,6 +110,124 @@ impl CellValue {
             _ => None,
         }
     }
+
+    /// A formula with no result yet, which is what a formula written by hand
+    /// is until something computes it.
+    ///
+    /// ```
+    /// use excelerate::model::CellValue;
+    /// # use excelerate::model::{Spreadsheet, Worksheet};
+    /// # use excelerate::CellRef;
+    /// # let mut sheet = Worksheet::new("Sheet1")?;
+    /// sheet.set(CellRef::parse("C1")?, CellValue::formula("A1*B1"));
+    /// # Ok::<(), excelerate::Error>(())
+    /// ```
+    #[must_use]
+    pub fn formula(text: impl Into<String>) -> Self {
+        Self::Formula {
+            formula: text.into(),
+            cached: None,
+        }
+    }
+
+    /// What the cell holds, looking through a formula to its result.
+    ///
+    /// A formula cell holds two things - the text and the value last computed
+    /// for it - and code that reads data wants the second. A formula with no
+    /// cached result answers [`CellValue::Empty`], the way an untouched cell
+    /// does; whether it was ever computed is [`CellValue::Formula`]'s own
+    /// business.
+    ///
+    /// ```
+    /// use excelerate::model::CellValue;
+    ///
+    /// let cell = CellValue::Formula {
+    ///     formula: "1+2".to_owned(),
+    ///     cached: Some(Box::new(CellValue::Number(3.0))),
+    /// };
+    /// assert_eq!(cell.result(), &CellValue::Number(3.0));
+    /// assert_eq!(CellValue::Number(7.0).result(), &CellValue::Number(7.0));
+    /// ```
+    #[must_use]
+    pub fn result(&self) -> &Self {
+        match self {
+            Self::Formula { cached, .. } => cached.as_deref().unwrap_or(&Self::Empty),
+            other => other,
+        }
+    }
+
+    /// The number the cell holds, or the number its formula computed.
+    ///
+    /// `None` for everything else, a boolean included: Excel stores `TRUE` as
+    /// its own type rather than as one, and a caller asking for a number is
+    /// asking about a cell it believes holds one.
+    ///
+    /// ```
+    /// use excelerate::model::CellValue;
+    ///
+    /// assert_eq!(CellValue::Number(2.5).as_number(), Some(2.5));
+    /// assert_eq!(CellValue::Bool(true).as_number(), None);
+    /// ```
+    #[must_use]
+    pub fn as_number(&self) -> Option<f64> {
+        match self.result() {
+            Self::Number(n) => Some(*n),
+            _ => None,
+        }
+    }
+
+    /// The text the cell holds, or the text its formula computed.
+    ///
+    /// Rich text has no single string to borrow, so it answers `None` here;
+    /// [`CellValue::plain_text`] builds one for both kinds.
+    #[must_use]
+    pub fn as_str(&self) -> Option<&str> {
+        match self.result() {
+            Self::Text(t) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// The boolean the cell holds, or the one its formula computed.
+    #[must_use]
+    pub fn as_bool(&self) -> Option<bool> {
+        match self.result() {
+            Self::Bool(b) => Some(*b),
+            _ => None,
+        }
+    }
+
+    /// The error in the cell, or the one its formula answered with.
+    #[must_use]
+    pub fn as_error(&self) -> Option<crate::CellError> {
+        match self.result() {
+            Self::Error(e) => Some(*e),
+            _ => None,
+        }
+    }
+
+    /// The value as a number format shows it.
+    ///
+    /// A formula shows its result. `TRUE` and `FALSE` and the error codes are
+    /// not run through the format: Excel does not format them either.
+    /// [`Spreadsheet::formatted`] is this with the cell's own format and the
+    /// workbook's epoch already looked up, which is what a caller usually
+    /// wants.
+    #[must_use]
+    pub fn display(&self, code: &str, epoch: crate::shared::date::Epoch) -> String {
+        use crate::style::format::{Value as FormatValue, format};
+        match self.result() {
+            Self::Number(n) => format(FormatValue::Number(*n), code, epoch),
+            Self::Text(t) => format(FormatValue::Text(t), code, epoch),
+            Self::Bool(b) => (if *b { "TRUE" } else { "FALSE" }).to_owned(),
+            Self::Error(e) => e.as_str().to_owned(),
+            Self::RichText(runs) => {
+                let text: String = runs.iter().map(|r| r.text.as_str()).collect();
+                format(FormatValue::Text(&text), code, epoch)
+            }
+            Self::Empty | Self::Formula { .. } => String::new(),
+        }
+    }
 }
 
 impl From<f64> for CellValue {
@@ -1798,6 +1916,45 @@ impl Spreadsheet {
             .position(|s| s.title.to_lowercase() == name)
     }
 
+    /// The text a cell shows: its value through its own number format.
+    ///
+    /// The value alone is not what the user sees. `45292` in a cell formatted
+    /// `DD.MM.YYYY` reads `01.01.2024`, and the format lives in the workbook's
+    /// style table while the epoch lives on the workbook, which is why this is
+    /// here rather than on [`Worksheet`]. An empty cell, or one on a sheet
+    /// that does not exist, gives an empty string.
+    ///
+    /// ```
+    /// use excelerate::model::{CellValue, Spreadsheet, Worksheet};
+    /// use excelerate::style::{NumberFormat, Style};
+    /// use excelerate::CellRef;
+    ///
+    /// let mut book = Spreadsheet::empty();
+    /// let mut sheet = Worksheet::new("Sheet1")?;
+    /// let at = CellRef::parse("A1")?;
+    /// sheet.set(at, 45292.0);
+    /// let style = book.styles.intern(Style {
+    ///     number_format: NumberFormat::Custom("DD.MM.YYYY".to_owned()),
+    ///     ..Style::default()
+    /// });
+    /// sheet.entry(at).style = style;
+    /// book.add_sheet(sheet)?;
+    ///
+    /// assert_eq!(book.formatted(0, at), "01.01.2024");
+    /// # Ok::<(), excelerate::Error>(())
+    /// ```
+    #[must_use]
+    pub fn formatted(&self, sheet: usize, at: CellRef) -> String {
+        let Some(cell) = self.sheets.get(sheet).and_then(|s| s.get(at)) else {
+            return String::new();
+        };
+        let code = self
+            .styles
+            .get(cell.style)
+            .map_or(crate::style::format::GENERAL, |s| s.number_format.code());
+        cell.value.display(code, self.epoch)
+    }
+
     /// Tab index of the active sheet.
     #[must_use]
     pub const fn active_index(&self) -> usize {
@@ -2012,5 +2169,55 @@ mod tests {
         wb.set_active(1).unwrap();
         assert_eq!(wb.active_sheet().unwrap().title(), "Второй");
         assert!(wb.set_active(9).is_err());
+    }
+
+    /// Reading data means asking what a cell holds, and for a formula cell
+    /// that is the result rather than the text.
+    #[test]
+    fn a_value_is_read_through_its_formula() {
+        let computed = CellValue::Formula {
+            formula: "1+2".to_owned(),
+            cached: Some(Box::new(CellValue::Number(3.0))),
+        };
+        assert_eq!(computed.as_number(), Some(3.0));
+        assert_eq!(computed.result(), &CellValue::Number(3.0));
+
+        // Written by hand and not computed yet: empty, not an error.
+        let fresh = CellValue::formula("1+2");
+        assert_eq!(fresh.result(), &CellValue::Empty);
+        assert_eq!(fresh.as_number(), None);
+
+        assert_eq!(CellValue::text("Ёж").as_str(), Some("Ёж"));
+        assert_eq!(CellValue::Bool(true).as_bool(), Some(true));
+        let div0 = crate::CellError::Div0;
+        assert_eq!(CellValue::Error(div0).as_error(), Some(div0));
+        // A boolean is not a number, the way Excel keeps them apart.
+        assert_eq!(CellValue::Bool(true).as_number(), None);
+    }
+
+    /// The number in the cell and the text the user sees are not the same
+    /// thing: the format is what turns 45292 into a date.
+    #[test]
+    fn a_cell_shows_its_value_through_its_own_format() {
+        use crate::style::{NumberFormat, Style};
+
+        let mut book = Spreadsheet::empty();
+        let mut sheet = Worksheet::new("Sheet1").unwrap();
+        let at = CellRef::parse("A1").unwrap();
+        sheet.set(at, 45292.0);
+        let dated = book.styles.intern(Style {
+            number_format: NumberFormat::Custom("DD.MM.YYYY".to_owned()),
+            ..Style::default()
+        });
+        sheet.entry(at).style = dated;
+        let plain = CellRef::parse("A2").unwrap();
+        sheet.set(plain, 45292.0);
+        book.add_sheet(sheet).unwrap();
+
+        assert_eq!(book.formatted(0, at), "01.01.2024");
+        assert_eq!(book.formatted(0, plain), "45292");
+        // A cell that is not there, and a sheet that is not there.
+        assert_eq!(book.formatted(0, CellRef::parse("Z99").unwrap()), "");
+        assert_eq!(book.formatted(7, at), "");
     }
 }

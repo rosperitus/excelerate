@@ -40,13 +40,7 @@ fn sample() -> Spreadsheet {
         // Nobody registered this one, so it answers the way Excel does.
         ("C5", "НЕИЗВЕСТНАЯ(1)"),
     ] {
-        sheet.set(
-            at(cell),
-            CellValue::Formula {
-                formula: formula.to_owned(),
-                cached: None,
-            },
-        );
+        sheet.set(at(cell), CellValue::formula(formula.to_owned()));
     }
     book.add_sheet(sheet).expect("the book takes the sheet");
     book
