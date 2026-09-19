@@ -13,7 +13,7 @@ use excelerate::formula::eval::recalculate;
 use excelerate::progress::Options;
 # use excelerate::reader;
 
-# let mut book = reader::read("tests/corpus/test1.xlsx")?;
+# let mut book = reader::read("tests/fixtures/sample.xlsx")?;
 let computed = recalculate(&mut book, None, &Options::default());        // whole workbook
 let one_sheet = recalculate(&mut book, Some(0), &Options::default());    // just this sheet
 # let _ = (computed, one_sheet);
@@ -44,7 +44,7 @@ use excelerate::CellRef;
 use excelerate::formula::eval::recalculate_from;
 # use excelerate::reader;
 
-# let mut book = reader::read("tests/corpus/test1.xlsx")?;
+# let mut book = reader::read("tests/fixtures/sample.xlsx")?;
 let a1 = CellRef::parse("A1")?;
 book.sheet_mut(0).unwrap().set(a1, 99.0);
 let touched = recalculate_from(&mut book, &[(0, a1)]);
@@ -60,7 +60,7 @@ use excelerate::CellRef;
 use excelerate::formula::eval::recalculate_cell;
 # use excelerate::reader;
 
-# let mut book = reader::read("tests/corpus/test1.xlsx")?;
+# let mut book = reader::read("tests/fixtures/sample.xlsx")?;
 let b4 = CellRef::parse("B4")?;
 let was_a_formula = recalculate_cell(&mut book, 0, b4);
 # let _ = was_a_formula;
@@ -82,7 +82,7 @@ use excelerate::formula::eval::Dependencies;
 # use excelerate::model::CellValue;
 # use excelerate::reader;
 
-# let mut book = reader::read("tests/corpus/test1.xlsx")?;
+# let mut book = reader::read("tests/fixtures/sample.xlsx")?;
 let mut deps = Dependencies::of(&book);
 
 let a1 = CellRef::parse("A1")?;
