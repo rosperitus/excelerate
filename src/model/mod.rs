@@ -1515,6 +1515,13 @@ pub struct Worksheet {
     cells: Arc<BTreeMap<Row, Vec<(Col, Cell)>>>,
     /// How many cells `cells` holds, kept rather than counted.
     count: usize,
+    /// The columns cells have been written in: the leftmost and the rightmost
+    /// ever seen, kept rather than searched.
+    ///
+    /// An upper bound, not the exact span: a removed cell does not narrow it,
+    /// because narrowing means the walk this field exists to avoid. See
+    /// [`Worksheet::dimension_hint`].
+    col_span: Option<(Col, Col)>,
     /// Merged areas.
     pub merges: Vec<Range>,
     /// Areas of the array formulas entered with Ctrl+Shift+Enter (and the
@@ -1725,6 +1732,10 @@ impl Worksheet {
             Err(i) => {
                 line.insert(i, (at.col, Cell::default()));
                 self.count += 1;
+                self.col_span = Some(match self.col_span {
+                    Some((lo, hi)) => (lo.min(at.col), hi.max(at.col)),
+                    None => (at.col, at.col),
+                });
                 i
             }
         };
@@ -1821,6 +1832,44 @@ impl Worksheet {
             .get(&row)
             .and_then(|r| r.height)
             .or(self.default_row_height)
+    }
+
+    /// A rectangle covering every non-empty cell, or `None` for an empty
+    /// sheet, without walking the rows.
+    ///
+    /// Rows are exact; columns are an upper bound, because a removed cell
+    /// never narrows the span. Callers that only size a scrollbar or clip a
+    /// viewport want this one: [`Worksheet::dimension`] walks every row of the
+    /// sheet, which on a sheet of seven hundred thousand rows is some twenty
+    /// milliseconds, and it is paid again for every sheet the user switches
+    /// to.
+    ///
+    /// ```
+    /// use excelerate::model::Worksheet;
+    /// use excelerate::CellRef;
+    ///
+    /// let mut sheet = Worksheet::new("Sheet1")?;
+    /// sheet.set(CellRef::parse("B2")?, 1.0);
+    /// sheet.set(CellRef::parse("D4")?, 2.0);
+    /// assert_eq!(sheet.dimension_hint(), sheet.dimension());
+    ///
+    /// sheet.remove(CellRef::parse("D4")?);
+    /// // The hint keeps column D; the exact answer gives it up.
+    /// let hint = sheet.dimension_hint().expect("a cell is left");
+    /// let exact = sheet.dimension().expect("a cell is left");
+    /// assert_eq!(hint.end.col, CellRef::parse("D1")?.col);
+    /// assert_eq!(exact.end.col, CellRef::parse("B1")?.col);
+    /// # Ok::<(), excelerate::Error>(())
+    /// ```
+    #[must_use]
+    pub fn dimension_hint(&self) -> Option<Range> {
+        let (&first_row, _) = self.cells.first_key_value()?;
+        let (&last_row, _) = self.cells.last_key_value()?;
+        let (min_col, max_col) = self.col_span?;
+        Some(Range::new(
+            CellRef::new(min_col, first_row),
+            CellRef::new(max_col, last_row),
+        ))
     }
 
     /// The smallest rectangle covering every non-empty cell, or `None` for an
@@ -2347,5 +2396,32 @@ mod tests {
         book.add_sheet(sheet).unwrap();
         assert_eq!(book.formatted_at(0, 1, 1), "Итого");
         assert_eq!(book.formatted_at(0, 0, 1), "", "row zero is not a row");
+    }
+
+    #[test]
+    fn the_dimension_hint_never_falls_short_of_the_exact_one() {
+        let mut sheet = Worksheet::new("Sheet1").unwrap();
+        assert_eq!(sheet.dimension_hint(), None, "an empty sheet has no extent");
+
+        for a in ["C1", "A5", "F3", "B2"] {
+            sheet.set(CellRef::parse(a).unwrap(), 1.0);
+            assert_eq!(
+                sheet.dimension_hint(),
+                sheet.dimension(),
+                "with nothing removed the hint is exact, at {a}"
+            );
+        }
+
+        sheet.remove(CellRef::parse("F3").unwrap());
+        let (hint, exact) = (sheet.dimension_hint().unwrap(), sheet.dimension().unwrap());
+        assert!(
+            hint.start.col <= exact.start.col && exact.end.col <= hint.end.col,
+            "the hint covers the exact span: {hint:?} against {exact:?}"
+        );
+        assert_eq!(
+            (hint.start.row, hint.end.row),
+            (exact.start.row, exact.end.row),
+            "rows stay exact"
+        );
     }
 }
