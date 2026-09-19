@@ -1,6 +1,6 @@
 [package]
 name = "excelerate"
-version = "0.10.0"
+version = "0.11.0"
 edition = "2024"
 description = "Read, write and recalculate spreadsheets: xlsx, xls, ods, csv, html, and a 518-function formula engine"
 license = "MIT"

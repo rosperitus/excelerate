@@ -9,7 +9,7 @@ No Excel, no LibreOffice, no COM, no headless anything - just the crate.
 
 ```toml
 [dependencies]
-excelerate = "0.10"
+excelerate = "0.11"
 ```
 
 ```rust,no_run

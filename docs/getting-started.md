@@ -4,7 +4,7 @@
 
 ```toml
 [dependencies]
-excelerate = "0.10"
+excelerate = "0.11"
 ```
 
 Rust 2024 edition. No system libraries, no build scripts, nothing to install
