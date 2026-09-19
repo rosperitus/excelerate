@@ -145,6 +145,13 @@ fn documented_deviations_from_other_engines() {
         "serial 60 must survive a round trip"
     );
 
+    // Serial 0 is a second phantom, the day before the calendar starts. Other
+    // readers count back from 1 January 1900 and land on 31 December 1899;
+    // Excel shows the zeroth of January 1900, which is what a cell holding
+    // zero under a date format reads as.
+    let zero = from_serial(0.0, Epoch::Windows1900).unwrap();
+    assert_eq!((zero.year, zero.month, zero.day), (1900, 1, 0));
+
     // Row 0 is sometimes allowed for backwards compatibility.
     assert!(excelerate::CellRef::parse("A0").is_err());
     assert!(Row::from_one_based(0).is_err());

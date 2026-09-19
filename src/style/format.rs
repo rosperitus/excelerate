@@ -103,15 +103,28 @@ pub fn builtin_code(id: u16) -> &'static str {
         11 => "0.00E+00",
         12 => "# ?/?",
         13 => "# ??/??",
-        14 => "m/d/yyyy",
+        14 | 50..=54 | 57 | 58 => "m/d/yyyy",
         15 => "d-mmm-yy",
         16 => "d-mmm",
         17 => "mmm-yy",
-        18 => "h:mm AM/PM",
+        18 | 55 | 56 => "h:mm AM/PM",
         19 => "h:mm:ss AM/PM",
         20 => "h:mm",
         21 => "h:mm:ss",
         22 => "m/d/yyyy h:mm",
+        // 50..=58 are the second block of locale-dependent slots, the way
+        // 27..=36 are the first, and they share the arms of the plain date and
+        // time above. What they stand for is whatever the locale says, and a
+        // file carrying one names no locale; what it does say is that the cell
+        // holds a date or a time, so a short date beats showing 693597.
+        //
+        // ponytail: the workbook's locale would pick a better code, and it is
+        // not read anywhere yet; when it is, these become its own short date
+        // and time rather than the American ones.
+        5 => "$#,##0_);($#,##0)",
+        6 => "$#,##0_);[Red]($#,##0)",
+        7 => "$#,##0.00_);($#,##0.00)",
+        8 => "$#,##0.00_);[Red]($#,##0.00)",
         27 | 36 => "[$-404]e/m/d",
         28 | 29 => r#"[$-411]ggge"年"m"月"d"日""#,
         30 => "m/d/yy",
@@ -124,6 +137,9 @@ pub fn builtin_code(id: u16) -> &'static str {
         38 => "#,##0_);[Red](#,##0)",
         39 => "#,##0.00_);(#,##0.00)",
         40 => "#,##0.00_);[Red](#,##0.00)",
+        41 => r#"_(* #,##0_);_(* \(#,##0\);_(* "-"_);_(@_)"#,
+        42 => r#"_("$"* #,##0_);_("$"* \(#,##0\);_("$"* "-"_);_(@_)"#,
+        43 => r#"_(* #,##0.00_);_(* \(#,##0.00\);_(* "-"??_);_(@_)"#,
         44 => r#"_("$"* #,##0.00_);_("$"* \(#,##0.00\);_("$"* "-"??_);_(@_)"#,
         45 => "mm:ss",
         46 => "[h]:mm:ss",
@@ -204,11 +220,14 @@ impl<'a> Sections<'a> {
     fn pick(&self, value: Value<'_>) -> (&'a str, bool) {
         let n = match value {
             Value::Text(_) => {
-                // The fourth section is the text section. With a single section
-                // that one section applies to everything, text included. With
-                // two or three, text passes through unformatted.
+                // The fourth section is the text section, and it applies
+                // whether or not it spells out `@`. A single section applies to
+                // text only when it says where the text goes: `#,##0` is a
+                // number format, and text in a cell carrying one shows as it
+                // was typed rather than as the digits of the format. With two
+                // or three sections text passes through unformatted.
                 return match self.parts.len() {
-                    1 => (self.parts[0], false),
+                    1 if self.parts[0].contains('@') => (self.parts[0], false),
                     n if n >= 4 => (self.parts[3], false),
                     _ => ("@", false),
                 };
@@ -1348,15 +1367,54 @@ mod tests {
         assert_eq!(render(almost, "h:mm:ss"), "12:00:00");
     }
 
+    /// Text in a cell whose format is a number format shows as it was typed:
+    /// a single section applies to text only when it says where the text goes.
+    #[test]
+    fn a_number_format_leaves_text_alone() {
+        use super::{Value, format};
+        let plain = |code: &str| format(Value::Text("-"), code, Epoch::Windows1900);
+        assert_eq!(plain("#,##0"), "-");
+        assert_eq!(plain("0.00%"), "-");
+        // `@` is where the text goes, so a section holding one does apply.
+        assert_eq!(plain("\"[\"@\"]\""), "[-]");
+        // And the fourth section applies whether or not it spells out `@`.
+        assert_eq!(plain("#,##0;-#,##0;0;\"нет\""), "нет");
+    }
+
+    /// Serial zero is the day Excel invented to sit before the calendar
+    /// starts, and it shows as the zeroth of January 1900.
+    #[test]
+    fn serial_zero_is_the_day_before_the_calendar() {
+        use super::{Value, format};
+        let shown = |code: &str| format(Value::Number(0.0), code, Epoch::Windows1900);
+        assert_eq!(shown("mmm-yy"), "Jan-00");
+        assert_eq!(shown("DD.MM.YYYY"), "00.01.1900");
+        // The day after it is the first real one.
+        assert_eq!(
+            format(Value::Number(1.0), "DD.MM.YYYY", Epoch::Windows1900),
+            "01.01.1900"
+        );
+    }
+
     #[test]
     fn builtin_codes_cover_the_known_ids() {
         assert_eq!(builtin_code(0), "General");
         assert_eq!(builtin_code(4), "#,##0.00");
         assert_eq!(builtin_code(14), "m/d/yyyy");
         assert_eq!(builtin_code(49), "@");
-        // Locale-dependent ids are left as General, as does.
-        assert_eq!(builtin_code(5), "General");
+        // The currency and accounting ids the format spells out.
+        assert_eq!(builtin_code(5), "$#,##0_);($#,##0)");
+        assert_eq!(
+            builtin_code(41),
+            r#"_(* #,##0_);_(* \(#,##0\);_(* "-"_);_(@_)"#
+        );
+        // The locale-dependent slots are dates and times rather than General:
+        // a cell carrying one shows a date, and General would show 693597.
+        assert_eq!(builtin_code(58), "m/d/yyyy");
+        assert_eq!(builtin_code(55), "h:mm AM/PM");
+        // An id the format does not define at all.
         assert_eq!(builtin_code(999), "General");
+        assert_eq!(builtin_code(23), "General");
     }
 
     #[test]

@@ -169,6 +169,20 @@ pub fn from_serial(serial: f64, epoch: Epoch) -> Result<DateTime> {
 
     // Serial 60 is that phantom 29 February 1900.
     if epoch == Epoch::Windows1900 {
+        // And serial 0 is a phantom day before the calendar starts: Excel
+        // shows it as the zeroth of January 1900 rather than as the last of
+        // December 1899, which is what counting back a day would give.
+        if days == 0 {
+            let (hour, minute, second) = split_time(serial - whole);
+            return Ok(DateTime {
+                year: 1900,
+                month: 1,
+                day: 0,
+                hour,
+                minute,
+                second,
+            });
+        }
         if days == 60 {
             let frac = serial - whole;
             let (hour, minute, second) = split_time(frac);

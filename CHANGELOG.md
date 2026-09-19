@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Fixed
+
+- Text in a cell whose number format has one section showed the format code
+  itself: `-` in a cell formatted `#,##0` read `#,##0`. A single section
+  applies to text only when it spells out `@`, which is what Excel does. 1364
+  cells of one test workbook were wrong this way.
+- Number format ids 5 to 8 and 41 to 43 were read as General; they are the
+  currency and accounting formats the spec spells out. Ids 50 to 58, the
+  second block of locale-dependent slots, now read as a short date or time
+  rather than General, so a cell carrying one shows a date instead of 693597.
+- Serial 0 under a date format showed 31 December 1899. Excel shows the zeroth
+  of January 1900, and now so does this.
+
 ### Added
 
 - `CellValue::formula(text)` builds a formula with no result yet, the way
