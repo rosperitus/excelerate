@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `Worksheet::dimension_hint()`: the used range without walking the rows.
+  Rows are exact, columns are an upper bound kept as cells are written, and a
+  removed cell never narrows it. `dimension()` walks every row of the sheet -
+  some twenty milliseconds on a sheet of seven hundred thousand rows, paid
+  again for every sheet a viewer switches to - and a scrollbar or a clipped
+  viewport does not need that precision.
+
 ## 0.11.0
 
 ### Fixed

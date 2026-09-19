@@ -113,7 +113,9 @@ book.set_active(index)?;
 Cells are stored sparsely in a `BTreeMap`, so an empty sheet costs nothing and
 `iter()` hands you only what exists, in the row-major order xlsx wants when it
 is written back. `dimension()` gives the used range, or `None` for an empty
-sheet.
+sheet; it walks every row of the sheet, so a viewport or a scrollbar that only
+needs bounds should ask `dimension_hint()` instead — same rows, columns as an
+upper bound, and no walk.
 
 ## Column and row properties
 
