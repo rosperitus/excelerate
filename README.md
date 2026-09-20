@@ -9,7 +9,7 @@ No Excel, no LibreOffice, no COM, no headless anything - just the crate.
 
 ```toml
 [dependencies]
-excelerate = "0.11"
+excelerate = "0.12"
 ```
 
 ```rust,no_run
@@ -34,7 +34,13 @@ println!("{}: {} non-empty cells", sheet.title(), sheet.len());
   Charts, pictures, shapes and comments are modelled and written back;
   anything the crate does not model yet rides through byte for byte along with
   its relationships.
-- **Builds for WebAssembly**, so the same reader runs in Node.
+- **Edits the grid like Excel does.** Insert or remove rows, columns and
+  cells, copy or move a block, reorder the sheets - and the formulas, merges,
+  links, tables and drawings across the whole workbook follow. A copy rewrites
+  its formulas, a move keeps them and drags the references to it along.
+- **Builds for WebAssembly**, and ships as two npm packages:
+  [`@rosperitus/excelerate`](https://www.npmjs.com/package/@rosperitus/excelerate)
+  and a read-only `@rosperitus/excelerate-reader` at a third of the size.
 - **No `unsafe`**, `clippy::pedantic` clean, and the deps are `zip`, `quick-xml`,
   `flate2`, `thiserror`, `regex` for the `REGEX*` functions, and `sha1`/`sha2`/
   `getrandom` for password hashes - all but `regex` already come with `zip`.
@@ -104,14 +110,14 @@ Every format has its own sharp edges; they are all written down in
 | [Getting started](docs/getting-started.md) | install, read a file, write one, the whole loop |
 | [Recipes](docs/recipes.md) | short answers: read a value, convert a file, recalculate one cell |
 | [Workbook model](docs/model.md) | workbook, sheet, cell, addresses and ranges |
-| [Editing the grid](docs/editing.md) | inserting and removing rows, columns and sheets, and what moves with them |
+| [Editing the grid](docs/editing.md) | inserting and removing rows, columns and cells, copying and moving blocks and sheets, and what follows them |
 | [Sheet features](docs/sheet-features.md) | merges, comments, tables, protection, filters, validation, print setup |
 | [File formats](docs/formats.md) | what each format carries and what it drops |
 | [Formulas](docs/formulas.md) | evaluation, incremental recalc, driving the engine yourself |
 | [Styles and number formats](docs/styles.md) | fonts, fills, borders, format strings |
 | [Long operations](docs/long-operations.md) | progress, custom functions, what each step costs |
 | [Links to other workbooks](docs/external-links.md) | `[1]Sheet1!A1`, the value cache, plugging in a live file |
-| [WebAssembly](docs/wasm.md) | building for Node and reading a book from JS |
+| [WebAssembly](docs/wasm.md) | building for Node and the browser, and the whole JS API |
 
 ## Building
 
