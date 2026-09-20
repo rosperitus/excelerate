@@ -57,6 +57,7 @@ class Book {
   constructor();
   static fromXlsx(bytes: Uint8Array): Book;
   static read(bytes: Uint8Array, name?: string | null, maxExpanded?: number | null): Book;
+  static readCsv(bytes: Uint8Array, options: CsvOptions): Book;   // shape stated, not guessed
 
   // Sheets
   sheetNames(): string[];
@@ -65,8 +66,10 @@ class Book {
   renameSheet(sheet: number, title: string): void;
   activeSheet(): number;
   setActiveSheet(sheet: number): void;
+  removeSheet(sheet: number): void;               // references to it become #REF!
   cellCount(sheet?: number | null): number;
-  usedRange(sheet: number): string | undefined;   // "A1:D9"
+  usedRange(sheet: number): string | undefined;   // "A1:D9", by walking the cells
+  usedRangeHint(sheet: number): string | undefined; // the same, as the file states it
 
   // Cells, by address
   get(sheet: number, address: string): CellValue;
@@ -99,7 +102,79 @@ class Book {
   sheetVisibility(sheet: number): "visible" | "hidden" | "veryHidden";
   mergedRanges(sheet: number): string[];                  // ["A1:C1", ...]
   mergedRangesAt(sheet: number): Uint32Array;             // [r1, c1, r2, c2] per area
+  merge(sheet: number, range: string): void;
+  unmerge(sheet: number, range: string): boolean;
+  columnWidth(sheet: number, column: number): number | undefined; // characters
+  rowHeight(sheet: number, row: number): number | undefined;      // points
+  setColumnWidth(sheet: number, column: number, width?: number): void; // undefined: back to the default
+  setRowHeight(sheet: number, row: number, height?: number): void;
+  setColumnHidden(sheet: number, column: number, hidden: boolean): void;
+  setRowHidden(sheet: number, row: number, hidden: boolean): void;
+  setSheetVisibility(sheet: number, state: "visible" | "hidden" | "veryHidden"): void;
   getRowAt(sheet: number, row: number, formatted?: boolean): SheetRow;
+
+  // The grid itself: formulas everywhere in the workbook follow the cells they
+  // read, and so do merges, links, validations, tables and drawings
+  insertRows(sheet: number, at: number, count: number): void;
+  removeRows(sheet: number, at: number, count: number): void;
+  insertColumns(sheet: number, at: number, count: number): void;  // 1-based
+  removeColumns(sheet: number, at: number, count: number): void;
+  copyRange(sheet: number, range: string, to: string, toSheet?: number): void;   // formulas rewritten
+  moveRange(sheet: number, range: string, to: string, toSheet?: number): void;   // formulas kept, references follow
+  insertCells(sheet: number, range: string, shift: "down" | "right"): void;
+  removeCells(sheet: number, range: string, shift: "up" | "left"): void;
+  moveSheet(from: number, to: number): void;
+
+  // What is on a sheet besides cells
+  comments(sheet: number): SheetComment[];
+  hyperlinks(sheet: number): SheetHyperlink[];
+  tables(sheet: number): SheetTable[];
+  charts(sheet: number): SheetChart[];
+  images(sheet: number): SheetImage[];          // without the bytes
+  imageData(sheet: number, index: number): Uint8Array;
+  shapes(sheet: number): SheetShape[];
+
+  // Style, written as a patch over what the cell has
+  setCellStyle(sheet: number, address: string, patch: CellStylePatch): void;
+  setCellStyleAt(sheet: number, row: number, column: number, patch: CellStylePatch): void;
+  setRangeStyle(sheet: number, range: string, patch: CellStylePatch): void;
+
+  // Notes, links, tables
+  setComment(sheet: number, address: string, author: string, text: string): void;
+  removeComment(sheet: number, address: string): boolean;
+  setHyperlink(sheet: number, range: string, target: string, inside?: boolean, display?: string, tooltip?: string): void;
+  removeHyperlink(sheet: number, range: string): boolean;
+  addTable(sheet: number, name: string, range: string, headerRow?: boolean): void;
+  removeTable(sheet: number, name: string): boolean;
+
+  // The saved view
+  sheetView(sheet: number): SheetViewInfo;
+  freezePanes(sheet: number, rows: number, columns: number): void;   // (0, 1, 0) pins the header
+  unfreezePanes(sheet: number): void;
+  setZoom(sheet: number, percent?: number): void;
+  setShowGridLines(sheet: number, show: boolean, headers?: boolean): void;
+
+  // Names
+  definedNames(): WorkbookName[];
+  setDefinedName(name: string, formula: string, sheet?: number): void;
+  removeDefinedName(name: string, sheet?: number): boolean;
+
+  // Rules a file states
+  dataValidations(sheet: number): SheetValidation[];
+  conditionalFormats(sheet: number): SheetConditionalFormat[];
+  autoFilter(sheet: number): SheetAutoFilter | undefined;
+  pivotTables(sheet: number): SheetPivotTable[];
+  arrayFormulas(sheet: number): string[];       // ["B2:B4"]
+  externalBooks(): (string | undefined)[];
+
+  // Locks - they stop editing, they do not encrypt
+  protectSheet(sheet: number, password?: string): void;
+  unprotectSheet(sheet: number): void;
+  sheetProtection(sheet: number): ProtectionInfo;
+  verifySheetPassword(sheet: number, password: string): boolean;
+  protectWorkbook(password?: string, windows?: boolean): void;
+  unprotectWorkbook(): void;
+  workbookProtection(): ProtectionInfo;
 
   // Calculation
   evaluate(sheet: number, address: string, formula: string): CellValue;
@@ -114,6 +189,7 @@ class Book {
   toXls(): Uint8Array;
   toHtml(sheet?: number | null, fragment?: boolean | null): string;
   toCsv(sheet: number): string;
+  toCsvWith(sheet: number, options: CsvOptions): string;   // a delimiter of your own
 
   free(): void;
 }
@@ -140,6 +216,20 @@ missing sheet, a truncated package.
 - **Big files.** Zip expansion is capped at 512 MB to stop a zip bomb. Real
   workbooks do exceed it (a 100 MB package can expand to 560 MB), so pass a
   larger `maxExpanded` third argument to `Book.read` when you know the source.
+- **Editing the grid.** `insertRows` and its three siblings move the whole
+  workbook, not one sheet: `$A$5` becomes `$A$6`, a range that lost cells
+  narrows, a deleted cell reads `#REF!`, and drawings and tables follow. The
+  cached result of a rewritten formula is dropped, so recalculate after.
+- **Style is a patch.** `setCellStyle(0, "A1", { font: { bold: true } })` keeps
+  the number format the cell had. Equal styles share one entry in the
+  workbook's table, so painting a column costs one style, not one per cell -
+  and `setRangeStyle` is one call for the whole rectangle.
+- **Copy rewrites, move does not.** `copyRange` rewrites the formulas it
+  carries, as if they had been written where they land; `moveRange` keeps them
+  pointing at the same cells and rewrites the formulas elsewhere that read the
+  moved ones. That is Ctrl+C against Ctrl+X, and it is the whole difference.
+- **Objects are read-only here.** `charts`, `images` and `shapes` describe what
+  a sheet carries; the parts themselves travel through a write byte for byte.
 - **Cached results.** A formula cell read from a file carries whatever the app
   that saved it computed. Call `recalculate()` before relying on those numbers.
 

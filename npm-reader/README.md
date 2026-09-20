@@ -56,6 +56,34 @@ book.sheetVisibility(0);    // "visible" | "hidden" | "veryHidden"
 call takes is the sheet's position in the workbook, and skipping the hidden
 ones would shift it.
 
+`usedRangeHint` answers the same question as `usedRange` without walking the
+cells - it repeats what the file says about its own shape - and `columnWidth`
+and `rowHeight` come back `undefined` where the sheet leaves them to the
+default.
+
+## What is on a sheet besides cells
+
+```js
+book.comments(0);    // [{ address: "B2", author: "Иванов", text: "сверить" }]
+book.hyperlinks(0);  // [{ range, target, external, display, tooltip }]
+book.tables(0);      // [{ name, displayName, range, columns, ... }]
+book.charts(0);      // [{ name, title, kinds: ["barChart"], seriesCount, anchor }]
+book.images(0);      // [{ name, format, byteLength, anchor }] - no bytes
+book.imageData(0, 0); // Uint8Array, the picture itself
+book.shapes(0);      // [{ name, geometry, text, anchor }]
+```
+
+An anchor is where the object sits, in the numbers a user sees:
+`{ kind: "twoCell", row: 3, column: 2 }`. An absolute anchor is at a point on
+the sheet rather than at a cell, so its row and column are `null`.
+
+Beyond the cells, a file states rules and names, and those are here too:
+`definedNames()`, `dataValidations(sheet)`, `conditionalFormats(sheet)`,
+`autoFilter(sheet)`, `pivotTables(sheet)`, `arrayFormulas(sheet)`,
+`externalBooks()`, `sheetView(sheet)` (frozen rows and columns, zoom, grid
+lines) and `sheetProtection(sheet)` with `verifySheetPassword`. `Book.readCsv`
+reads CSV with the delimiter stated rather than guessed.
+
 ## Styles
 
 `cellStyle` answers with the number format, font, fill, borders and text
@@ -100,7 +128,10 @@ unusual - so raise it when you know where the file came from.
 
 ## What is not here
 
-Writing, in any format. Recalculation. Everything else the full package can do
+Writing, in any format - including painting a cell, writing a note, a link or
+a table. Recalculation. Editing the grid - inserting and
+removing rows, columns and sheets - which only makes sense when the result can
+be saved. Everything else the full package can do
 with a workbook once it is open - the reading side of it - is.
 
 MIT.

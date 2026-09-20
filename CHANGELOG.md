@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.12.0
 
 ### Added
 
@@ -10,6 +10,52 @@
   some twenty milliseconds on a sheet of seven hundred thousand rows, paid
   again for every sheet a viewer switches to - and a scrollbar or a clipped
   viewport does not need that precision.
+- The npm packages caught up with the crate. `Book` now edits the grid
+  (`insertRows`, `removeRows`, `insertColumns`, `removeColumns`,
+  `removeSheet`, `merge`, `unmerge` - all under the `write` feature, so the
+  reader package stays a reader), answers the cheap geometry questions
+  (`usedRangeHint`, `columnWidth`, `rowHeight`), and lists what a sheet holds
+  besides cells: `comments`, `hyperlinks`, `tables`, `charts`, `images` with
+  `imageData` for the bytes, and `shapes`. Each object reports its anchor as
+  `{ kind, row, column }` in the numbers a user sees.
+- `Worksheet::set_column_width`, `set_column_hidden`, `set_row_height` and
+  `set_row_hidden`, with `column_entry` under them: setting one column splits
+  the run that covered it, so its neighbours keep the width they had. Until
+  now a caller pushed a `ColumnRun` by hand and overlapping runs were their
+  problem. The npm package gets them as `setColumnWidth`, `setRowHeight`,
+  `setColumnHidden`, `setRowHidden`, along with `setSheetVisibility`.
+- The rest of the wrapper's gaps, the ones a JS caller hits first: writing a
+  style (`setCellStyle`, `setCellStyleAt`, `setRangeStyle` - a patch over what
+  the cell had, equal styles sharing one table entry), notes, links and tables
+  (`setComment`, `setHyperlink`, `addTable` and their removals), the saved view
+  (`sheetView`, `freezePanes`, `setZoom`, `setShowGridLines`), defined names
+  (`definedNames`, `setDefinedName`, `removeDefinedName`), the locks
+  (`protectSheet`, `protectWorkbook`, `verifySheetPassword` and friends), and
+  the rules a file states on the reading side (`dataValidations`,
+  `conditionalFormats`, `autoFilter`, `pivotTables`, `arrayFormulas`,
+  `externalBooks`). CSV gained `toCsvWith` and `Book.readCsv` for a file whose
+  shape is known rather than guessed.
+- `edit::copy_range` and `edit::move_range`: a rectangle of cells, values,
+  styles and the merges inside it. A copy rewrites the formulas it carries the
+  way Excel rewrites a copied formula; a move keeps them pointing where they
+  pointed and rewrites the formulas elsewhere that read the moved cells.
+  Limits, both stated in `docs/editing.md`: a cross-sheet move spells the old
+  sheet's name out per reference, and leaves the references from other cells
+  alone.
+- `edit::insert_cells` and `edit::remove_cells`: Excel's "Insert Cells", where
+  only the columns or rows the block spans move and the rest of the sheet
+  stays put. A reference travels only when the whole of it does.
+- `edit::move_sheet`: a sheet's place in the tab bar. Formulas name sheets
+  rather than numbering them, so they do not change; the active tab and the
+  sheet a defined name belongs to are renumbered.
+- `Range::contains_range` and `Range::intersects`, which those needed.
+- The npm packages get the five as `copyRange`, `moveRange`, `insertCells`,
+  `removeCells` and `moveSheet`.
+- `reader::csv::read_csv_bytes`: CSV from bytes in memory, decoding them the
+  way `read_csv_with` does for a path.
+- `PlotKind::element()`: the chart element a plot is drawn as, `barChart` and
+  the rest. It was inside the xlsx writer, which the read-only build leaves
+  out.
 
 ## 0.11.0
 

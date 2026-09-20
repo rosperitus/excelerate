@@ -13,7 +13,7 @@ use excelerate::formula::eval::recalculate;
 use excelerate::model::protection::PasswordHash;
 use excelerate::model::table::{Table, TableColumn};
 use excelerate::model::{
-    CellValue, ColumnRun, Comment, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet,
+    CellValue, Comment, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet,
 };
 use excelerate::progress::Options;
 use excelerate::style::{Color, Fill, NumberFormat, Pattern, Style};
@@ -92,11 +92,7 @@ fn main() {
 
     // Column widths, in characters of the default font.
     for (letter, width) in [("A", 18.0), ("B", 10.0), ("C", 16.0)] {
-        let col = at(&format!("{letter}1")).col;
-        let mut run = ColumnRun::new(col, col);
-        run.width = Some(width);
-        run.custom_width = true;
-        sheet.columns.push(run);
+        sheet.set_column_width(at(&format!("{letter}1")).col, Some(width));
     }
 
     // A table, so that Excel draws banding and structured references work.

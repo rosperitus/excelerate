@@ -76,3 +76,47 @@ test("a whole row, boldness and merges in one call", () => {
   assert.ok(Array.isArray(book.mergedRanges(0)));
   assert.strictEqual(typeof book.rowHidden(0, 1), "boolean");
 });
+
+test("what is on a sheet besides cells", () => {
+  const fixture = (name) =>
+    readFileSync(`${__dirname}/../tests/fixtures/${name}`);
+
+  const table = Book.read(fixture("table.xlsx"), "table.xlsx");
+  assert.ok(table.tables(0)[0].range.includes(":"));
+  assert.ok(Array.isArray(table.comments(0)));
+  assert.ok(Array.isArray(table.hyperlinks(0)));
+
+  const pictures = Book.read(fixture("pictures.xlsx"), "pictures.xlsx");
+  const [image] = pictures.images(0);
+  assert.strictEqual(image.byteLength, pictures.imageData(0, 0).length);
+
+  const charts = Book.read(fixture("chart.xlsx"), "chart.xlsx").charts(0);
+  assert.ok(charts[0].kinds.length > 0);
+  assert.ok(Book.read(fixture("shapes.xlsx"), "shapes.xlsx").shapes(0).length > 0);
+});
+
+test("the shape of a sheet without walking it", () => {
+  const book = Book.read(bytes, "test1.xlsx");
+  assert.strictEqual(book.usedRangeHint(0), book.usedRange(0));
+  const width = book.columnWidth(0, 1);
+  assert.ok(width == null || width > 0);
+});
+
+test("the rules and names a file states", () => {
+  const book = Book.read(bytes, "test1.xlsx");
+  assert.ok(Array.isArray(book.definedNames()));
+  assert.ok(Array.isArray(book.dataValidations(0)));
+  assert.ok(Array.isArray(book.conditionalFormats(0)));
+  assert.ok(Array.isArray(book.arrayFormulas(0)));
+  assert.ok(Array.isArray(book.externalBooks()));
+
+  const view = book.sheetView(0);
+  assert.strictEqual(typeof view.frozenRows, "number");
+  assert.strictEqual(typeof view.showGridLines, "boolean");
+  assert.strictEqual(book.sheetProtection(0).locked, false);
+});
+
+test("csv read with the delimiter stated", () => {
+  const book = Book.readCsv(Buffer.from("a;1\nb;2\n"), { delimiter: ";" });
+  assert.strictEqual(book.get(0, "B2"), 2);
+});

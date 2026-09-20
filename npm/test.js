@@ -389,3 +389,281 @@ test("progress while reading, writing and recalculating", () => {
   back.recalculate(undefined, (p) => steps.push(p.stage));
   assert.deepStrictEqual(steps, ["recalculating"]);
 });
+
+const fs = require("node:fs");
+const path = require("node:path");
+
+/** A fixture the repository carries, read as bytes. */
+function fixture(name) {
+  return fs.readFileSync(path.join(__dirname, "..", "tests", "fixtures", name));
+}
+
+test("inserting and removing rows moves the formulas with them", () => {
+  const book = new Book();
+  book.set(0, "A1", 1);
+  book.set(0, "A2", 2);
+  book.set(0, "B1", "=SUM(A1:A2)");
+
+  book.insertRows(0, 1, 2);
+  assert.strictEqual(book.get(0, "A3"), 1);
+  assert.strictEqual(book.getFormula(0, "B3"), "SUM(A3:A4)");
+
+  book.removeRows(0, 1, 2);
+  assert.strictEqual(book.getFormula(0, "B1"), "SUM(A1:A2)");
+
+  book.insertColumns(0, 1, 1);
+  assert.strictEqual(book.getFormula(0, "C1"), "SUM(B1:B2)");
+  book.removeColumns(0, 1, 1);
+  assert.strictEqual(book.get(0, "A1"), 1);
+});
+
+test("a removed sheet leaves #REF! behind", () => {
+  const book = new Book();
+  const second = book.addSheet("Данные");
+  book.set(second, "A1", 5);
+  book.set(0, "A1", "=Данные!A1");
+
+  book.removeSheet(second);
+  assert.strictEqual(book.sheetNames().length, 1);
+  assert.match(book.getFormula(0, "A1"), /#REF!/);
+});
+
+test("merges", () => {
+  const book = new Book();
+  book.merge(0, "A1:C1");
+  assert.deepStrictEqual(book.mergedRanges(0), ["A1:C1"]);
+  assert.deepStrictEqual(Array.from(book.mergedRangesAt(0)), [1, 1, 1, 3]);
+  assert.strictEqual(book.unmerge(0, "A1:C1"), true);
+  assert.strictEqual(book.unmerge(0, "A1:C1"), false);
+  assert.deepStrictEqual(book.mergedRanges(0), []);
+});
+
+test("the shape of a sheet without walking it", () => {
+  const book = Book.read(fixture("sample.xlsx"), "sample.xlsx");
+  assert.strictEqual(book.usedRangeHint(0), book.usedRange(0));
+  const height = book.rowHeight(0, 1);
+  assert.ok(height == null || height > 0);
+  const width = book.columnWidth(0, 1);
+  assert.ok(width == null || width > 0);
+});
+
+test("tables, comments and links", () => {
+  const book = Book.read(fixture("table.xlsx"), "table.xlsx");
+  const [table] = book.tables(0);
+  assert.ok(table.name.length > 0);
+  assert.match(table.range, /^[A-Z]+\d+:[A-Z]+\d+$/);
+  assert.ok(Array.isArray(table.columns));
+  assert.ok(Array.isArray(book.comments(0)));
+  assert.ok(Array.isArray(book.hyperlinks(0)));
+});
+
+test("pictures, shapes and charts", () => {
+  const pictures = Book.read(fixture("pictures.xlsx"), "pictures.xlsx");
+  const images = pictures.images(0);
+  assert.ok(images.length > 0);
+  assert.strictEqual(images[0].byteLength, pictures.imageData(0, 0).length);
+  assert.ok(images[0].anchor.row >= 1);
+  assert.throws(() => pictures.imageData(0, 99), /no such image/);
+
+  const shapes = Book.read(fixture("shapes.xlsx"), "shapes.xlsx").shapes(0);
+  assert.ok(shapes.length > 0);
+  assert.strictEqual(typeof shapes[0].text, "string");
+
+  const charts = Book.read(fixture("chart.xlsx"), "chart.xlsx").charts(0);
+  assert.ok(charts.length > 0);
+  assert.ok(charts[0].kinds.every((k) => k.endsWith("Chart")));
+  assert.ok(charts[0].seriesCount >= 1);
+});
+
+test("column widths, row heights and a hidden sheet survive a round trip", () => {
+  const book = new Book();
+  book.set(0, "A1", "ширина");
+  book.setColumnWidth(0, 1, 32);
+  book.setRowHeight(0, 1, 28);
+  book.setColumnHidden(0, 3, true);
+  book.setRowHidden(0, 2, true);
+  const hidden = book.addSheet("Служебный");
+  book.setSheetVisibility(hidden, "veryHidden");
+
+  const back = Book.fromXlsx(book.toXlsx());
+  assert.strictEqual(back.columnWidth(0, 1), 32);
+  assert.strictEqual(back.rowHeight(0, 1), 28);
+  assert.strictEqual(back.rowHidden(0, 2), true);
+  assert.strictEqual(back.sheetVisibility(hidden), "veryHidden");
+  assert.strictEqual(back.sheetVisibility(0), "visible");
+
+  book.setColumnWidth(0, 1, undefined);
+  assert.strictEqual(book.columnWidth(0, 1), undefined);
+  assert.throws(() => book.setSheetVisibility(0, "почти"), /veryHidden/);
+});
+
+test("painting cells", () => {
+  const book = new Book();
+  book.set(0, "A1", "Отчёт");
+  book.set(0, "B2", 1234.5);
+  book.setCellStyle(0, "A1", {
+    font: { bold: true, size: 14, color: "#FF1F4E79" },
+    fill: { pattern: "solid", foreground: "#FFFFE699" },
+    alignment: { horizontal: "center", wrapText: true },
+  });
+  book.setCellStyle(0, "B2", { numberFormat: "#,##0.00" });
+  book.setRangeStyle(0, "A3:C3", { borders: { bottom: { style: "thin", color: "#FF000000" } } });
+
+  const back = Book.fromXlsx(book.toXlsx());
+  const title = back.cellStyle(0, "A1");
+  assert.strictEqual(title.font.bold, true);
+  assert.strictEqual(title.font.size, 14);
+  assert.strictEqual(title.font.color, "#FF1F4E79");
+  assert.strictEqual(title.fill.foreground, "#FFFFE699");
+  assert.strictEqual(title.alignment.horizontal, "center");
+  assert.strictEqual(title.alignment.wrapText, true);
+  assert.strictEqual(back.cellStyle(0, "B2").numberFormat, "#,##0.00");
+  assert.strictEqual(back.getFormatted(0, "B2"), "1,234.50");
+  assert.strictEqual(back.cellStyle(0, "C3").borders.bottom.style, "thin");
+
+  // A patch keeps what it does not mention.
+  book.setCellStyle(0, "A1", { font: { italic: true } });
+  const both = book.cellStyle(0, "A1");
+  assert.strictEqual(both.font.bold, true, "bold survives a later patch");
+  assert.strictEqual(both.font.italic, true);
+  assert.throws(() => book.setCellStyle(0, "A1", { font: { color: "розовый" } }), /colour/);
+});
+
+test("notes, links and tables can be written", () => {
+  const book = new Book();
+  book.setRange(0, "A1", [["Товар", "Цена"], ["Гайка", 10], ["Болт", 20]]);
+  book.setComment(0, "B1", "Иванов", "с НДС");
+  book.setHyperlink(0, "A2", "https://example.com", false, "прайс", "открыть");
+  book.addTable(0, "Продажи", "A1:B3");
+
+  const back = Book.fromXlsx(book.toXlsx());
+  assert.deepStrictEqual(back.comments(0), [{ address: "B1", author: "Иванов", text: "с НДС" }]);
+  const [link] = back.hyperlinks(0);
+  assert.strictEqual(link.target, "https://example.com");
+  assert.strictEqual(link.external, true);
+  assert.strictEqual(link.display, "прайс");
+  const [table] = back.tables(0);
+  assert.strictEqual(table.displayName, "Продажи");
+  assert.deepStrictEqual(table.columns, ["Товар", "Цена"]);
+  // A structured reference resolves against it.
+  assert.strictEqual(back.evaluate(0, "D1", "=SUM(Продажи[Цена])"), 30);
+
+  assert.throws(() => book.addTable(0, "Продажи", "A1:B3"), /already/);
+  assert.strictEqual(book.removeComment(0, "B1"), true);
+  assert.strictEqual(book.removeHyperlink(0, "A2"), true);
+  assert.strictEqual(book.removeTable(0, "Продажи"), true);
+  assert.strictEqual(book.removeTable(0, "Продажи"), false);
+});
+
+test("freezing panes and the sheet view", () => {
+  const book = new Book();
+  book.freezePanes(0, 1, 2);
+  book.setZoom(0, 85);
+  book.setShowGridLines(0, false, false);
+
+  const back = Book.fromXlsx(book.toXlsx());
+  const view = back.sheetView(0);
+  assert.strictEqual(view.frozenRows, 1);
+  assert.strictEqual(view.frozenColumns, 2);
+  assert.strictEqual(view.zoom, 85);
+  assert.strictEqual(view.showGridLines, false);
+  assert.strictEqual(view.showRowColHeaders, false);
+
+  book.unfreezePanes(0);
+  assert.strictEqual(book.sheetView(0).frozenRows, 0);
+  assert.throws(() => book.setZoom(0, 5), /between 10 and 400/);
+});
+
+test("defined names", () => {
+  const book = new Book();
+  book.set(0, "A1", 6);
+  book.set(0, "A2", 7);
+  book.setDefinedName("Итог", "Worksheet!$A$1:$A$2");
+  assert.strictEqual(book.evaluate(0, "B1", "=SUM(Итог)"), 13);
+
+  const back = Book.fromXlsx(book.toXlsx());
+  const [name] = back.definedNames();
+  assert.strictEqual(name.name, "Итог");
+  assert.strictEqual(name.sheet, null);
+  assert.strictEqual(book.removeDefinedName("Итог"), true);
+  assert.strictEqual(book.removeDefinedName("Итог"), false);
+  assert.throws(() => book.setDefinedName("Локальный", "A1", 9), /no such sheet/);
+});
+
+test("csv with a delimiter of its own", () => {
+  const book = new Book();
+  book.setRange(0, "A1", [["a", 1], ["b", 2]]);
+  assert.strictEqual(book.toCsvWith(0, { delimiter: ";" }), "a;1\r\nb;2\r\n");
+  assert.strictEqual(book.toCsv(0), "a,1\r\nb,2\r\n");
+
+  const read = Book.readCsv(Buffer.from("a;1\n\nb;2\n"), { delimiter: ";", contiguous: true });
+  assert.strictEqual(read.get(0, "A2"), "b", "the empty row is skipped");
+  assert.throws(() => book.toCsvWith(0, { delimiter: ";;" }), /one character/);
+});
+
+test("protection", () => {
+  const book = new Book();
+  assert.deepStrictEqual(book.sheetProtection(0), { locked: false, hasPassword: false });
+  book.protectSheet(0, "проба");
+  book.protectWorkbook("книга", true);
+
+  const back = Book.fromXlsx(book.toXlsx());
+  assert.deepStrictEqual(back.sheetProtection(0), { locked: true, hasPassword: true });
+  assert.strictEqual(back.verifySheetPassword(0, "проба"), true);
+  assert.strictEqual(back.verifySheetPassword(0, "не проба"), false);
+  assert.strictEqual(back.workbookProtection().locked, true);
+
+  book.unprotectSheet(0);
+  book.unprotectWorkbook();
+  assert.strictEqual(book.sheetProtection(0).locked, false);
+  assert.strictEqual(book.workbookProtection().locked, false);
+});
+
+test("what a sheet states about its cells", () => {
+  const book = Book.read(fixture("sample.xlsx"), "sample.xlsx");
+  assert.ok(Array.isArray(book.dataValidations(0)));
+  assert.ok(Array.isArray(book.conditionalFormats(0)));
+  assert.ok(Array.isArray(book.arrayFormulas(0)));
+  assert.ok(Array.isArray(book.externalBooks()));
+  // A sheet with no autofilter answers undefined, not an empty object.
+  assert.strictEqual(book.autoFilter(0), undefined);
+
+  const pivots = Book.read(fixture("pivot.xlsx"), "pivot.xlsx");
+  const found = pivots.sheetNames().flatMap((_, sheet) => pivots.pivotTables(sheet));
+  assert.ok(found.length > 0);
+  assert.ok(found[0].location.includes(":"));
+});
+
+test("copying, moving and reordering", () => {
+  const book = new Book();
+  book.setRange(0, "A1", [[1], [2], [3]]);
+  book.set(0, "B1", "=SUM(A1:A3)");
+  book.set(0, "C1", "=A1*2");
+
+  // A copy is rewritten as if it had been written where it lands.
+  book.copyRange(0, "B1:B1", "D5");
+  assert.strictEqual(book.getFormula(0, "D5"), "SUM(C5:C7)");
+
+  // A move keeps its answers, and drags the references to it along.
+  book.moveRange(0, "A1:A3", "F10");
+  assert.strictEqual(book.getAt(0, 10, 6), 1);
+  assert.strictEqual(book.get(0, "A1"), null);
+  assert.strictEqual(book.getFormula(0, "C1"), "F10*2");
+  assert.strictEqual(book.getFormula(0, "B1"), "SUM(F10:F12)");
+
+  // Insert Cells: only the column the range spans moves.
+  book.set(0, "H1", "beside");
+  book.insertCells(0, "F10:F10", "down");
+  assert.strictEqual(book.getAt(0, 11, 6), 1);
+  assert.strictEqual(book.get(0, "H1"), "beside");
+  book.removeCells(0, "F10:F10", "up");
+  assert.strictEqual(book.getAt(0, 10, 6), 1);
+  assert.throws(() => book.insertCells(0, "A1:A1", "вбок"), /"down", "up"/);
+
+  const second = book.addSheet("Второй");
+  book.moveSheet(second, 0);
+  assert.deepStrictEqual(book.sheetNames()[0], "Второй");
+  assert.strictEqual(book.sheetIndex("Второй"), 0);
+  // The formulas name sheets, so moving one changes nothing in them.
+  assert.strictEqual(book.getFormula(1, "B1"), "SUM(F10:F12)");
+});

@@ -61,6 +61,80 @@ becomes `Data!#REF!`, not a bare `#REF!`. Excel writes it the same way.
 **The cached result is dropped.** It was the answer to the old text. Recalculate
 after an edit, or read a stale number later.
 
+## Moving and copying a block
+
+Copying and moving differ in exactly one way, the way Excel's Ctrl+C and
+Ctrl+X differ, and it is about the formulas:
+
+```rust
+use excelerate::edit::{copy_range, move_range};
+use excelerate::{CellRef, Range};
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# book.add_sheet(Worksheet::new("Data")?)?;
+let from = Range::parse("A1:B3")?;
+
+// A copy is rewritten as if it had been written where it lands: `=A1` one
+// column right reads `=B1`, `$A$1` stays where it is.
+copy_range(&mut book, 0, from, 0, CellRef::parse("D1")?)?;
+
+// A move keeps its answers - `=A1` still reads A1 - and the formulas
+// elsewhere that read the moved cells follow them instead.
+move_range(&mut book, 0, from, 0, CellRef::parse("A10")?)?;
+# Ok::<(), excelerate::Error>(())
+```
+
+Both carry the values, the styles and the merges lying wholly inside the
+block, both may overlap their own source, and both empty a target cell the
+source had nothing in - which is what pasting a block does. A block that would
+land off the sheet is an error rather than a silent clamp.
+
+Two limits worth knowing. A move to another sheet qualifies what the moved
+formulas read without naming a sheet, so `=Z9` becomes `=Data!Z9` - right, but
+spelled out per reference, so a range reads `Data!A1:Data!A3`. And a move to
+another sheet leaves the references *from elsewhere* alone; within one sheet
+they follow the cells.
+
+## Inserting cells, not rows
+
+`insert_cells` moves part of a row, which is what Excel's "Insert Cells" does:
+only the columns the block spans move, the rest of the sheet stays put.
+
+```rust
+use excelerate::edit::{Axis, insert_cells, remove_cells};
+use excelerate::Range;
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# book.add_sheet(Worksheet::new("Data")?)?;
+let area = Range::parse("A1:A2")?;
+
+insert_cells(&mut book, 0, area, Axis::Rows)?;     // push the cells below down
+remove_cells(&mut book, 0, area, Axis::Rows)?;     // pull them back up
+insert_cells(&mut book, 0, area, Axis::Columns)?;  // or sideways
+# Ok::<(), excelerate::Error>(())
+```
+
+A reference travels only when the whole of it travels, which is why this is a
+separate edit from `insert_rows` rather than a special case of it. Data that
+the push would shove off the end of the sheet is an error; blank cells there
+are no loss, and Excel draws the line in the same place.
+
+## Moving a sheet
+
+```rust
+use excelerate::edit::move_sheet;
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# book.add_sheet(Worksheet::new("Data")?)?;
+# book.add_sheet(Worksheet::new("Report")?)?;
+move_sheet(&mut book, 1, 0)?;   // the report opens first now
+# Ok::<(), excelerate::Error>(())
+```
+
+Formulas do not change: a sheet is named, not numbered. What does change is
+every index kept beside them - the active tab, the sheet a defined name
+belongs to - and those are renumbered.
+
 ## Renaming and removing sheets
 
 `Worksheet::set_title` changes the tab and nothing else. The sheet's name also

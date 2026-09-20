@@ -79,7 +79,14 @@ pub fn read_csv_with(
     options: &CsvOptions,
 ) -> Result<Spreadsheet> {
     let bytes = std::fs::read(path).map_err(|e| Error::Csv(e.to_string()))?;
-    Ok(read_csv_str(&decode(&bytes), options))
+    Ok(read_csv_bytes(&bytes, options))
+}
+
+/// Reads CSV from bytes in memory, decoding them first: a BOM names the
+/// encoding, and without one the bytes read as UTF-8, else CP1252.
+#[must_use]
+pub fn read_csv_bytes(bytes: &[u8], options: &CsvOptions) -> Spreadsheet {
+    read_csv_str(&decode(bytes), options)
 }
 
 /// Reads CSV text that has already been decoded.

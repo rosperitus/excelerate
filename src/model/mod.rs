@@ -1813,6 +1813,71 @@ impl Worksheet {
             .or(self.default_column_width)
     }
 
+    /// The run describing `col` alone, ready to be written to.
+    ///
+    /// A run covering more columns is split around this one, so that a change
+    /// here does not quietly resize its neighbours; a sheet that says nothing
+    /// about the column gets a run for it.
+    pub fn column_entry(&mut self, col: Col) -> &mut ColumnRun {
+        let covering = self
+            .columns
+            .iter()
+            .rposition(|run| run.first <= col && col <= run.last);
+        let at = match covering {
+            None => {
+                self.columns.push(ColumnRun::new(col, col));
+                self.columns.len() - 1
+            }
+            Some(at) if self.columns[at].first == col && self.columns[at].last == col => at,
+            Some(at) => {
+                let run = self.columns[at].clone();
+                let mut mine = run.clone();
+                mine.first = col;
+                mine.last = col;
+                self.columns[at] = mine;
+                let mut index = at;
+                if run.first < col {
+                    let mut left = run.clone();
+                    left.last = Col::new(col.index() - 1).unwrap_or(run.first);
+                    self.columns.insert(at, left);
+                    index += 1;
+                }
+                if col < run.last {
+                    let mut right = run;
+                    right.first = Col::new(col.index() + 1).unwrap_or(right.last);
+                    self.columns.insert(index + 1, right);
+                }
+                index
+            }
+        };
+        &mut self.columns[at]
+    }
+
+    /// Sets the width of a column in characters of the default font, or clears
+    /// it with `None` so the sheet default applies again.
+    pub fn set_column_width(&mut self, col: Col, width: Option<f64>) {
+        let run = self.column_entry(col);
+        run.width = width;
+        run.custom_width = width.is_some();
+    }
+
+    /// Hides a column, or shows it again.
+    pub fn set_column_hidden(&mut self, col: Col, hidden: bool) {
+        self.column_entry(col).hidden = hidden;
+    }
+
+    /// Sets the height of a row in points, or clears it with `None`.
+    pub fn set_row_height(&mut self, row: Row, height: Option<f64>) {
+        let props = self.rows.entry(row).or_default();
+        props.height = height;
+        props.custom_height = height.is_some();
+    }
+
+    /// Hides a row, or shows it again.
+    pub fn set_row_hidden(&mut self, row: Row, hidden: bool) {
+        self.rows.entry(row).or_default().hidden = hidden;
+    }
+
     /// How deeply a column is grouped: 0 when it is not.
     #[must_use]
     pub fn column_outline_level(&self, col: Col) -> u8 {
@@ -2115,6 +2180,19 @@ impl Spreadsheet {
         Some(gone)
     }
 
+    /// Moves the sheet at `from` to position `to`, sliding the sheets between
+    /// them along.
+    ///
+    /// Nothing here renumbers what points at a sheet by index; that is what
+    /// [`crate::edit::move_sheet`] is for, and it is the only caller.
+    pub(crate) fn reorder_sheet(&mut self, from: usize, to: usize) {
+        if from >= self.sheets.len() || to >= self.sheets.len() || from == to {
+            return;
+        }
+        let sheet = self.sheets.remove(from);
+        self.sheets.insert(to, sheet);
+    }
+
     /// Makes the sheet at `index` active.
     ///
     /// # Errors
@@ -2245,7 +2323,7 @@ mod tests {
         for a in ["A1", "C1", "B2", "Z2", "A3"] {
             ws.set(r(a), 1.0);
         }
-        let row2 = Row::from_one_based(2).unwrap();
+        let row2 = crate::coordinate::Row::from_one_based(2).unwrap();
         let cols: Vec<u32> = ws.row_cells(row2).map(|(col, _)| col.one_based()).collect();
         assert_eq!(cols, vec![2, 26]);
     }
@@ -2422,6 +2500,48 @@ mod tests {
             (hint.start.row, hint.end.row),
             (exact.start.row, exact.end.row),
             "rows stay exact"
+        );
+    }
+
+    #[test]
+    fn a_column_setting_splits_the_run_it_lands_in() {
+        let mut sheet = Worksheet::new("S").unwrap();
+        let mut run = crate::model::ColumnRun::new(
+            crate::coordinate::Col::from_letters("A").unwrap(),
+            crate::coordinate::Col::from_letters("E").unwrap(),
+        );
+        run.width = Some(10.0);
+        sheet.columns.push(run);
+
+        let c = crate::coordinate::Col::from_letters("C").unwrap();
+        sheet.set_column_width(c, Some(30.0));
+
+        assert_eq!(sheet.column_width(c), Some(30.0));
+        for other in ["A", "B", "D", "E"] {
+            let other = crate::coordinate::Col::from_letters(other).unwrap();
+            assert_eq!(
+                sheet.column_width(other),
+                Some(10.0),
+                "{other:?} keeps its width"
+            );
+        }
+        // Three runs, none of them overlapping: A:B, C, D:E.
+        assert_eq!(sheet.columns.len(), 3);
+        for pair in sheet.columns.windows(2) {
+            assert!(pair[0].last < pair[1].first, "runs stay apart");
+        }
+
+        // A column the sheet says nothing about gets a run of its own.
+        let z = crate::coordinate::Col::from_letters("Z").unwrap();
+        sheet.set_row_height(
+            crate::coordinate::Row::from_one_based(2).unwrap(),
+            Some(24.0),
+        );
+        sheet.set_column_hidden(z, true);
+        assert!(sheet.column_run(z).unwrap().hidden);
+        assert_eq!(
+            sheet.row_height(crate::coordinate::Row::from_one_based(2).unwrap()),
+            Some(24.0)
         );
     }
 }

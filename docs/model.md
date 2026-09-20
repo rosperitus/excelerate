@@ -134,6 +134,24 @@ let height = sheet.row_height(Row::from_one_based(7)?);
 Later runs win over earlier ones covering the same column - that is how Excel
 reads them, and reproducing it matters more than tidiness.
 
+Writing one is a setter, not a push:
+
+```rust
+# use excelerate::{Col, Row};
+# use excelerate::model::Worksheet;
+# let mut sheet = Worksheet::new("S")?;
+sheet.set_column_width(Col::from_one_based(3)?, Some(32.0));   // None: back to the default
+sheet.set_column_hidden(Col::from_one_based(4)?, true);
+sheet.set_row_height(Row::from_one_based(1)?, Some(28.0));
+sheet.set_row_hidden(Row::from_one_based(2)?, true);
+# Ok::<(), excelerate::Error>(())
+```
+
+`set_column_width` and `set_column_hidden` go through `column_entry`, which
+splits a run covering several columns around the one being written, so its
+neighbours keep the width they had and the file gets no overlapping `<col>`
+elements.
+
 ## Everything else on the sheet
 
 `merges`, `hyperlinks`, `data_validations`, `conditional_formats`,

@@ -465,6 +465,30 @@ pub enum PlotKind {
 }
 
 impl PlotKind {
+    /// The chart element that draws this kind of plot: `barChart`,
+    /// `pie3DChart` and the rest, as the file names them.
+    #[must_use]
+    pub const fn element(self) -> &'static str {
+        match self {
+            Self::Bar { three_d: false, .. } => "barChart",
+            Self::Bar { three_d: true, .. } => "bar3DChart",
+            Self::Line { three_d: false, .. } => "lineChart",
+            Self::Line { three_d: true, .. } => "line3DChart",
+            Self::Area { three_d: false, .. } => "areaChart",
+            Self::Area { three_d: true, .. } => "area3DChart",
+            Self::Pie { three_d: false } => "pieChart",
+            Self::Pie { three_d: true } => "pie3DChart",
+            Self::Doughnut => "doughnutChart",
+            Self::OfPie { .. } => "ofPieChart",
+            Self::Scatter(_) => "scatterChart",
+            Self::Radar(_) => "radarChart",
+            Self::Bubble => "bubbleChart",
+            Self::Stock => "stockChart",
+            Self::Surface { three_d: false, .. } => "surfaceChart",
+            Self::Surface { three_d: true, .. } => "surface3DChart",
+        }
+    }
+
     /// Whether the plot is drawn against axes at all.
     #[must_use]
     pub const fn has_axes(self) -> bool {

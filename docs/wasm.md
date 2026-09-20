@@ -45,7 +45,8 @@ book.free();     // wasm memory is not the JS heap; let it go when you are done
 
 Runnable TypeScript examples live in
 [`npm/typescript/`](../npm/typescript): building a workbook, reading any
-format, and batching edits. Run them from `npm/` - `node typescript/basic.ts`
+format, batching edits, and taking an inventory of a sheet's charts, pictures,
+shapes, tables and notes. Run them from `npm/` - `node typescript/basic.ts`
 on Node 22.6+, no build step and no separate install.
 
 ## The API
@@ -76,6 +77,31 @@ on Node 22.6+, no build step and no separate install.
 | `sheetVisibility(sheet)` | `"visible"`, `"hidden"` or `"veryHidden"` |
 | `mergedRanges(sheet)` | the sheet's merged areas as `"A1:C1"` strings |
 | `mergedRangesAt(sheet)` | the same areas as one `Uint32Array`, four numbers each: `[r1, c1, r2, c2]` |
+| `usedRangeHint(sheet)` | the used range as the file states it, without walking the cells |
+| `columnWidth(sheet, column)` / `rowHeight(sheet, row)` | the size the sheet gives them, `undefined` when it leaves it to the default |
+| `setColumnWidth` / `setRowHeight` / `setColumnHidden` / `setRowHidden` | write those; `undefined` for a size gives it back to the default |
+| `setSheetVisibility(sheet, state)` | `"visible"`, `"hidden"` or `"veryHidden"` |
+| `merge(sheet, "A1:C1")` / `unmerge(sheet, range)` | merge a block of cells, or take the merge back out |
+| `insertRows` / `removeRows` / `insertColumns` / `removeColumns` | edit the grid; formulas across the workbook follow |
+| `copyRange(sheet, range, to, toSheet?)` / `moveRange(...)` | a block of cells: a copy rewrites its formulas, a move keeps them and drags the references to it along |
+| `insertCells(sheet, range, "down" \| "right")` / `removeCells(sheet, range, "up" \| "left")` | Excel's "Insert Cells": part of a row moves, the rest of the sheet stays |
+| `moveSheet(from, to)` | reorder the tabs; every sheet index moves with them |
+| `removeSheet(sheet)` | drop a sheet - references to it become `#REF!` |
+| `comments(sheet)` / `hyperlinks(sheet)` / `tables(sheet)` | what the sheet carries besides cells |
+| `charts(sheet)` / `shapes(sheet)` / `images(sheet)` | the drawing objects, each with its anchor; `imageData(sheet, i)` for a picture's bytes |
+| `setCellStyle(sheet, address, patch)` / `setCellStyleAt` / `setRangeStyle` | paint a cell or a rectangle: number format, font, fill, borders, alignment. A patch is laid over what the cell had |
+| `setComment` / `removeComment` | put a note on a cell, take it off |
+| `setHyperlink` / `removeHyperlink` | link a cell or a block of them |
+| `addTable(sheet, name, range, headerRow?)` / `removeTable` | draw a table, the thing `Sales[Amount]` names |
+| `sheetView(sheet)` | how the sheet is frozen and shown |
+| `freezePanes(sheet, rows, columns)` / `unfreezePanes` | pin the header row and the first columns |
+| `setZoom(sheet, percent?)` / `setShowGridLines(sheet, show, headers?)` | how a reader opens it |
+| `definedNames()` / `setDefinedName(name, formula, sheet?)` / `removeDefinedName` | the names a formula can use |
+| `dataValidations(sheet)` / `conditionalFormats(sheet)` / `autoFilter(sheet)` | the rules over a sheet |
+| `pivotTables(sheet)` / `arrayFormulas(sheet)` / `externalBooks()` | pivot reports, array areas, the workbooks this one reads |
+| `protectSheet(sheet, password?)` / `unprotectSheet` / `sheetProtection(sheet)` / `verifySheetPassword` | the lock Excel offers under "Protect Sheet" - it stops editing, it does not encrypt |
+| `protectWorkbook(password?, windows?)` / `unprotectWorkbook` / `workbookProtection()` | the same for the workbook's structure |
+| `Book.readCsv(bytes, options)` / `toCsvWith(sheet, options)` | CSV with the delimiter and the rest stated rather than guessed |
 | `evaluate(sheet, address, formula)` | evaluate without storing |
 | `recalculate(sheet?)` | recompute everything, or one sheet |
 | `recalculateFrom(sheet, address)` | recompute what one edit reached |
@@ -83,6 +109,10 @@ on Node 22.6+, no build step and no separate install.
 | `toXlsx()` / `toOds()` / `toXls()` | the workbook as bytes |
 | `toHtml(sheet?, fragment?)` / `toCsv(sheet)` | the workbook as text |
 | `free()` | release the wasm memory it holds |
+
+Everything that writes - the setters above, the grid edits, the output methods
+- is in the full package only. `excelerate-reader` has the reading half of this
+table and nothing else; a grid edit without a way to save it is no use.
 
 `recalculateFrom` keeps its dependency index across calls, and `set` keeps that
 index in step - so a loop of edit-then-recalc does not rebuild it each time.

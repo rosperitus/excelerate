@@ -270,6 +270,21 @@ impl Range {
             && (self.start.row..=self.end.row).contains(&cell.row)
     }
 
+    /// Whether this rectangle holds the whole of `other`.
+    #[must_use]
+    pub fn contains_range(&self, other: &Self) -> bool {
+        self.contains(other.start) && self.contains(other.end)
+    }
+
+    /// Whether the two rectangles share a cell.
+    #[must_use]
+    pub fn intersects(&self, other: &Self) -> bool {
+        self.start.col <= other.end.col
+            && other.start.col <= self.end.col
+            && self.start.row <= other.end.row
+            && other.start.row <= self.end.row
+    }
+
     /// Walks every cell of the range, row by row, left to right.
     pub fn cells(&self) -> impl Iterator<Item = CellRef> + use<> {
         let (c0, c1) = (self.start.col.index(), self.end.col.index());

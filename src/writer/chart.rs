@@ -647,24 +647,7 @@ impl Out {
     }
 
     fn plot(&mut self, plot: &Plot) {
-        let element = match plot.kind {
-            PlotKind::Bar { three_d: false, .. } => "barChart",
-            PlotKind::Bar { three_d: true, .. } => "bar3DChart",
-            PlotKind::Line { three_d: false, .. } => "lineChart",
-            PlotKind::Line { three_d: true, .. } => "line3DChart",
-            PlotKind::Area { three_d: false, .. } => "areaChart",
-            PlotKind::Area { three_d: true, .. } => "area3DChart",
-            PlotKind::Pie { three_d: false } => "pieChart",
-            PlotKind::Pie { three_d: true } => "pie3DChart",
-            PlotKind::Doughnut => "doughnutChart",
-            PlotKind::OfPie { .. } => "ofPieChart",
-            PlotKind::Scatter(_) => "scatterChart",
-            PlotKind::Radar(_) => "radarChart",
-            PlotKind::Bubble => "bubbleChart",
-            PlotKind::Stock => "stockChart",
-            PlotKind::Surface { three_d: false, .. } => "surfaceChart",
-            PlotKind::Surface { three_d: true, .. } => "surface3DChart",
-        };
+        let element = plot.kind.element();
         self.open(element);
         match plot.kind {
             PlotKind::Bar {

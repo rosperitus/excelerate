@@ -9,6 +9,9 @@
 
 mod anchor;
 mod chart;
+mod range;
+
+pub use range::{copy_range, insert_cells, move_range, move_sheet, remove_cells};
 
 use crate::coordinate::{
     CellRef, Col, MAX_COL, MAX_ROW, Range, Row, parse_ref_at, scan_formula, scan_references,
