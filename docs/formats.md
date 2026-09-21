@@ -190,7 +190,8 @@ implied end tags (`<tr>` closes `<td>`). A page becomes one sheet - tables give
 the grid, `colspan`/`rowspan` become merges, text outside a table (`<p>`,
 `<h1>`) gets a cell per block. Inline `style` and the old `bgcolor`/`align`/
 `width`/`height` attributes are honoured, and so are the rules of a `<style>`
-block that name a class of cells (`.x`, `td.x`, `th.x`) - the inline style
+block that name a class of cells (`.x`, `td.x`, `th.x`), a column width
+(`col.x`) or a row height (`tr.x`) - the inline style
 wins over them. There is no cascade beyond that: rules for one class apply in
 page order.
 
