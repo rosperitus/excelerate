@@ -11,7 +11,10 @@ mod anchor;
 mod chart;
 mod range;
 
-pub use range::{copy_range, insert_cells, move_range, move_sheet, remove_cells};
+pub use range::{
+    SortKey, copy_range, fill, insert_cells, insert_cells_with, move_range, move_sheet,
+    remove_cells, sort_range,
+};
 
 use crate::coordinate::{
     CellRef, Col, MAX_COL, MAX_ROW, Range, Row, parse_ref_at, scan_formula, scan_references,
@@ -28,13 +31,47 @@ pub enum Axis {
     Columns,
 }
 
+/// Where inserted rows or columns take their formatting from: Excel's
+/// `CopyOrigin` on `Range.Insert`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CopyOrigin {
+    /// No formatting: the new lines are blank.
+    #[default]
+    Blank,
+    /// From the row above or the column to the left
+    /// (`xlFormatFromLeftOrAbove`).
+    Before,
+    /// From the row below or the column to the right
+    /// (`xlFormatFromRightOrBelow`).
+    After,
+}
+
 /// Inserts `count` rows before row `at`, 0-based. Everything from there down
 /// moves, and every reference to it follows.
 ///
 /// # Errors
 /// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
 pub fn insert_rows(book: &mut Spreadsheet, sheet: usize, at: Row, count: u32) -> Result<()> {
-    apply(book, sheet, Shift::insert(Axis::Rows, at.index(), count))
+    insert_rows_with(book, sheet, at, count, CopyOrigin::Blank)
+}
+
+/// [`insert_rows`], with the new rows formatted like a neighbour: cell
+/// styles, the row's own style and its height.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+pub fn insert_rows_with(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    at: Row,
+    count: u32,
+    origin: CopyOrigin,
+) -> Result<()> {
+    apply(book, sheet, Shift::insert(Axis::Rows, at.index(), count))?;
+    if let Some(target) = book.sheet_mut(sheet) {
+        format_inserted(target, Axis::Rows, at.index(), count, origin);
+    }
+    Ok(())
 }
 
 /// Removes `count` rows starting at row `at`, 0-based.
@@ -50,7 +87,98 @@ pub fn remove_rows(book: &mut Spreadsheet, sheet: usize, at: Row, count: u32) ->
 /// # Errors
 /// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
 pub fn insert_columns(book: &mut Spreadsheet, sheet: usize, at: Col, count: u32) -> Result<()> {
-    apply(book, sheet, Shift::insert(Axis::Columns, at.index(), count))
+    insert_columns_with(book, sheet, at, count, CopyOrigin::Blank)
+}
+
+/// [`insert_columns`], with the new columns formatted like a neighbour: cell
+/// styles, the column's own style and its width.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+pub fn insert_columns_with(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    at: Col,
+    count: u32,
+    origin: CopyOrigin,
+) -> Result<()> {
+    apply(book, sheet, Shift::insert(Axis::Columns, at.index(), count))?;
+    if let Some(target) = book.sheet_mut(sheet) {
+        format_inserted(target, Axis::Columns, at.index(), count, origin);
+    }
+    Ok(())
+}
+
+/// Gives the `count` lines inserted at `at` the formatting of the line before
+/// or after them. Values are not copied, only styles and size.
+fn format_inserted(sheet: &mut Worksheet, axis: Axis, at: u32, count: u32, origin: CopyOrigin) {
+    let source = match origin {
+        CopyOrigin::Blank => return,
+        CopyOrigin::Before => match at.checked_sub(1) {
+            Some(source) => source,
+            None => return,
+        },
+        CopyOrigin::After => match at.checked_add(count) {
+            Some(source) => source,
+            None => return,
+        },
+    };
+    let last = at.saturating_add(count);
+    match axis {
+        Axis::Rows => {
+            let Some(from) = Row::new(source) else { return };
+            let styles: Vec<(Col, _)> = sheet
+                .row_cells(from)
+                .filter(|(_, cell)| cell.style != crate::style::StyleId::default())
+                .map(|(col, cell)| (col, cell.style))
+                .collect();
+            let props = sheet.rows.get(&from).cloned();
+            for row in (at..last).filter_map(Row::new) {
+                for &(col, style) in &styles {
+                    sheet.entry(CellRef::new(col, row)).style = style;
+                }
+                match &props {
+                    Some(props) => {
+                        let mut copy = props.clone();
+                        copy.hidden = false;
+                        copy.collapsed = false;
+                        sheet.rows.insert(row, copy);
+                    }
+                    None => {
+                        sheet.rows.remove(&row);
+                    }
+                }
+            }
+        }
+        Axis::Columns => {
+            let Some(from) = Col::new(source) else { return };
+            let styles: Vec<(Row, _)> = sheet
+                .iter()
+                .filter(|(cell_at, cell)| {
+                    cell_at.col == from && cell.style != crate::style::StyleId::default()
+                })
+                .map(|(cell_at, cell)| (cell_at.row, cell.style))
+                .collect();
+            let run = sheet.column_run(from).cloned();
+            for col in (at..last).filter_map(Col::new) {
+                for &(row, style) in &styles {
+                    sheet.entry(CellRef::new(col, row)).style = style;
+                }
+                let entry = sheet.column_entry(col);
+                let (first, last) = (entry.first, entry.last);
+                *entry = run.clone().map_or_else(
+                    || crate::model::ColumnRun::new(first, last),
+                    |mut run| {
+                        run.hidden = false;
+                        run.collapsed = false;
+                        run
+                    },
+                );
+                entry.first = first;
+                entry.last = last;
+            }
+        }
+    }
 }
 
 /// Removes `count` columns starting at column `at`, 0-based.

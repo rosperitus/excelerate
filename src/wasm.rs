@@ -2091,14 +2091,32 @@ impl Book {
 
     #[cfg(feature = "write")]
     /// Inserts `count` rows above row `at`, moving everything below down.
+    /// `copyOrigin` - `"before"` (the row above), `"after"` (the row below)
+    /// or `"none"` - says whose formatting the new rows take. Left out, it is
+    /// `"before"`, as in Excel.
     ///
     /// Formulas across the whole workbook follow the cells they read, and so
     /// do merges, links, validations, tables and drawings. `at` is the number
     /// a user sees.
     #[wasm_bindgen(js_name = insertRows)]
-    pub fn insert_rows(&mut self, sheet: usize, at: u32, count: u32) -> Result<(), JsError> {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "an optional string crosses the wasm boundary owned"
+    )]
+    pub fn insert_rows(
+        &mut self,
+        sheet: usize,
+        at: u32,
+        count: u32,
+        #[wasm_bindgen(
+            js_name = "copyOrigin",
+            unchecked_optional_param_type = "\"before\" | \"after\" | \"none\""
+        )]
+        copy_origin: Option<String>,
+    ) -> Result<(), JsError> {
         let row = Row::from_one_based(u64::from(at)).map_err(js)?;
-        crate::edit::insert_rows(&mut self.book, sheet, row, count).map_err(js)?;
+        let origin = copy_origin_of(copy_origin.as_deref())?;
+        crate::edit::insert_rows_with(&mut self.book, sheet, row, count, origin).map_err(js)?;
         self.forget_dependencies();
         Ok(())
     }
@@ -2116,10 +2134,26 @@ impl Book {
 
     #[cfg(feature = "write")]
     /// Inserts `count` columns to the left of column `at`, 1-based.
+    /// `copyOrigin` works as in `insertRows`, with left and right.
     #[wasm_bindgen(js_name = insertColumns)]
-    pub fn insert_columns(&mut self, sheet: usize, at: u32, count: u32) -> Result<(), JsError> {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "an optional string crosses the wasm boundary owned"
+    )]
+    pub fn insert_columns(
+        &mut self,
+        sheet: usize,
+        at: u32,
+        count: u32,
+        #[wasm_bindgen(
+            js_name = "copyOrigin",
+            unchecked_optional_param_type = "\"before\" | \"after\" | \"none\""
+        )]
+        copy_origin: Option<String>,
+    ) -> Result<(), JsError> {
         let col = Col::from_one_based(u64::from(at)).map_err(js)?;
-        crate::edit::insert_columns(&mut self.book, sheet, col, count).map_err(js)?;
+        let origin = copy_origin_of(copy_origin.as_deref())?;
+        crate::edit::insert_columns_with(&mut self.book, sheet, col, count, origin).map_err(js)?;
         self.forget_dependencies();
         Ok(())
     }
@@ -2182,11 +2216,79 @@ impl Book {
     #[cfg(feature = "write")]
     /// Inserts blank cells over a range, pushing what was there `"down"` or
     /// `"right"` - Excel's "Insert Cells", which moves part of a row rather
-    /// than the whole of it.
+    /// than the whole of it. `copyOrigin` works as in `insertRows`.
     #[wasm_bindgen(js_name = insertCells)]
-    pub fn insert_cells(&mut self, sheet: usize, range: &str, shift: &str) -> Result<(), JsError> {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "an optional string crosses the wasm boundary owned"
+    )]
+    pub fn insert_cells(
+        &mut self,
+        sheet: usize,
+        range: &str,
+        shift: &str,
+        #[wasm_bindgen(
+            js_name = "copyOrigin",
+            unchecked_optional_param_type = "\"before\" | \"after\" | \"none\""
+        )]
+        copy_origin: Option<String>,
+    ) -> Result<(), JsError> {
         let area = Range::parse(range).map_err(js)?;
-        crate::edit::insert_cells(&mut self.book, sheet, area, axis_of(shift)?).map_err(js)?;
+        let origin = copy_origin_of(copy_origin.as_deref())?;
+        crate::edit::insert_cells_with(&mut self.book, sheet, area, axis_of(shift)?, origin)
+            .map_err(js)?;
+        self.forget_dependencies();
+        Ok(())
+    }
+
+    #[cfg(feature = "write")]
+    /// Sorts the rows of a range (header left out). Each key is a column
+    /// number, 1-based, of the sheet: positive sorts it smallest first,
+    /// negative largest first; the first key decides first.
+    #[wasm_bindgen(js_name = sortRange)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "a JS array crosses the wasm boundary owned"
+    )]
+    pub fn sort_range(
+        &mut self,
+        sheet: usize,
+        range: &str,
+        #[wasm_bindgen(unchecked_param_type = "number[] | Int32Array")] keys: Vec<i32>,
+    ) -> Result<(), JsError> {
+        let area = Range::parse(range).map_err(js)?;
+        let keys = keys
+            .iter()
+            .map(|&key| {
+                let col = Col::from_one_based(u64::from(key.unsigned_abs())).map_err(js)?;
+                Ok(crate::edit::SortKey {
+                    column: col,
+                    descending: key < 0,
+                })
+            })
+            .collect::<Result<Vec<_>, JsError>>()?;
+        crate::edit::sort_range(&mut self.book, sheet, area, &keys).map_err(js)?;
+        self.forget_dependencies();
+        Ok(())
+    }
+
+    #[cfg(feature = "write")]
+    /// Copies the first row of a range into the rows below it, as Ctrl+D.
+    #[wasm_bindgen(js_name = fillDown)]
+    pub fn fill_down(&mut self, sheet: usize, range: &str) -> Result<(), JsError> {
+        let area = Range::parse(range).map_err(js)?;
+        crate::edit::fill(&mut self.book, sheet, area, crate::edit::Axis::Rows).map_err(js)?;
+        self.forget_dependencies();
+        Ok(())
+    }
+
+    #[cfg(feature = "write")]
+    /// Copies the first column of a range into the columns to its right, as
+    /// Ctrl+R.
+    #[wasm_bindgen(js_name = fillRight)]
+    pub fn fill_right(&mut self, sheet: usize, range: &str) -> Result<(), JsError> {
+        let area = Range::parse(range).map_err(js)?;
+        crate::edit::fill(&mut self.book, sheet, area, crate::edit::Axis::Columns).map_err(js)?;
         self.forget_dependencies();
         Ok(())
     }
@@ -2835,4 +2937,18 @@ fn style_to_js(style: &crate::style::Style) -> JsValue {
         ("borders", borders),
         ("alignment", alignment),
     ])
+}
+
+#[cfg(feature = "write")]
+/// Reads the `copyOrigin` argument of `insertRows` and `insertColumns`.
+fn copy_origin_of(name: Option<&str>) -> Result<crate::edit::CopyOrigin, JsError> {
+    use crate::edit::CopyOrigin;
+    match name {
+        Some("none") => Ok(CopyOrigin::Blank),
+        None | Some("before") => Ok(CopyOrigin::Before),
+        Some("after") => Ok(CopyOrigin::After),
+        Some(other) => Err(JsError::new(&format!(
+            "copyOrigin must be \"before\", \"after\" or \"none\", not {other:?}"
+        ))),
+    }
 }

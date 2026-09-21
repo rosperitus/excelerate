@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `edit::insert_rows_with` and `edit::insert_columns_with` take a
+  `CopyOrigin` - `Blank`, `Before` or `After`, Excel's `CopyOrigin` on
+  `Range.Insert` - and give the new lines the cell styles, own style and
+  height or width of that neighbour. In JS it is the optional last argument
+  of `insertRows` / `insertColumns` / `insertCells`: `"before"` (the
+  default, as in Excel), `"after"` or `"none"`. `edit::insert_cells_with`
+  does the same for Insert Cells.
+- `edit::sort_range` with `SortKey`: sorts the rows of a range in Excel's
+  order (numbers, text without case, `FALSE`, `TRUE`, errors; empty cells
+  last both ways), formulas rewritten as if copied to their new row. JS:
+  `sortRange(sheet, "A2:D100", [2, -4])` - a negative column sorts largest
+  first.
+- `edit::fill` - Ctrl+D and Ctrl+R: the first row or column of a range copied
+  over the rest, references moving as in a copy. JS: `fillDown`, `fillRight`.
+- The HTML reader applies the page's `<style>` rules (`.x`, `td.x`) to cells
+  by class, under any inline `style`; the HTML writer marks a non-General
+  number format with `data-format`, and every value that would not read back
+  as itself with `data-type`/`data-value` (a formula with `data-formula`),
+  so a page we wrote reads back with its numbers, formulas and styles.
+
 ## 0.12.0
 
 ### Added

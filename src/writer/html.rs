@@ -235,10 +235,15 @@ fn cell(
             let _ = write!(out, " rowspan=\"{}\"", merge.height());
         }
     }
-    out.push('>');
-
     let style = book.styles.get(style_id);
     let code = style.map_or(GENERAL, |s| s.number_format.code());
+    if code != GENERAL {
+        let _ = write!(out, " data-format=\"{}\"", attribute(code));
+    }
+    if let Some(value) = cell.map(|c| &c.value) {
+        typed(value, out);
+    }
+    out.push('>');
     let body = match cell.map(|c| &c.value) {
         None | Some(CellValue::Empty) => String::new(),
         Some(CellValue::RichText(runs)) => rich_text(runs),
@@ -266,6 +271,45 @@ fn cell(
         None => out.push_str(&body),
     }
     out.push_str("</td>");
+}
+
+/// What the page shows is the value through its format; these attributes keep
+/// the value itself, so that reading the page back gets a number, not
+/// "1 234,50". Text that would read back as text anyway goes without them.
+fn typed(value: &CellValue, out: &mut String) {
+    if let CellValue::Formula { formula, cached } = value {
+        let _ = write!(out, " data-formula=\"={}\"", attribute(formula));
+        if let Some(cached) = cached {
+            typed(cached, out);
+        }
+        return;
+    }
+    let _ = match value {
+        CellValue::Number(n) => write!(out, " data-type=\"n\" data-value=\"{n}\""),
+        CellValue::Bool(b) => write!(out, " data-type=\"b\" data-value=\"{}\"", u8::from(*b)),
+        CellValue::Error(e) => write!(out, " data-type=\"e\" data-value=\"{e}\""),
+        CellValue::Text(_) | CellValue::RichText(_) => {
+            let text = value.plain_text().unwrap_or_default();
+            if matches!(crate::reader::csv::value_of(&text), CellValue::Text(_)) {
+                return;
+            }
+            write!(out, " data-type=\"s\" data-value=\"{}\"", attribute(&text))
+        }
+        _ => return,
+    };
+}
+
+/// Text for inside an attribute: a line break stays a character there.
+fn attribute(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for c in text.chars() {
+        match c {
+            '\n' => out.push_str("&#10;"),
+            '\r' => out.push_str("&#13;"),
+            c => out.push_str(&escape(c.encode_utf8(&mut [0; 4]))),
+        }
+    }
+    out
 }
 
 /// The value a viewer would see: a formula stands for its result.

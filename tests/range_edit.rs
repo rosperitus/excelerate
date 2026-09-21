@@ -275,3 +275,112 @@ fn a_push_that_would_shove_data_off_the_sheet_is_refused() {
     assert!(insert_cells(&mut wb, 0, area("A1:A1"), Axis::Rows).is_err());
     assert_eq!(text(&wb, 0, "A1048576"), "1", "and nothing was touched");
 }
+
+#[test]
+fn inserted_cells_take_the_style_beside_them() {
+    use excelerate::edit::{Axis, CopyOrigin, insert_cells_with};
+    use excelerate::style::{Font, Style};
+
+    let mut book = excelerate::model::Spreadsheet::new();
+    let bold = book.styles.intern(Style {
+        font: Font {
+            bold: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let at = |a: &str| excelerate::CellRef::parse(a).unwrap();
+    book.sheet_mut(0).unwrap().entry(at("B1")).style = bold;
+    let area = excelerate::Range::parse("B2:B3").unwrap();
+    insert_cells_with(&mut book, 0, area, Axis::Rows, CopyOrigin::Before).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    assert_eq!(sheet.get(at("B2")).unwrap().style, bold);
+    assert_eq!(sheet.get(at("B3")).unwrap().style, bold);
+    assert!(sheet.get(at("C2")).is_none());
+}
+
+#[test]
+fn a_sort_orders_rows_the_way_excel_does() {
+    use excelerate::edit::{SortKey, sort_range};
+
+    let at = |a: &str| excelerate::CellRef::parse(a).unwrap();
+    let col = |a: &str| excelerate::Col::from_letters(a).unwrap();
+    let mut book = excelerate::model::Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    // A: key, B: a formula reading its own row.
+    for (row, key) in [
+        (1, CellValue::text("b")),
+        (2, CellValue::Number(3.0)),
+        (4, CellValue::text("A")),
+        (5, CellValue::Number(1.0)),
+    ] {
+        sheet.set(at(&format!("A{row}")), key);
+    }
+    for row in 1..=5 {
+        sheet.set(
+            at(&format!("B{row}")),
+            CellValue::Formula {
+                formula: format!("A{row}"),
+                cached: None,
+            },
+        );
+    }
+    let area = excelerate::Range::parse("A1:B5").unwrap();
+    sort_range(&mut book, 0, area, &[SortKey::ascending(col("A"))]).unwrap();
+
+    let sheet = book.sheet(0).unwrap();
+    let value = |a: &str| sheet.get(at(a)).map(|c| c.value.clone());
+    assert_eq!(value("A1"), Some(CellValue::Number(1.0)));
+    assert_eq!(value("A2"), Some(CellValue::Number(3.0)));
+    assert_eq!(value("A3"), Some(CellValue::text("A")));
+    assert_eq!(value("A4"), Some(CellValue::text("b")));
+    assert_eq!(value("A5"), None, "the empty row goes last");
+    for row in 1..=5 {
+        let Some(CellValue::Formula { formula, .. }) = value(&format!("B{row}")) else {
+            panic!("B{row} lost its formula");
+        };
+        assert_eq!(formula, format!("A{row}"), "B{row} still reads its own row");
+    }
+
+    let bad = sort_range(&mut book, 0, area, &[SortKey::descending(col("C"))]);
+    assert!(bad.is_err());
+}
+
+#[test]
+fn fill_down_and_right_copy_the_first_line() {
+    use excelerate::edit::{Axis, fill};
+
+    let at = |a: &str| excelerate::CellRef::parse(a).unwrap();
+    let mut book = excelerate::model::Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.set(
+        at("B1"),
+        CellValue::Formula {
+            formula: "A1*2".into(),
+            cached: None,
+        },
+    );
+    fill(
+        &mut book,
+        0,
+        excelerate::Range::parse("B1:B3").unwrap(),
+        Axis::Rows,
+    )
+    .unwrap();
+    fill(
+        &mut book,
+        0,
+        excelerate::Range::parse("B3:C3").unwrap(),
+        Axis::Columns,
+    )
+    .unwrap();
+
+    let sheet = book.sheet(0).unwrap();
+    let formula = |a: &str| match &sheet.get(at(a)).unwrap().value {
+        CellValue::Formula { formula, .. } => formula.clone(),
+        other => panic!("{a} is {other:?}"),
+    };
+    assert_eq!(formula("B2"), "A2*2");
+    assert_eq!(formula("B3"), "A3*2");
+    assert_eq!(formula("C3"), "B3*2");
+}

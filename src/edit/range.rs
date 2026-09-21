@@ -119,10 +119,66 @@ pub fn move_range(
 /// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
 /// [`Error::Xlsx`] if the cells pushed along would leave the sheet.
 pub fn insert_cells(book: &mut Spreadsheet, sheet: usize, area: Range, axis: Axis) -> Result<()> {
+    insert_cells_with(book, sheet, area, axis, super::CopyOrigin::Blank)
+}
+
+/// [`insert_cells`], with the new cells styled like the line beside them:
+/// above or to the left for `Before`, below or to the right for `After`.
+///
+/// # Errors
+/// As [`insert_cells`].
+pub fn insert_cells_with(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    area: Range,
+    axis: Axis,
+    origin: super::CopyOrigin,
+) -> Result<()> {
     let (d_col, d_row) = step(area, axis);
     let pushed = below(area, axis);
     slide(book, sheet, pushed, d_col, d_row)?;
     clear(book, sheet, area);
+    let Some(ws) = book.sheet_mut(sheet) else {
+        return Ok(());
+    };
+    for at in area.cells() {
+        let source = match (origin, axis) {
+            (super::CopyOrigin::Blank, _) => None,
+            (super::CopyOrigin::Before, Axis::Rows) => area
+                .start
+                .row
+                .index()
+                .checked_sub(1)
+                .and_then(Row::new)
+                .map(|row| CellRef::new(at.col, row)),
+            (super::CopyOrigin::Before, Axis::Columns) => area
+                .start
+                .col
+                .index()
+                .checked_sub(1)
+                .and_then(Col::new)
+                .map(|col| CellRef::new(col, at.row)),
+            (super::CopyOrigin::After, Axis::Rows) => area
+                .end
+                .row
+                .index()
+                .checked_add(1)
+                .and_then(Row::new)
+                .map(|row| CellRef::new(at.col, row)),
+            (super::CopyOrigin::After, Axis::Columns) => area
+                .end
+                .col
+                .index()
+                .checked_add(1)
+                .and_then(Col::new)
+                .map(|col| CellRef::new(col, at.row)),
+        };
+        if let Some(style) = source.and_then(|from| ws.get(from)).map(|cell| cell.style)
+            && style != crate::style::StyleId::default()
+        {
+            ws.entry(at).style = style;
+        }
+    }
     Ok(())
 }
 
@@ -516,4 +572,182 @@ fn follow_the_cells(
             };
         }
     }
+}
+
+/// One key of [`sort_range`]: a column of the sheet and its direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortKey {
+    /// The column compared, as a column of the sheet, not of the range.
+    pub column: Col,
+    /// Largest first.
+    pub descending: bool,
+}
+
+impl SortKey {
+    /// A key sorting `column` smallest first.
+    #[must_use]
+    pub const fn ascending(column: Col) -> Self {
+        Self {
+            column,
+            descending: false,
+        }
+    }
+
+    /// A key sorting `column` largest first.
+    #[must_use]
+    pub const fn descending(column: Col) -> Self {
+        Self {
+            column,
+            descending: true,
+        }
+    }
+}
+
+/// Sorts the rows of `area` by `keys`, the first key deciding first. This is
+/// Excel's Data - Sort on a range without a header row: leave the header out
+/// of `area`.
+///
+/// Cells travel with their formatting. The order is Excel's: numbers, then
+/// text without regard to case, then `FALSE`, `TRUE` and errors; an empty
+/// cell goes last whichever way the key runs. Rows that compare equal keep
+/// their order. A formula is rewritten as if copied to its new row, so a
+/// relative reference to its own row keeps pointing at its own row, and its
+/// cached result is dropped; formulas elsewhere are not retargeted, as in
+/// Excel. A formula is sorted by its cached value.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
+/// [`Error::InvalidRange`] if a key names a column outside `area` or a merge
+/// crosses it.
+// ponytail: rows only; sorting columns left to right is the same walk turned over.
+pub fn sort_range(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    area: Range,
+    keys: &[SortKey],
+) -> Result<()> {
+    let ws = book
+        .sheet_mut(sheet)
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+    if let Some(key) = keys
+        .iter()
+        .find(|key| key.column < area.start.col || key.column > area.end.col)
+    {
+        return Err(Error::InvalidRange(format!(
+            "sort key column {} is outside {area}",
+            key.column.one_based()
+        )));
+    }
+    if ws.merges.iter().any(|m| m.intersects(&area)) {
+        return Err(Error::InvalidRange(format!(
+            "a merged range crosses {area}; unmerge it to sort"
+        )));
+    }
+
+    let rows: Vec<Row> = (area.start.row.index()..=area.end.row.index())
+        .filter_map(Row::new)
+        .collect();
+    let key_of = |row: Row, key: &SortKey| -> Option<CellValue> {
+        let value = &ws.get(CellRef::new(key.column, row))?.value;
+        match value {
+            CellValue::Formula { cached, .. } => cached.as_deref().cloned(),
+            other => Some(other.clone()),
+        }
+        .filter(|v| !v.is_empty())
+    };
+    let mut order: Vec<(usize, Vec<Option<CellValue>>)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, &row)| (i, keys.iter().map(|key| key_of(row, key)).collect()))
+        .collect();
+    order.sort_by(|(_, a), (_, b)| {
+        keys.iter()
+            .zip(a.iter().zip(b))
+            .map(|(key, (a, b))| match (a, b) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (Some(a), Some(b)) if key.descending => sort_order(b, a),
+                (Some(a), Some(b)) => sort_order(a, b),
+            })
+            .find(|o| o.is_ne())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Every row is taken out first, so a row never lands on one not yet read.
+    let taken: Vec<Vec<(Col, Cell)>> = rows
+        .iter()
+        .map(|&row| {
+            (area.start.col.index()..=area.end.col.index())
+                .filter_map(Col::new)
+                .filter_map(|col| Some((col, ws.remove(CellRef::new(col, row))?)))
+                .collect()
+        })
+        .collect();
+    for (to, (from, _)) in order.iter().enumerate() {
+        let d_row = i64::try_from(to).unwrap_or(0) - i64::try_from(*from).unwrap_or(0);
+        for (col, cell) in &taken[*from] {
+            let mut cell = cell.clone();
+            if d_row != 0
+                && let CellValue::Formula { formula, .. } = &cell.value
+            {
+                cell.value = CellValue::Formula {
+                    formula: shift_references(formula, 0, d_row),
+                    cached: None,
+                };
+            }
+            *ws.entry(CellRef::new(*col, rows[to])) = cell;
+        }
+    }
+    Ok(())
+}
+
+/// Excel's sort order between two non-empty values.
+fn sort_order(a: &CellValue, b: &CellValue) -> std::cmp::Ordering {
+    let rank = |v: &CellValue| match v {
+        CellValue::Number(_) => 0,
+        CellValue::Bool(_) => 2,
+        CellValue::Error(_) => 3,
+        _ => 1,
+    };
+    match (a, b) {
+        (CellValue::Number(x), CellValue::Number(y)) => x.total_cmp(y),
+        (CellValue::Bool(x), CellValue::Bool(y)) => x.cmp(y),
+        _ if rank(a) != rank(b) => rank(a).cmp(&rank(b)),
+        (CellValue::Error(_), _) => std::cmp::Ordering::Equal,
+        _ => {
+            let text = |v: &CellValue| v.plain_text().unwrap_or_default().to_lowercase();
+            text(a).cmp(&text(b))
+        }
+    }
+}
+
+/// Copies the first row of `area` into every row below it (`Axis::Rows`,
+/// Excel's Ctrl+D), or its first column into every column to the right
+/// (`Axis::Columns`, Ctrl+R). Values, formatting and formulas go as
+/// [`copy_range`] takes them: a relative reference moves with each copy.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+pub fn fill(book: &mut Spreadsheet, sheet: usize, area: Range, axis: Axis) -> Result<()> {
+    let (source, rest) = match axis {
+        Axis::Rows => (
+            Range::new(area.start, CellRef::new(area.end.col, area.start.row)),
+            area.start.row.index() + 1..=area.end.row.index(),
+        ),
+        Axis::Columns => (
+            Range::new(area.start, CellRef::new(area.start.col, area.end.row)),
+            area.start.col.index() + 1..=area.end.col.index(),
+        ),
+    };
+    for index in rest {
+        let to = match axis {
+            Axis::Rows => Row::new(index).map(|row| CellRef::new(area.start.col, row)),
+            Axis::Columns => Col::new(index).map(|col| CellRef::new(col, area.start.row)),
+        };
+        if let Some(to) = to {
+            copy_range(book, sheet, source, sheet, to)?;
+        }
+    }
+    Ok(())
 }
