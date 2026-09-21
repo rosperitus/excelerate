@@ -301,3 +301,34 @@ fn a_formula_the_format_cannot_hold_is_written_as_its_value() {
         Some(CellValue::Number(5.0))
     );
 }
+
+#[test]
+fn outline_levels_and_summary_placement_survive_a_round_trip() {
+    use excelerate::{Col, Row};
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.properties.summary_below = false;
+    sheet.properties.summary_right = false;
+    for r in 1..=3 {
+        let row = sheet.rows.entry(Row::new(r).unwrap()).or_default();
+        row.outline_level = 2;
+        row.hidden = true;
+    }
+    sheet
+        .rows
+        .entry(Row::new(0).unwrap())
+        .or_default()
+        .collapsed = true;
+    let run = sheet.column_entry(Col::new(2).unwrap());
+    run.outline_level = 1;
+    run.collapsed = true;
+
+    let back = rewrite(&book);
+    let sheet = &back.sheets()[0];
+    assert!(!sheet.properties.summary_below);
+    assert!(!sheet.properties.summary_right);
+    assert_eq!(sheet.row_outline_level(Row::new(2).unwrap()), 2);
+    assert!(sheet.rows[&Row::new(0).unwrap()].collapsed);
+    let run = sheet.column_run(Col::new(2).unwrap()).unwrap();
+    assert_eq!((run.outline_level, run.collapsed), (1, true));
+}

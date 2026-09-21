@@ -409,6 +409,62 @@ fn string_of(value: &CellValue) -> Option<String> {
     }
 }
 
+/// COLINFO: width, visibility and outline of each run of columns.
+fn column_records(out: &mut Vec<u8>, sheet: &Worksheet) {
+    for run in &sheet.columns {
+        let mut data = Vec::with_capacity(12);
+        data.extend_from_slice(&run.first.index_u16().to_le_bytes());
+        data.extend_from_slice(&run.last.index_u16().to_le_bytes());
+        // The width is in 256ths of a character.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a column width is a small positive number"
+        )]
+        let width = (run.width.unwrap_or(8.43) * 256.0).round().max(0.0) as u32;
+        data.extend_from_slice(&u16::try_from(width).unwrap_or(u16::MAX).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        let options = u16::from(run.hidden)
+            | (u16::from(run.outline_level.min(7)) << 8)
+            | (u16::from(run.collapsed) << 12);
+        data.extend_from_slice(&options.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        record(out, 0x007D, &data);
+    }
+}
+
+/// GUTS and WSBOOL: the outline depths and where group summaries sit.
+fn outline_records(out: &mut Vec<u8>, sheet: &Worksheet) {
+    // GUTS: without the outline depths Excel draws no outline bar; the
+    // widths are left for it to work out.
+    let depth = |levels: &mut dyn Iterator<Item = u8>| {
+        levels
+            .max()
+            .filter(|&l| l > 0)
+            .map_or(0, |l| u16::from(l) + 1)
+    };
+    let mut guts = [0u8; 8];
+    guts[4..6]
+        .copy_from_slice(&depth(&mut sheet.rows.values().map(|r| r.outline_level)).to_le_bytes());
+    guts[6..8]
+        .copy_from_slice(&depth(&mut sheet.columns.iter().map(|c| c.outline_level)).to_le_bytes());
+    record(out, 0x0080, &guts);
+
+    // WSBOOL: automatic page breaks and the outline symbols shown, and where
+    // group summaries sit.
+    let mut wsbool = 0x0401u16;
+    if sheet.properties.summary_below {
+        wsbool |= 0x40;
+    }
+    if sheet.properties.summary_right {
+        wsbool |= 0x80;
+    }
+    if sheet.properties.fit_to_page {
+        wsbool |= 0x100;
+    }
+    record(out, 0x0081, &wsbool.to_le_bytes());
+}
+
 /// One sheet substream.
 fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
     let mut out = Vec::new();
@@ -437,25 +493,11 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
     dimension.extend_from_slice(&u16::try_from(first_col).unwrap_or(0).to_le_bytes());
     dimension.extend_from_slice(&u16::try_from(last_col).unwrap_or(0).to_le_bytes());
     dimension.extend_from_slice(&0u16.to_le_bytes());
+    outline_records(&mut out, sheet);
+
     record(&mut out, 0x0200, &dimension);
 
-    for run in &sheet.columns {
-        let mut data = Vec::with_capacity(12);
-        data.extend_from_slice(&run.first.index_u16().to_le_bytes());
-        data.extend_from_slice(&run.last.index_u16().to_le_bytes());
-        // The width is in 256ths of a character.
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a column width is a small positive number"
-        )]
-        let width = (run.width.unwrap_or(8.43) * 256.0).round().max(0.0) as u32;
-        data.extend_from_slice(&u16::try_from(width).unwrap_or(u16::MAX).to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&u16::from(run.hidden).to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        record(&mut out, 0x007D, &data);
-    }
+    column_records(&mut out, sheet);
 
     for (row, properties) in &sheet.rows {
         let mut data = Vec::with_capacity(16);
@@ -480,6 +522,9 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
         }
         if properties.height.is_some() {
             flags |= 0x40;
+        }
+        if properties.collapsed {
+            flags |= 0x10;
         }
         flags |= u32::from(properties.outline_level) & 0x07;
         data.extend_from_slice(&flags.to_le_bytes());

@@ -66,6 +66,8 @@ mod record {
     pub const DIMENSION: u16 = 0x0200;
     pub const ROW: u16 = 0x0208;
     pub const COLINFO: u16 = 0x007D;
+    /// Sheet options; the outline says where group summaries sit.
+    pub const WSBOOL: u16 = 0x0081;
     pub const MERGEDCELLS: u16 = 0x00E5;
     pub const BLANK: u16 = 0x0201;
     pub const MULBLANK: u16 = 0x00BE;
@@ -478,6 +480,11 @@ impl<'a> Reader<'a> {
             match record.id {
                 record::EOF => break,
                 record::DIMENSION | record::BOF => {}
+                record::WSBOOL => {
+                    let flags = u16_at(record.data, 0);
+                    sheet.properties.summary_below = flags & 0x40 != 0;
+                    sheet.properties.summary_right = flags & 0x80 != 0;
+                }
                 record::MERGEDCELLS => {
                     let count = usize::from(u16_at(record.data, 0));
                     for i in 0..count {
@@ -493,12 +500,16 @@ impl<'a> Reader<'a> {
                 record::COLINFO => {
                     let (first, last) = (u16_at(record.data, 0), u16_at(record.data, 2));
                     let width = f64::from(u16_at(record.data, 4)) / 256.0;
-                    let hidden = u16_at(record.data, 8) & 1 != 0;
+                    // Bit 0 hides, bits 8-10 are the outline level, bit 12
+                    // collapses the group.
+                    let options = u16_at(record.data, 8);
                     if let (Ok(first), Ok(last)) = (column(first), column(last)) {
                         let mut run = ColumnRun::new(first, last);
                         run.width = Some(width);
                         run.custom_width = true;
-                        run.hidden = hidden;
+                        run.hidden = options & 1 != 0;
+                        run.outline_level = u8::try_from((options >> 8) & 0x07).unwrap_or_default();
+                        run.collapsed = options & 0x1000 != 0;
                         sheet.columns.push(run);
                     }
                 }
@@ -514,6 +525,7 @@ impl<'a> Reader<'a> {
                         }
                         properties.hidden = flags & 0x20 != 0;
                         properties.outline_level = u8::try_from(flags & 0x07).unwrap_or_default();
+                        properties.collapsed = flags & 0x10 != 0;
                     }
                 }
                 _ => self.cell_record(&mut sheet, &record, &mut at),

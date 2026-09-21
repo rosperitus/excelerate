@@ -67,7 +67,8 @@ Two deliberate calls:
 
 Reads sheets, every value type, the shared string table (including
 continuation records), the whole cell format - number format, font, fill,
-borders, alignment and protection - merges, column widths, row heights and the
+borders, alignment and protection - merges, column widths, row heights, row and column outline (levels, collapsed
+groups, whether summaries sit below and to the right) and the
 workbook epoch. Writes the same back.
 
 Colours in BIFF8 are indexes into a 56-entry palette. Reading resolves them to
