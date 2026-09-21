@@ -1,5 +1,46 @@
 # Changelog
 
+## 0.12.1
+
+### Added
+
+- `edit::insert_rows_with` and `edit::insert_columns_with` take a
+  `CopyOrigin` - `Blank`, `Before` or `After`, Excel's `CopyOrigin` on
+  `Range.Insert` - and give the new lines the cell styles, own style and
+  height or width of that neighbour. In JS it is the optional last argument
+  of `insertRows` / `insertColumns` / `insertCells`: `"before"` (the
+  default, as in Excel), `"after"` or `"none"`. `edit::insert_cells_with`
+  does the same for Insert Cells.
+- Sorting: `edit::sort_range`, `sort_range_with` and `sort_table`. Rows sort
+  in Excel's order (numbers, text without case, `FALSE`, `TRUE`, errors;
+  empty cells last both ways) and formulas are rewritten as if copied to
+  their new row. A `SortKey` names a sheet column or row, or a header
+  (`SortKey::header("Amount").descending()`); `SortOptions` keeps a header
+  row on top or sorts columns left to right; `sort_table` takes a table's
+  name and its column names. JS: `sortRange(sheet, range, [2, "-Amount"],
+  { header, byColumns })` and `sortTable(name, keys)`.
+- `edit::fill` - Ctrl+D and Ctrl+R: the first row or column of a range copied
+  over the rest, references moving as in a copy. JS: `fillDown`, `fillRight`.
+- `edit::fill_series` - the fill handle: numbers follow their trend, a date
+  steps a day, `Кв1` counts on to `Кв2`, month and weekday names (English and
+  Russian) go round their list, anything else repeats. JS: `fillSeries`.
+- JS: `getRangeStyles` / `setRangeStyles` (and `...At`) read and write a
+  rectangle's formatting in one call, as `{ styles, grid }` with each distinct
+  style once; what `get` returns, `set` takes back.
+- HTML round trip, checked on a 1C export (416 cells, 110 merges): a merged
+  block's `<td>` now carries the right and bottom borders of the cells on
+  that edge, so the page draws the whole frame; the reader spreads
+  `data-format` over the merge, reads `white-space` as wrapping, and text
+  with runs of spaces keeps them through `data-value`.
+- Docs: sorting, filling and formatting inserted rows in `docs/editing.md`,
+  three new recipes, the JS API table and the npm readme brought up to date
+  (the scoped package name, 518 functions, `toXls` writes formulas).
+- The HTML reader applies the page's `<style>` rules (`.x`, `td.x`) to cells
+  by class, under any inline `style`; the HTML writer marks a non-General
+  number format with `data-format`, and every value that would not read back
+  as itself with `data-type`/`data-value` (a formula with `data-formula`),
+  so a page we wrote reads back with its numbers, formulas and styles.
+
 ## 0.12.0
 
 ### Added

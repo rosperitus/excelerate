@@ -25,6 +25,7 @@ use crate::style::{
     Underline, VerticalAlign,
 };
 use crate::{CellError, CellRef, Col, Range, Row};
+use std::collections::HashMap;
 
 /// Reads a page from a file.
 ///
@@ -40,6 +41,7 @@ pub fn read_html(path: impl AsRef<std::path::Path>) -> Result<Spreadsheet> {
 #[must_use]
 pub fn read_html_str(html: &str) -> Spreadsheet {
     let mut build = Build::new();
+    build.classes = stylesheet(html);
     build.children(&parse(html));
     build.finish()
 }
@@ -317,6 +319,51 @@ fn entity(name: &str) -> Option<char> {
     char::from_u32(code)
 }
 
+/// The rules of every `<style>` block that name a class of cells: `.x`,
+/// `td.x`, `th.x`, as our writer and Excel's export write them. Descendant
+/// selectors count by their last part; anything fancier is ignored.
+// ponytail: no specificity or cascade order; rules of one class apply in page order.
+fn stylesheet(html: &str) -> HashMap<String, String> {
+    let lower = html.to_ascii_lowercase();
+    let mut classes: HashMap<String, String> = HashMap::new();
+    let mut from = 0;
+    while let Some(open) = lower[from..].find("<style").map(|at| from + at) {
+        let Some(body) = lower[open..].find('>').map(|gt| open + gt + 1) else {
+            break;
+        };
+        let end = lower[body..]
+            .find("</style")
+            .map_or(html.len(), |at| body + at);
+        let mut sheet = html[body..end].to_owned();
+        while let Some(start) = sheet.find("/*") {
+            let stop = sheet[start..]
+                .find("*/")
+                .map_or(sheet.len(), |at| start + at + 2);
+            sheet.replace_range(start..stop, "");
+        }
+        for rule in sheet.split('}') {
+            let Some((selectors, declarations)) = rule.split_once('{') else {
+                continue;
+            };
+            for selector in selectors.split(',') {
+                let last = selector.split_whitespace().last().unwrap_or_default();
+                let Some((tag, class)) = last.split_once('.') else {
+                    continue;
+                };
+                if matches!(tag.to_ascii_lowercase().as_str(), "" | "td" | "th")
+                    && !class.is_empty()
+                {
+                    let entry = classes.entry(class.to_owned()).or_default();
+                    entry.push_str(declarations);
+                    entry.push(';');
+                }
+            }
+        }
+        from = end;
+    }
+    classes
+}
+
 // ------------------------------------------------------------------ the walk
 
 /// The cursor the walk carries: the state threaded through the
@@ -341,6 +388,8 @@ struct Build {
     spanned: Vec<Range>,
     /// Which column the next `<col>` describes.
     current_column: u32,
+    /// Declarations of the page's `<style>` rules, by class name.
+    classes: HashMap<String, String>,
 }
 
 /// How many cells one `style=` attribute may be spread over. A `rowspan` is a
@@ -361,6 +410,7 @@ impl Build {
             nested_column: vec![1],
             spanned: Vec::new(),
             current_column: 1,
+            classes: HashMap::new(),
         }
     }
 
@@ -571,9 +621,6 @@ impl Build {
         if let Some(align) = e.attr("valign").map(vertical) {
             self.restyle_current(|style| style.alignment.vertical = align);
         }
-        if let Some(code) = e.attr("data-format").map(ToOwned::to_owned) {
-            self.restyle_current(|style| style.number_format = NumberFormat::Custom(code));
-        }
 
         if let Some(range) = merge {
             if e.attr("rowspan").is_some() {
@@ -658,12 +705,27 @@ impl Build {
         });
     }
 
+    /// The CSS that applies to an element: its classes' rules from the page's
+    /// stylesheet, then its own `style=`, which wins by coming last.
+    fn declarations(&self, e: &Elem) -> String {
+        let mut css: String = e
+            .attr("class")
+            .into_iter()
+            .flat_map(str::split_whitespace)
+            .filter_map(|class| self.classes.get(class))
+            .fold(String::new(), |all, rule| all + rule + ";");
+        css.push_str(e.attr("style").unwrap_or_default());
+        css
+    }
+
     /// `target` is the range a merged cell covers; `row` is `None` for a
     /// `<col>`, which carries a width and nothing a cell could hold.
     fn style_attribute(&mut self, e: &Elem, target: Option<Range>, col: u32, row: Option<u32>) {
-        let Some(css) = e.attr("style").map(ToOwned::to_owned) else {
+        let css = self.declarations(e);
+        let format = e.attr("data-format").filter(|_| row.is_some());
+        if css.is_empty() && format.is_none() {
             return;
-        };
+        }
         let range = match (target, row) {
             (Some(range), _) => Some(range),
             (None, Some(_)) => self.at().map(|at| Range::new(at, at)),
@@ -715,7 +777,14 @@ impl Build {
                 },
                 "text-align" => style.alignment.horizontal = HorizontalAlign::parse(value),
                 "vertical-align" => style.alignment.vertical = vertical(value),
-                "word-wrap" => style.alignment.wrap_text = value == "break-word",
+                "word-wrap" | "overflow-wrap" => {
+                    style.alignment.wrap_text = value == "break-word" || value == "anywhere";
+                }
+                // Our writer says `pre-wrap`, Excel's own export `normal`; both
+                // are a cell that wraps, and `nowrap` or `pre` one that does not.
+                "white-space" => {
+                    style.alignment.wrap_text = matches!(value, "normal" | "pre-wrap" | "pre-line");
+                }
                 "text-indent" => {
                     if let Some(indent) = css_pixels(value) {
                         #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -740,16 +809,23 @@ impl Build {
             }
         }
 
+        if let Some(code) = format {
+            style.number_format = NumberFormat::Custom(code.to_owned());
+        }
+
         let Some(range) = range.filter(|_| row.is_some()) else {
             return;
         };
-        let id = self.styles.intern(style);
         let cells = u64::from(range.width()) * u64::from(range.height());
         let range = if cells > MAX_STYLED_SPAN {
             Range::new(range.start, range.start)
         } else {
             range
         };
+        // A merge is one `<td>`, so every cell under it gets the block's style;
+        // what a covered cell had inside the block is not drawn and not on the
+        // page.
+        let id = self.styles.intern(style);
         for at in range.cells() {
             self.sheet.entry(at).style = id;
         }
@@ -830,9 +906,16 @@ fn value_of(content: &str, e: Option<&Elem>) -> CellValue {
     if let Some(formula) = attr("data-formula") {
         return CellValue::Formula {
             formula: formula.trim_start_matches('=').to_owned(),
-            cached: Some(Box::new(super::csv::value_of(content))),
+            cached: Some(Box::new(typed_value(content, e))),
         };
     }
+    typed_value(content, e)
+}
+
+/// The value a cell's `data-type` and `data-value` name, or its text read
+/// the way CSV reads a field.
+fn typed_value(content: &str, e: Option<&Elem>) -> CellValue {
+    let attr = |name: &str| e.and_then(|e| e.attr(name));
     let text = attr("data-value").unwrap_or(content);
     match attr("data-type") {
         Some("s" | "str" | "inlineStr") => CellValue::text(text),
@@ -1249,5 +1332,21 @@ mod tests {
             .expect("the height was set");
         // The `height` attribute of the row is applied last and wins.
         assert!((height - 20.0).abs() < 1e-6, "{height}");
+    }
+
+    #[test]
+    fn a_class_from_the_stylesheet_styles_the_cell() {
+        let book = read_html_str(
+            "<style>/* x */ td.style1, .other { font-weight: bold; color: #FF0000 }</style>\
+             <table><tr><td class=\"column1 style1\" data-format=\"0.00\">1</td></tr></table>",
+        );
+        let ws = book.sheet(0).expect("one sheet");
+        let id = ws
+            .get(CellRef::parse("A1").expect("A1"))
+            .expect("a cell")
+            .style;
+        let style = book.styles.get(id).expect("the style");
+        assert!(style.font.bold);
+        assert_eq!(style.number_format.code(), "0.00");
     }
 }

@@ -6,7 +6,8 @@ same reader that runs on your server runs in Node or a browser tab.
 ## Install
 
 ```text
-npm install excelerate
+npm install @rosperitus/excelerate          # everything
+npm install @rosperitus/excelerate-reader   # reading only, 1.0 MB of wasm instead of 2.3
 ```
 
 TypeScript declarations ship with the package - `wasm-bindgen` derives them
@@ -25,7 +26,7 @@ The result is a publishable npm package: wasm, the JS glue, `.d.ts`, and
 ## Use it
 
 ```ts
-import { Book } from "excelerate";
+import { Book } from "@rosperitus/excelerate";
 import fs from "node:fs";
 
 // Any supported format - the bytes decide. The name is optional and only
@@ -66,6 +67,7 @@ on Node 22.6+, no build step and no separate install.
 | `getFormula(sheet, address)` | its formula text, or `undefined` for a plain value |
 | `getFormatted(sheet, address)` | the value through its number format, as displayed |
 | `getRange(sheet, "A1:C9")` / `setRange(sheet, "A1", grid)` | a rectangle in one crossing |
+| `getRangeStyles(sheet, range)` / `setRangeStyles(sheet, at, styles)` | a rectangle's formatting in one crossing: `{ styles, grid }`, each distinct style once and a grid of indexes into it; what `get` returns, `set` takes back |
 | `getAt` / `setAt` / `clearAt` / `getFormulaAt` / `getFormattedAt` / `cellIndentAt` | the same cell operations by 1-based row and column |
 | `getRangeAt(sheet, row, col, rows, cols)` / `setRangeAt(sheet, row, col, grid)` | a rectangle by numbers |
 | `recalculateFromAt(sheet, row, column)` | recalculate from a cell named by numbers |
@@ -82,9 +84,13 @@ on Node 22.6+, no build step and no separate install.
 | `setColumnWidth` / `setRowHeight` / `setColumnHidden` / `setRowHidden` | write those; `undefined` for a size gives it back to the default |
 | `setSheetVisibility(sheet, state)` | `"visible"`, `"hidden"` or `"veryHidden"` |
 | `merge(sheet, "A1:C1")` / `unmerge(sheet, range)` | merge a block of cells, or take the merge back out |
-| `insertRows` / `removeRows` / `insertColumns` / `removeColumns` | edit the grid; formulas across the workbook follow |
+| `insertRows` / `removeRows` / `insertColumns` / `removeColumns` | edit the grid; formulas across the workbook follow. An insert takes `copyOrigin` last: `"before"` (the default, as in Excel), `"after"` or `"none"` |
 | `copyRange(sheet, range, to, toSheet?)` / `moveRange(...)` | a block of cells: a copy rewrites its formulas, a move keeps them and drags the references to it along |
-| `insertCells(sheet, range, "down" \| "right")` / `removeCells(sheet, range, "up" \| "left")` | Excel's "Insert Cells": part of a row moves, the rest of the sheet stays |
+| `insertCells(sheet, range, "down" \| "right", copyOrigin?)` / `removeCells(sheet, range, "up" \| "left")` | Excel's "Insert Cells": part of a row moves, the rest of the sheet stays |
+| `sortRange(sheet, range, keys, { header?, byColumns? })` | Data - Sort. A key is a column number (`2`) or a header (`"Amount"`); a minus sorts largest first |
+| `sortTable(name, keys)` | sort a table's data rows by its column names; header and totals stay put |
+| `fillDown(sheet, range)` / `fillRight(sheet, range)` | Ctrl+D / Ctrl+R: the first row or column copied over the rest |
+| `fillSeries(sheet, range, "down" \| "right")` | the fill handle: `1, 3` → `5, 7`, `Кв1` → `Кв2`, `Jan` → `Feb`, a date by a day |
 | `moveSheet(from, to)` | reorder the tabs; every sheet index moves with them |
 | `removeSheet(sheet)` | drop a sheet - references to it become `#REF!` |
 | `comments(sheet)` / `hyperlinks(sheet)` / `tables(sheet)` | what the sheet carries besides cells |
@@ -131,7 +137,8 @@ index in step - so a loop of edit-then-recalc does not rebuild it each time.
   1-based `row` and `column`; in a loop that is one less string to build and
   parse per cell.
 - **Cross the boundary once.** `getRange`/`setRange` move a whole rectangle per
-  call; a loop of `get` pays the crossing per cell.
+  call; a loop of `get` pays the crossing per cell. The same goes for
+  formatting: `getRangeStyles` instead of `cellStyle` per cell.
 - **Batch your edits.** `recalculateFromMany` runs one pass for the whole batch;
   calling `recalculateFrom` in a loop runs one per cell, and on a big book the
   difference is roughly 20x.

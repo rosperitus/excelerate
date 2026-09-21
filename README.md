@@ -38,6 +38,9 @@ println!("{}: {} non-empty cells", sheet.title(), sheet.len());
   cells, copy or move a block, reorder the sheets - and the formulas, merges,
   links, tables and drawings across the whole workbook follow. A copy rewrites
   its formulas, a move keeps them and drags the references to it along.
+  Inserted rows can take the formatting of their neighbour, ranges and tables
+  sort in Excel's order, and the fill handle's series (`1, 3, 5`, `Jan, Feb`,
+  `Q1, Q2`) are one call.
 - **Builds for WebAssembly**, and ships as two npm packages:
   [`@rosperitus/excelerate`](https://www.npmjs.com/package/@rosperitus/excelerate)
   and a read-only `@rosperitus/excelerate-reader` at a third of the size.
@@ -73,8 +76,7 @@ write_xlsx(&book, "quote.xlsx")?;
 # Ok::<(), excelerate::Error>(())
 ```
 
-Converting between formats is a two-liner - the output format comes from the
-extension you ask for:
+Converting between formats is a two-liner:
 
 ```rust,no_run
 use excelerate::{reader, writer};
@@ -84,6 +86,53 @@ writer::write_ods(&book, "report.ods")?;
 writer::write_csv(&book, 0, "report.csv")?;
 # Ok::<(), excelerate::Error>(())
 ```
+
+## Editing like Excel
+
+```rust,no_run
+use excelerate::edit::{self, Axis, CopyOrigin, SortKey, SortOptions};
+use excelerate::{Range, Row, reader, writer};
+
+let mut book = reader::read("sales.xlsx")?;
+
+// Two new rows above row 8, formatted like row 7. Every formula in the book
+// that pointed at row 8 or below now points two rows lower.
+edit::insert_rows_with(&mut book, 0, Row::new(7).unwrap(), 2, CopyOrigin::Before)?;
+
+// Copy the formula in E2 down the column (Ctrl+D), then sort by the header
+// "Amount", largest first. The header row stays on top.
+edit::fill(&mut book, 0, Range::parse("E2:E500")?, Axis::Rows)?;
+let options = SortOptions { header: true, ..SortOptions::default() };
+edit::sort_range_with(
+    &mut book, 0, Range::parse("A1:E500")?,
+    &[SortKey::header("Amount").descending()], options,
+)?;
+
+writer::write_xlsx(&book, "sales-sorted.xlsx")?;
+# Ok::<(), excelerate::Error>(())
+```
+
+[docs/editing.md](docs/editing.md) has the rules each edit follows and where
+they come from.
+
+## From JavaScript
+
+The same crate compiled to WebAssembly, for Node and the browser:
+
+```ts
+import { Book } from "@rosperitus/excelerate";
+import { readFileSync, writeFileSync } from "node:fs";
+
+const book = Book.read(readFileSync("sales.xlsx"));
+book.insertRows(0, 8, 2);                              // styled like row 7
+book.sortRange(0, "A1:E500", ["-Amount"], { header: true });
+book.setRangeStyle(0, "A1:E1", { font: { bold: true } });
+book.recalculate();
+writeFileSync("sales-sorted.xlsx", book.toXlsx());
+```
+
+The whole JS API is in [docs/wasm.md](docs/wasm.md) and the package's
+[README](npm/README.md).
 
 ## Formats
 
@@ -110,7 +159,7 @@ Every format has its own sharp edges; they are all written down in
 | [Getting started](docs/getting-started.md) | install, read a file, write one, the whole loop |
 | [Recipes](docs/recipes.md) | short answers: read a value, convert a file, recalculate one cell |
 | [Workbook model](docs/model.md) | workbook, sheet, cell, addresses and ranges |
-| [Editing the grid](docs/editing.md) | inserting and removing rows, columns and cells, copying and moving blocks and sheets, and what follows them |
+| [Editing the grid](docs/editing.md) | inserting and removing rows, columns and cells, formatting what you insert, copying, moving, sorting and filling, and what follows each edit |
 | [Sheet features](docs/sheet-features.md) | merges, comments, tables, protection, filters, validation, print setup |
 | [File formats](docs/formats.md) | what each format carries and what it drops |
 | [Formulas](docs/formulas.md) | evaluation, incremental recalc, driving the engine yourself |
@@ -122,8 +171,8 @@ Every format has its own sharp edges; they are all written down in
 ## Building
 
 ```text
-cargo test
-cargo clippy --all-targets -- -D warnings
+cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
+tools/build-npm.sh && (cd npm && npm install && npm test && npm run typecheck)
 ```
 
 ## Status

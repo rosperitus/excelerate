@@ -250,3 +250,46 @@ fn a_drawing_moves_with_the_rows_under_it() {
     assert!(book.sheet(0).unwrap().comments.contains_key(&at("B9")));
     assert!(book.sheet(0).unwrap().get(at("A12")).is_some());
 }
+
+#[test]
+fn inserted_lines_take_the_formatting_they_are_told_to() {
+    use excelerate::edit::{CopyOrigin, insert_columns_with, insert_rows_with};
+    use excelerate::model::RowProperties;
+    use excelerate::style::Style;
+
+    let mut book = Spreadsheet::new();
+    let bold = book.styles.intern(Style {
+        font: excelerate::style::Font {
+            bold: true,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.entry(at("A1")).style = bold;
+    sheet.rows.insert(
+        row(1),
+        RowProperties {
+            height: Some(30.0),
+            custom_height: true,
+            ..Default::default()
+        },
+    );
+    sheet.set(at("A2"), CellValue::Number(1.0));
+
+    insert_rows_with(&mut book, 0, row(2), 2, CopyOrigin::Before).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    for r in ["A2", "A3"] {
+        assert_eq!(sheet.get(at(r)).unwrap().style, bold, "{r}");
+    }
+    assert_eq!(sheet.rows[&row(3)].height, Some(30.0));
+    assert_eq!(sheet.get(at("A4")).unwrap().value, CellValue::Number(1.0));
+
+    insert_rows_with(&mut book, 0, row(1), 1, CopyOrigin::After).unwrap();
+    assert_eq!(book.sheet(0).unwrap().get(at("A1")).unwrap().style, bold);
+
+    insert_columns_with(&mut book, 0, col("A"), 1, CopyOrigin::After).unwrap();
+    assert_eq!(book.sheet(0).unwrap().get(at("A1")).unwrap().style, bold);
+    insert_columns_with(&mut book, 0, col("A"), 1, CopyOrigin::Blank).unwrap();
+    assert!(book.sheet(0).unwrap().get(at("A1")).is_none());
+}

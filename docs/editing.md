@@ -19,7 +19,7 @@ formulas on other sheets, defined names, merges, hyperlinks, data validations,
 conditional formats, protected ranges, the autofilter, table ranges, chart
 series, drawing anchors, page breaks. `excelerate::edit` moves them all.
 
-## The four grid edits
+## Rows and columns
 
 ```rust
 use excelerate::edit::{insert_rows, insert_columns, remove_rows, remove_columns};
@@ -118,6 +118,108 @@ A reference travels only when the whole of it travels, which is why this is a
 separate edit from `insert_rows` rather than a special case of it. Data that
 the push would shove off the end of the sheet is an error; blank cells there
 are no loss, and Excel draws the line in the same place.
+
+## Formatting what you insert
+
+A plain insert leaves the new rows blank. Excel's Insert takes the formatting
+of the row above instead, and `CopyOrigin` gives you the same choice - the
+`CopyOrigin` argument of Excel's `Range.Insert`:
+
+```rust
+use excelerate::edit::{Axis, CopyOrigin, insert_cells_with, insert_columns_with, insert_rows_with};
+use excelerate::{Col, Range, Row};
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# book.add_sheet(Worksheet::new("Data")?)?;
+
+// Two rows before row 5, styled like row 4: its cell styles, its own row
+// style and its height.
+insert_rows_with(&mut book, 0, Row::new(4).unwrap(), 2, CopyOrigin::Before)?;
+// One column before C, styled like the column that ends up right of it.
+insert_columns_with(&mut book, 0, Col::new(2).unwrap(), 1, CopyOrigin::After)?;
+// Insert Cells takes the same flag; only cell styles are copied there.
+insert_cells_with(&mut book, 0, Range::parse("B2:B3")?, Axis::Rows, CopyOrigin::Before)?;
+# Ok::<(), excelerate::Error>(())
+```
+
+Values are never copied, and neither are hidden or collapsed outline states:
+an inserted row that came out hidden would be a strange surprise.
+`insert_rows` and friends are the `CopyOrigin::Blank` case. In JS the flag is
+the last argument, and there it defaults to `"before"` the way Excel does.
+
+## Sorting
+
+`sort_range` is Excel's Data - Sort. Keys are sheet columns, the first key
+decides first, and equal rows keep their order:
+
+```rust
+use excelerate::edit::{SortKey, SortOptions, sort_range, sort_range_with, sort_table};
+use excelerate::{Col, Range};
+# use excelerate::model::{Spreadsheet, Worksheet};
+# use excelerate::CellRef;
+# let mut book = Spreadsheet::empty();
+# let mut sheet = Worksheet::new("Data")?;
+# sheet.set(CellRef::parse("A1")?, "Region");
+# sheet.set(CellRef::parse("B1")?, "Amount");
+# book.add_sheet(sheet)?;
+
+// Rows 2..100 by column C, largest first, then by A.
+let keys = [
+    SortKey::column(Col::new(2).unwrap()).descending(),
+    SortKey::column(Col::new(0).unwrap()),
+];
+sort_range(&mut book, 0, Range::parse("A2:D100")?, &keys)?;
+
+// With a header row: it stays on top, and keys can name its cells.
+let options = SortOptions { header: true, ..SortOptions::default() };
+let keys = [SortKey::header("Region"), SortKey::header("Amount").descending()];
+sort_range_with(&mut book, 0, Range::parse("A1:D100")?, &keys, options)?;
+# Ok::<(), excelerate::Error>(())
+```
+
+A table knows its own header and totals rows, so `sort_table` takes only its
+name and the column names: `sort_table(&mut book, "Sales", &[SortKey::header("Amount")])`.
+`SortOptions::orientation = Axis::Columns` sorts columns left to right, keyed
+by `SortKey::row`.
+
+The order is Excel's: numbers, then text ignoring case, then `FALSE`, `TRUE`
+and errors. Empty cells go last whichever way the key runs. A formula sorts by
+its cached value, so recalculate first if the cache may be stale. A moved
+formula is rewritten as if copied to its new row, so `=B7*2` that lands on row
+3 reads `=B3*2` - it still reads its own row. Formulas outside the range are
+not retargeted, in Excel or here. A merge crossing the range is an error;
+Excel refuses that sort too.
+
+## Filling
+
+`fill` is Ctrl+D and Ctrl+R: the first row (or column) of a range copied over
+the rest, formulas rewritten as in a copy. `fill_series` is dragging the fill
+handle - it continues what the first cells start:
+
+```rust
+use excelerate::edit::{Axis, fill, fill_series};
+use excelerate::Range;
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# book.add_sheet(Worksheet::new("Data")?)?;
+
+fill(&mut book, 0, Range::parse("C2:C500")?, Axis::Rows)?;        // =A2*B2 down to row 500
+fill_series(&mut book, 0, Range::parse("A1:A12")?, Axis::Rows)?;  // Jan, Feb, ... Dec
+# Ok::<(), excelerate::Error>(())
+```
+
+What `fill_series` does with the leading filled cells of each line:
+
+| Seed | Continues as |
+|---|---|
+| `1, 3` | `5, 7, 9` - the least-squares trend, so `1, 2, 4` goes on `5.33, 6.83` |
+| `5` | `5, 5, 5` - one number is copied, as in Excel |
+| a date | the next days |
+| `Кв1`, `Item 007` | `Кв2`, `Item 008` - the last number counts on, zeros keep their width |
+| `Jan`, `Monday`, `Январь`, `ПН` | the rest of the month or weekday list, in the seed's case |
+| anything else | the seed repeated, formulas moved as in a copy |
+
+Every filled cell takes the style of the seed cell it continues.
 
 ## Moving a sheet
 
