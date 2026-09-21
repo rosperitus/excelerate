@@ -1,12 +1,12 @@
+# Build output: tools/build-npm.sh writes pkg*/, tools/pack-npm.sh pkg-publish/.
 pkg/
-node_modules/
-con.xlsx
-.~*
-files/
-# except the workbooks the tests stand on
-!files/gen.xlsx
-!files/grouped.xlsx
-files/out.*
-files/edited.*
 pkg-web/
 pkg-bundler/
+pkg-publish/
+node_modules/
+.~*
+# Workbooks the benchmark reads and the examples write, except the two the
+# tests stand on.
+files/
+!files/gen.xlsx
+!files/grouped.xlsx
