@@ -667,3 +667,35 @@ test("copying, moving and reordering", () => {
   // The formulas name sheets, so moving one changes nothing in them.
   assert.strictEqual(book.getFormula(1, "B1"), "SUM(F10:F12)");
 });
+
+test("sorting, filling a series and styles by the block", () => {
+  const book = new Book();
+  book.setRange(0, "A1", [
+    ["Name", "Score"],
+    ["ann", 5],
+    ["bob", 9],
+    ["cy", 5],
+  ]);
+  book.sortRange(0, "A1:B4", ["-Score", "Name"], { header: true });
+  assert.deepStrictEqual(book.getRange(0, "A1:A4").flat(), ["Name", "bob", "ann", "cy"]);
+  book.sortRange(0, "A2:B4", [1]);
+  assert.deepStrictEqual(book.getRange(0, "A2:A4").flat(), ["ann", "bob", "cy"]);
+  assert.throws(() => book.sortRange(0, "A1:B4", ["Nope"], { header: true }), /no header/);
+
+  book.setRange(0, "D1", [[1, "Кв1", "Jan"], [3]]);
+  book.fillSeries(0, "D1:F4", "down");
+  assert.deepStrictEqual(book.getRange(0, "D4:F4"), [[7, "Кв4", "Apr"]]);
+
+  book.setRangeStyle(0, "A1:B1", { font: { bold: true } });
+  const styles = book.getRangeStyles(0, "A1:B2");
+  assert.strictEqual(styles.styles.length, 2);
+  assert.deepStrictEqual(styles.grid, [[0, 0], [1, 1]]);
+  assert.strictEqual(styles.styles[0].font.bold, true);
+  // What comes out goes back in: the header's look copied under it.
+  book.setRangeStyles(0, "A5", styles);
+  assert.strictEqual(book.cellBold(0, "A5"), true);
+  assert.strictEqual(book.cellBold(0, "A6"), false);
+  book.setRangeStyles(0, "C1", { styles: [{ font: { italic: true } }], grid: [[0, null]] });
+  assert.strictEqual(book.cellStyle(0, "C1").font.italic, true);
+  assert.strictEqual(book.cellStyle(0, "D1").font.italic, false);
+});

@@ -10,11 +10,13 @@
 mod anchor;
 mod chart;
 mod range;
+mod series;
 
 pub use range::{
-    SortKey, copy_range, fill, insert_cells, insert_cells_with, move_range, move_sheet,
-    remove_cells, sort_range,
+    SortBy, SortKey, SortOptions, copy_range, fill, insert_cells, insert_cells_with, move_range,
+    move_sheet, remove_cells, sort_range, sort_range_with, sort_table,
 };
+pub use series::fill_series;
 
 use crate::coordinate::{
     CellRef, Col, MAX_COL, MAX_ROW, Range, Row, parse_ref_at, scan_formula, scan_references,

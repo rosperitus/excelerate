@@ -192,6 +192,14 @@ export interface CellStyle {
     textRotation: number;
   };
 }
+/**
+ * The styles of a rectangle, as `getRangeStyles` returns them: each distinct
+ * style once in `styles`, and `grid` - row by row - pointing into it.
+ */
+export interface RangeStyles {
+  styles: CellStyle[];
+  grid: number[][];
+}
 "#;
 
 /// The shapes only the writing build takes, so a read-only package does not
@@ -230,6 +238,27 @@ export interface CellStylePatch {
     indent: number;
     textRotation: number;
   }>;
+}
+/**
+ * Sort keys: a 1-based column number of the sheet (a row number when sorting
+ * columns) or a header's text; a minus in front sorts largest first.
+ */
+export type SortKeys = (number | string)[];
+/** How `sortRange` reads its range. */
+export interface SortRangeOptions {
+  /** The first row (or column) is a header: it stays put and names keys. */
+  header?: boolean;
+  /** Reorder columns left to right instead of rows. */
+  byColumns?: boolean;
+}
+/**
+ * Styles to write over a rectangle, as `setRangeStyles` takes them: `grid`
+ * points into `styles`, and `null` or `-1` leaves its cell as it is. What
+ * `getRangeStyles` returns fits here unchanged.
+ */
+export interface RangeStylesPatch {
+  styles: CellStylePatch[];
+  grid: (number | null)[][];
 }
 "#;
 
@@ -962,6 +991,53 @@ impl Book {
         self.style_of(sheet, at_index(row, column)?)
     }
 
+    /// The styles of a rectangle in one call: each distinct style once, and a
+    /// grid of indexes into them. `cellStyle` per cell costs a crossing and a
+    /// whole style object per cell; a formatted table of ten thousand cells
+    /// usually has a dozen styles.
+    #[wasm_bindgen(js_name = getRangeStyles, unchecked_return_type = "RangeStyles")]
+    pub fn get_range_styles(&self, sheet: usize, range: &str) -> Result<JsValue, JsError> {
+        self.styles_of(sheet, Range::parse(range).map_err(js)?)
+    }
+
+    /// The same by numbers, as `getRangeAt` takes them.
+    #[wasm_bindgen(js_name = getRangeStylesAt, unchecked_return_type = "RangeStyles")]
+    pub fn get_range_styles_at(
+        &self,
+        sheet: usize,
+        row: u32,
+        column: u32,
+        rows: u32,
+        columns: u32,
+    ) -> Result<JsValue, JsError> {
+        self.styles_of(sheet, area_at(row, column, rows, columns)?)
+    }
+
+    fn styles_of(&self, sheet: usize, area: Range) -> Result<JsValue, JsError> {
+        let ws = self.sheet_of(sheet)?;
+        let mut index: std::collections::HashMap<crate::style::StyleId, u32> =
+            std::collections::HashMap::new();
+        let styles = js_sys::Array::new();
+        let grid = js_sys::Array::new();
+        for row in area.start.row.index()..=area.end.row.index() {
+            let line = js_sys::Array::new();
+            for col in area.start.col.index()..=area.end.col.index() {
+                let id = Row::new(row)
+                    .zip(Col::new(col))
+                    .and_then(|(row, col)| ws.get(CellRef::new(col, row)))
+                    .map(|cell| cell.style)
+                    .unwrap_or_default();
+                let at = *index.entry(id).or_insert_with(|| {
+                    let style = self.book.styles.get(id).cloned().unwrap_or_default();
+                    styles.push(&style_to_js(&style)) - 1
+                });
+                line.push(&JsValue::from(at));
+            }
+            grid.push(&line);
+        }
+        Ok(object(&[("styles", styles.into()), ("grid", grid.into())]))
+    }
+
     fn style_of(&self, sheet: usize, at: CellRef) -> Result<JsValue, JsError> {
         let ws = self
             .book
@@ -1377,6 +1453,106 @@ impl Book {
         #[wasm_bindgen(unchecked_param_type = "CellStylePatch")] patch: &JsValue,
     ) -> Result<(), JsError> {
         self.paint(sheet, Range::parse(range).map_err(js)?, patch)
+    }
+
+    #[cfg(feature = "write")]
+    /// Paints a rectangle cell by cell in one call, `at` its top-left corner:
+    /// `grid` points into `styles`, each a patch as `setCellStyle` takes it,
+    /// and `null` or `-1` leaves its cell alone. The output of
+    /// `getRangeStyles` goes back in unchanged, so a block's formatting can be
+    /// read, edited in JS and written back - or copied somewhere else.
+    #[wasm_bindgen(js_name = setRangeStyles)]
+    pub fn set_range_styles(
+        &mut self,
+        sheet: usize,
+        at: &str,
+        #[wasm_bindgen(unchecked_param_type = "RangeStylesPatch")] styles: &JsValue,
+    ) -> Result<(), JsError> {
+        self.paint_grid(sheet, CellRef::parse(at).map_err(js)?, styles)
+    }
+
+    #[cfg(feature = "write")]
+    /// The same with the corner given as 1-based row and column.
+    #[wasm_bindgen(js_name = setRangeStylesAt)]
+    pub fn set_range_styles_at(
+        &mut self,
+        sheet: usize,
+        row: u32,
+        column: u32,
+        #[wasm_bindgen(unchecked_param_type = "RangeStylesPatch")] styles: &JsValue,
+    ) -> Result<(), JsError> {
+        self.paint_grid(sheet, at_index(row, column)?, styles)
+    }
+
+    #[cfg(feature = "write")]
+    fn paint_grid(&mut self, sheet: usize, start: CellRef, input: &JsValue) -> Result<(), JsError> {
+        self.sheet_of(sheet)?;
+        let field = |name: &str| -> Result<js_sys::Array, JsError> {
+            js_sys::Reflect::get(input, &JsValue::from_str(name))
+                .ok()
+                .and_then(|v| v.dyn_into().ok())
+                .ok_or_else(|| JsError::new(&format!("`{name}` must be an array")))
+        };
+        let (patches, grid) = (field("styles")?, field("grid")?);
+        let patches: Vec<JsValue> = patches.iter().collect();
+
+        // Resolved first, written second: a bad patch halfway through should
+        // not leave the sheet half painted.
+        let mut seen: std::collections::HashMap<
+            (crate::style::StyleId, usize),
+            crate::style::StyleId,
+        > = std::collections::HashMap::new();
+        let mut writes = Vec::new();
+        for (r, line) in grid.iter().enumerate() {
+            let line: js_sys::Array = line
+                .dyn_into()
+                .map_err(|_| JsError::new("every row of `grid` must be an array"))?;
+            for (c, pick) in line.iter().enumerate() {
+                let Some(pick) = pick.as_f64().filter(|p| *p >= 0.0) else {
+                    continue;
+                };
+                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let pick = pick as usize;
+                let patch = patches
+                    .get(pick)
+                    .ok_or_else(|| JsError::new(&format!("no style {pick} in `styles`")))?;
+                let at = u32::try_from(r)
+                    .ok()
+                    .and_then(|r| Row::new(start.row.index() + r))
+                    .zip(
+                        u32::try_from(c)
+                            .ok()
+                            .and_then(|c| Col::new(start.col.index() + c)),
+                    )
+                    .map(|(row, col)| CellRef::new(col, row))
+                    .ok_or_else(|| JsError::new("styles run off the sheet"))?;
+                let old = self
+                    .sheet_of(sheet)?
+                    .get(at)
+                    .map_or_else(Default::default, |cell| cell.style);
+                let id = if let Some(&id) = seen.get(&(old, pick)) {
+                    id
+                } else {
+                    if !patch.is_object() {
+                        return Err(JsError::new("a style patch is an object"));
+                    }
+                    let mut style = self.book.styles.get(old).cloned().unwrap_or_default();
+                    apply_style_patch(&mut style, patch)?;
+                    let id = self.book.styles.intern(style);
+                    seen.insert((old, pick), id);
+                    id
+                };
+                writes.push((at, id));
+            }
+        }
+        let ws = self
+            .book
+            .sheet_mut(sheet)
+            .ok_or_else(|| JsError::new("no such sheet"))?;
+        for (at, id) in writes {
+            ws.entry(at).style = id;
+        }
+        Ok(())
     }
 
     #[cfg(feature = "write")]
@@ -2242,32 +2418,79 @@ impl Book {
     }
 
     #[cfg(feature = "write")]
-    /// Sorts the rows of a range (header left out). Each key is a column
-    /// number, 1-based, of the sheet: positive sorts it smallest first,
-    /// negative largest first; the first key decides first.
+    /// Sorts the rows of a range, or its columns. A key is a column number of
+    /// the sheet, 1-based (a row number when sorting columns), or the text of
+    /// a header when `options.header` says the first line is one; a minus
+    /// sorts it largest first: `[2, -4]`, `["Region", "-Amount"]`. The first
+    /// key decides first.
+    ///
+    /// ```js
+    /// book.sortRange(0, "A1:D100", ["Region", "-Amount"], { header: true });
+    /// ```
     #[wasm_bindgen(js_name = sortRange)]
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "a JS array crosses the wasm boundary owned"
-    )]
     pub fn sort_range(
         &mut self,
         sheet: usize,
         range: &str,
-        #[wasm_bindgen(unchecked_param_type = "number[] | Int32Array")] keys: Vec<i32>,
+        #[wasm_bindgen(unchecked_param_type = "SortKeys")] keys: &JsValue,
+        #[wasm_bindgen(unchecked_optional_param_type = "SortRangeOptions")] options: &JsValue,
     ) -> Result<(), JsError> {
         let area = Range::parse(range).map_err(js)?;
-        let keys = keys
-            .iter()
-            .map(|&key| {
-                let col = Col::from_one_based(u64::from(key.unsigned_abs())).map_err(js)?;
-                Ok(crate::edit::SortKey {
-                    column: col,
-                    descending: key < 0,
-                })
-            })
-            .collect::<Result<Vec<_>, JsError>>()?;
-        crate::edit::sort_range(&mut self.book, sheet, area, &keys).map_err(js)?;
+        let flag = |name: &str| {
+            js_sys::Reflect::get(options, &JsValue::from_str(name))
+                .ok()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+        };
+        let options = crate::edit::SortOptions {
+            header: options.is_object() && flag("header"),
+            orientation: if options.is_object() && flag("byColumns") {
+                crate::edit::Axis::Columns
+            } else {
+                crate::edit::Axis::Rows
+            },
+        };
+        let keys = sort_keys_of(keys)?;
+        crate::edit::sort_range_with(&mut self.book, sheet, area, &keys, options).map_err(js)?;
+        self.forget_dependencies();
+        Ok(())
+    }
+
+    #[cfg(feature = "write")]
+    /// Sorts the data rows of a table, found by name anywhere in the book;
+    /// its header and totals rows stay put. Keys name its columns, as in
+    /// `sortRange`: `book.sortTable("Sales", ["-Amount"])`.
+    #[wasm_bindgen(js_name = sortTable)]
+    pub fn sort_table(
+        &mut self,
+        name: &str,
+        #[wasm_bindgen(unchecked_param_type = "SortKeys")] keys: &JsValue,
+    ) -> Result<(), JsError> {
+        let keys = sort_keys_of(keys)?;
+        crate::edit::sort_table(&mut self.book, name, &keys).map_err(js)?;
+        self.forget_dependencies();
+        Ok(())
+    }
+
+    #[cfg(feature = "write")]
+    /// Continues what the first cells of a range start, as dragging the fill
+    /// handle does: `1, 2` goes on `3, 4`, `Кв1` to `Кв2`, `Jan` to `Feb`, a
+    /// date by a day; anything else repeats. `"down"` fills each column,
+    /// `"right"` each row.
+    #[wasm_bindgen(js_name = fillSeries)]
+    pub fn fill_series(
+        &mut self,
+        sheet: usize,
+        range: &str,
+        #[wasm_bindgen(unchecked_param_type = "\"down\" | \"right\"")] direction: &str,
+    ) -> Result<(), JsError> {
+        let area = Range::parse(range).map_err(js)?;
+        let axis = match direction {
+            "down" => crate::edit::Axis::Rows,
+            "right" => crate::edit::Axis::Columns,
+            _ => return Err(JsError::new(r#"a fill goes "down" or "right""#)),
+        };
+        crate::edit::fill_series(&mut self.book, sheet, area, axis).map_err(js)?;
         self.forget_dependencies();
         Ok(())
     }
@@ -2951,4 +3174,37 @@ fn copy_origin_of(name: Option<&str>) -> Result<crate::edit::CopyOrigin, JsError
             "copyOrigin must be \"before\", \"after\" or \"none\", not {other:?}"
         ))),
     }
+}
+
+#[cfg(feature = "write")]
+/// Reads the keys of `sortRange`: a number is a 1-based line of the sheet, a
+/// string a header; a minus in front sorts largest first.
+fn sort_keys_of(keys: &JsValue) -> Result<Vec<crate::edit::SortKey>, JsError> {
+    use crate::edit::{SortBy, SortKey};
+    let keys: js_sys::Array = keys
+        .clone()
+        .dyn_into()
+        .map_err(|_| JsError::new("sort keys are an array"))?;
+    keys.iter()
+        .map(|key| {
+            if let Some(n) = key.as_f64() {
+                #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let line = n.abs() as u32;
+                let line = line
+                    .checked_sub(1)
+                    .ok_or_else(|| JsError::new("a sort key counts from 1"))?;
+                return Ok(SortKey {
+                    by: SortBy::Line(line),
+                    descending: n < 0.0,
+                });
+            }
+            let text = key
+                .as_string()
+                .ok_or_else(|| JsError::new("a sort key is a number or a header"))?;
+            Ok(match text.strip_prefix('-') {
+                Some(name) => SortKey::header(name).descending(),
+                None => SortKey::header(text),
+            })
+        })
+        .collect()
 }

@@ -326,7 +326,7 @@ fn a_sort_orders_rows_the_way_excel_does() {
         );
     }
     let area = excelerate::Range::parse("A1:B5").unwrap();
-    sort_range(&mut book, 0, area, &[SortKey::ascending(col("A"))]).unwrap();
+    sort_range(&mut book, 0, area, &[SortKey::column(col("A"))]).unwrap();
 
     let sheet = book.sheet(0).unwrap();
     let value = |a: &str| sheet.get(at(a)).map(|c| c.value.clone());
@@ -342,7 +342,12 @@ fn a_sort_orders_rows_the_way_excel_does() {
         assert_eq!(formula, format!("A{row}"), "B{row} still reads its own row");
     }
 
-    let bad = sort_range(&mut book, 0, area, &[SortKey::descending(col("C"))]);
+    let bad = sort_range(
+        &mut book,
+        0,
+        area,
+        &[SortKey::column(col("C")).descending()],
+    );
     assert!(bad.is_err());
 }
 
@@ -383,4 +388,146 @@ fn fill_down_and_right_copy_the_first_line() {
     assert_eq!(formula("B2"), "A2*2");
     assert_eq!(formula("B3"), "A3*2");
     assert_eq!(formula("C3"), "B3*2");
+}
+
+#[test]
+fn a_sort_can_keep_a_header_name_its_keys_and_run_across() {
+    use excelerate::edit::{Axis, SortKey, SortOptions, sort_range_with};
+
+    let at = |a: &str| CellRef::parse(a).unwrap();
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    for (address, value) in [
+        ("A1", CellValue::text("Name")),
+        ("B1", CellValue::text("Score")),
+        ("A2", CellValue::text("ann")),
+        ("B2", CellValue::Number(5.0)),
+        ("A3", CellValue::text("bob")),
+        ("B3", CellValue::Number(9.0)),
+        ("A4", CellValue::text("cy")),
+        ("B4", CellValue::Number(5.0)),
+    ] {
+        sheet.set(at(address), value);
+    }
+    let options = SortOptions {
+        header: true,
+        ..SortOptions::default()
+    };
+    let keys = [
+        SortKey::header("score").descending(),
+        SortKey::header("Name").descending(),
+    ];
+    sort_range_with(&mut book, 0, Range::parse("A1:B4").unwrap(), &keys, options).unwrap();
+    let text =
+        |book: &Spreadsheet, a: &str| book.sheet(0).unwrap().get(at(a)).unwrap().value.clone();
+    assert_eq!(
+        text(&book, "A1"),
+        CellValue::text("Name"),
+        "the header stays"
+    );
+    assert_eq!(text(&book, "A2"), CellValue::text("bob"));
+    assert_eq!(text(&book, "A3"), CellValue::text("cy"));
+    assert_eq!(text(&book, "A4"), CellValue::text("ann"));
+
+    // Across: the columns of row 1 reorder by it.
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    for (address, n) in [
+        ("A1", 3.0),
+        ("B1", 1.0),
+        ("C1", 2.0),
+        ("A2", 30.0),
+        ("B2", 10.0),
+    ] {
+        sheet.set(at(address), CellValue::Number(n));
+    }
+    let across = SortOptions {
+        orientation: Axis::Columns,
+        ..SortOptions::default()
+    };
+    let key = [SortKey::row(excelerate::Row::from_one_based(1).unwrap())];
+    sort_range_with(&mut book, 0, Range::parse("A1:C2").unwrap(), &key, across).unwrap();
+    assert_eq!(text(&book, "A1"), CellValue::Number(1.0));
+    assert_eq!(text(&book, "A2"), CellValue::Number(10.0));
+    assert_eq!(text(&book, "C2"), CellValue::Number(30.0));
+    assert!(book.sheet(0).unwrap().get(at("B2")).is_none());
+}
+
+#[test]
+fn fill_series_continues_what_the_seed_starts() {
+    use excelerate::edit::{Axis, fill_series};
+
+    let at = |a: &str| CellRef::parse(a).unwrap();
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    for (address, value) in [
+        ("A1", CellValue::Number(1.0)),
+        ("A2", CellValue::Number(3.0)),
+        ("B1", CellValue::text("Кв1")),
+        ("C1", CellValue::text("Jan")),
+        ("D1", CellValue::text("ПН")),
+        ("E1", CellValue::text("Item 007")),
+        ("F1", CellValue::Number(5.0)),
+        ("G1", CellValue::text("x")),
+        ("G2", CellValue::text("y")),
+    ] {
+        sheet.set(at(address), value);
+    }
+    fill_series(&mut book, 0, Range::parse("A1:G4").unwrap(), Axis::Rows).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    let value = |a: &str| sheet.get(at(a)).unwrap().value.clone();
+    assert_eq!(value("A4"), CellValue::Number(7.0));
+    assert_eq!(value("B4"), CellValue::text("Кв4"));
+    assert_eq!(value("C4"), CellValue::text("Apr"));
+    assert_eq!(value("D2"), CellValue::text("ВТ"));
+    assert_eq!(value("E3"), CellValue::text("Item 009"));
+    assert_eq!(value("F4"), CellValue::Number(5.0), "one number is copied");
+    assert_eq!(value("G3"), CellValue::text("x"));
+    assert_eq!(value("G4"), CellValue::text("y"));
+}
+
+#[test]
+fn a_table_sorts_by_its_column_names() {
+    use excelerate::edit::{SortKey, sort_table};
+    use excelerate::model::table::{Table, TableColumn};
+
+    let at = |a: &str| CellRef::parse(a).unwrap();
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    for (address, value) in [
+        ("A1", CellValue::text("Item")),
+        ("B1", CellValue::text("Qty")),
+        ("A2", CellValue::text("pen")),
+        ("B2", CellValue::Number(2.0)),
+        ("A3", CellValue::text("cup")),
+        ("B3", CellValue::Number(7.0)),
+    ] {
+        sheet.set(at(address), value);
+    }
+    sheet.tables.push(Table {
+        id: 1,
+        name: "Stock".into(),
+        display_name: "Stock".into(),
+        range: Range::parse("A1:B3").unwrap(),
+        columns: ["Item", "Qty"]
+            .iter()
+            .zip(1..)
+            .map(|(name, id)| TableColumn {
+                id,
+                name: (*name).into(),
+                totals_row_function: None,
+                totals_row_label: None,
+                calculated_formula: None,
+            })
+            .collect(),
+        header_row_count: None,
+        totals_row_count: None,
+        auto_filter: None,
+        style: None,
+    });
+    sort_table(&mut book, "stock", &[SortKey::header("Qty").descending()]).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    assert_eq!(sheet.get(at("A2")).unwrap().value, CellValue::text("cup"));
+    assert_eq!(sheet.get(at("A1")).unwrap().value, CellValue::text("Item"));
+    assert!(sort_table(&mut book, "nope", &[]).is_err());
 }

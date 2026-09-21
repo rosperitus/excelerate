@@ -574,129 +574,315 @@ fn follow_the_cells(
     }
 }
 
-/// One key of [`sort_range`]: a column of the sheet and its direction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What a [`SortKey`] compares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SortBy {
+    /// A column of the sheet when sorting rows, a row when sorting columns;
+    /// 0-based, and counted on the sheet, not inside the range.
+    Line(u32),
+    /// The line whose header - the first cell of it in the range, or the
+    /// column name of a table - says this, without regard to case.
+    Header(String),
+}
+
+/// One key of [`sort_range`]: what to compare and in which direction.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SortKey {
-    /// The column compared, as a column of the sheet, not of the range.
-    pub column: Col,
+    /// The line compared.
+    pub by: SortBy,
     /// Largest first.
     pub descending: bool,
 }
 
 impl SortKey {
-    /// A key sorting `column` smallest first.
+    /// A key on a column of the sheet, smallest first.
     #[must_use]
-    pub const fn ascending(column: Col) -> Self {
+    pub const fn column(column: Col) -> Self {
         Self {
-            column,
+            by: SortBy::Line(column.index()),
             descending: false,
         }
     }
 
-    /// A key sorting `column` largest first.
+    /// A key on a row of the sheet, for sorting columns left to right.
     #[must_use]
-    pub const fn descending(column: Col) -> Self {
+    pub const fn row(row: Row) -> Self {
         Self {
-            column,
-            descending: true,
+            by: SortBy::Line(row.index()),
+            descending: false,
+        }
+    }
+
+    /// A key on the line headed `name`: needs [`SortOptions::header`], or a
+    /// table.
+    #[must_use]
+    pub fn header(name: impl Into<String>) -> Self {
+        Self {
+            by: SortBy::Header(name.into()),
+            descending: false,
+        }
+    }
+
+    /// The same key, largest first.
+    #[must_use]
+    pub fn descending(mut self) -> Self {
+        self.descending = true;
+        self
+    }
+}
+
+/// How [`sort_range_with`] reads its range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortOptions {
+    /// The first line of the range is a header: it stays where it is and
+    /// names the lines for [`SortBy::Header`].
+    pub header: bool,
+    /// `Axis::Rows` reorders rows (the usual sort), `Axis::Columns` reorders
+    /// columns left to right, keyed by rows.
+    pub orientation: Axis,
+}
+
+impl Default for SortOptions {
+    fn default() -> Self {
+        Self {
+            header: false,
+            orientation: Axis::Rows,
         }
     }
 }
 
-/// Sorts the rows of `area` by `keys`, the first key deciding first. This is
-/// Excel's Data - Sort on a range without a header row: leave the header out
-/// of `area`.
-///
-/// Cells travel with their formatting. The order is Excel's: numbers, then
-/// text without regard to case, then `FALSE`, `TRUE` and errors; an empty
-/// cell goes last whichever way the key runs. Rows that compare equal keep
-/// their order. A formula is rewritten as if copied to its new row, so a
-/// relative reference to its own row keeps pointing at its own row, and its
-/// cached result is dropped; formulas elsewhere are not retargeted, as in
-/// Excel. A formula is sorted by its cached value.
+/// Sorts the rows of `area` by `keys`, the first key deciding first: Excel's
+/// Data - Sort on a range with no header row. [`sort_range_with`] takes a
+/// header row and sorts columns.
 ///
 /// # Errors
-/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
-/// [`Error::InvalidRange`] if a key names a column outside `area` or a merge
-/// crosses it.
-// ponytail: rows only; sorting columns left to right is the same walk turned over.
+/// As [`sort_range_with`].
 pub fn sort_range(
     book: &mut Spreadsheet,
     sheet: usize,
     area: Range,
     keys: &[SortKey],
 ) -> Result<()> {
+    sort_range_with(book, sheet, area, keys, SortOptions::default())
+}
+
+/// Sorts the rows (or columns) of `area` by `keys`, the first key deciding
+/// first.
+///
+/// Cells travel with their formatting. The order is Excel's: numbers, then
+/// text without regard to case, then `FALSE`, `TRUE` and errors; an empty
+/// cell goes last whichever way the key runs. Lines that compare equal keep
+/// their order. A formula is rewritten as if copied to its new place, so a
+/// relative reference to its own row keeps pointing at its own row, and its
+/// cached result is dropped; formulas elsewhere are not retargeted, as in
+/// Excel. A formula is sorted by its cached value.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
+/// [`Error::InvalidRange`] if a key names a line outside `area` or a header
+/// nothing is called, or a merge crosses `area`.
+pub fn sort_range_with(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    area: Range,
+    keys: &[SortKey],
+    options: SortOptions,
+) -> Result<()> {
+    let ws = book
+        .sheet(sheet)
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+    let rows = options.orientation == Axis::Rows;
+    // The cross axis is where the keys live: columns when sorting rows.
+    let (first, last) = if rows {
+        (area.start.col.index(), area.end.col.index())
+    } else {
+        (area.start.row.index(), area.end.row.index())
+    };
+    let header: Vec<(u32, String)> = if options.header {
+        (first..=last)
+            .filter_map(|line| {
+                let at = if rows {
+                    CellRef::new(Col::new(line)?, area.start.row)
+                } else {
+                    CellRef::new(area.start.col, Row::new(line)?)
+                };
+                Some((line, ws.get(at)?.value.plain_text()?))
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let lines = resolve_keys(keys, &header, first, last)?;
+    let data = if !options.header {
+        area
+    } else if rows {
+        match Row::new(area.start.row.index() + 1).filter(|r| *r <= area.end.row) {
+            Some(start) => Range::new(CellRef::new(area.start.col, start), area.end),
+            None => return Ok(()),
+        }
+    } else {
+        match Col::new(area.start.col.index() + 1).filter(|c| *c <= area.end.col) {
+            Some(start) => Range::new(CellRef::new(start, area.start.row), area.end),
+            None => return Ok(()),
+        }
+    };
+    sort_lines(book, sheet, data, &lines, rows)
+}
+
+/// Sorts the data rows of the table called `name` - its header and totals
+/// rows stay put - with keys naming its columns by [`SortBy::Header`] or by
+/// sheet column.
+///
+/// # Errors
+/// [`Error::InvalidRange`] if there is no such table or a key names no
+/// column of it, and the errors of [`sort_range_with`].
+pub fn sort_table(book: &mut Spreadsheet, name: &str, keys: &[SortKey]) -> Result<()> {
+    let found = book.sheets().iter().enumerate().find_map(|(index, ws)| {
+        ws.tables
+            .iter()
+            .find(|t| {
+                t.display_name.eq_ignore_ascii_case(name) || t.name.eq_ignore_ascii_case(name)
+            })
+            .map(|t| (index, t.clone()))
+    });
+    let Some((sheet, table)) = found else {
+        return Err(Error::InvalidRange(format!("no table called {name}")));
+    };
+    let header: Vec<(u32, String)> = table
+        .columns
+        .iter()
+        .zip(table.range.start.col.index()..)
+        .map(|(column, line)| (line, column.name.clone()))
+        .collect();
+    let lines = resolve_keys(
+        keys,
+        &header,
+        table.range.start.col.index(),
+        table.range.end.col.index(),
+    )?;
+    let Some(data) = table.body() else {
+        return Ok(());
+    };
+    sort_lines(book, sheet, data, &lines, true)
+}
+
+/// Turns keys into sheet lines, checking each falls inside `first..=last`.
+fn resolve_keys(
+    keys: &[SortKey],
+    header: &[(u32, String)],
+    first: u32,
+    last: u32,
+) -> Result<Vec<(u32, bool)>> {
+    keys.iter()
+        .map(|key| {
+            let line = match &key.by {
+                SortBy::Line(line) => Some(*line).filter(|l| (first..=last).contains(l)),
+                SortBy::Header(name) => header
+                    .iter()
+                    .find(|(_, text)| text.trim().to_lowercase() == name.trim().to_lowercase())
+                    .map(|(line, _)| *line),
+            };
+            line.map(|line| (line, key.descending)).ok_or_else(|| {
+                Error::InvalidRange(match &key.by {
+                    SortBy::Line(line) => format!("sort key {} is outside the range", line + 1),
+                    SortBy::Header(name) => format!("no header called {name:?}"),
+                })
+            })
+        })
+        .collect()
+}
+
+/// The sort itself, over lines already resolved: `(line, descending)`.
+fn sort_lines(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    area: Range,
+    keys: &[(u32, bool)],
+    rows: bool,
+) -> Result<()> {
     let ws = book
         .sheet_mut(sheet)
         .ok_or(Error::SheetIndexOutOfRange(sheet))?;
-    if let Some(key) = keys
-        .iter()
-        .find(|key| key.column < area.start.col || key.column > area.end.col)
-    {
-        return Err(Error::InvalidRange(format!(
-            "sort key column {} is outside {area}",
-            key.column.one_based()
-        )));
-    }
     if ws.merges.iter().any(|m| m.intersects(&area)) {
         return Err(Error::InvalidRange(format!(
             "a merged range crosses {area}; unmerge it to sort"
         )));
     }
-
-    let rows: Vec<Row> = (area.start.row.index()..=area.end.row.index())
-        .filter_map(Row::new)
-        .collect();
-    let key_of = |row: Row, key: &SortKey| -> Option<CellValue> {
-        let value = &ws.get(CellRef::new(key.column, row))?.value;
+    // A line is a row when sorting rows; `at(line, cross)` names a cell by the
+    // index along the sort and the index across it.
+    let (lines, cross) = if rows {
+        (
+            area.start.row.index()..=area.end.row.index(),
+            area.start.col.index()..=area.end.col.index(),
+        )
+    } else {
+        (
+            area.start.col.index()..=area.end.col.index(),
+            area.start.row.index()..=area.end.row.index(),
+        )
+    };
+    let at = |line: u32, cross: u32| -> Option<CellRef> {
+        if rows {
+            Some(CellRef::new(Col::new(cross)?, Row::new(line)?))
+        } else {
+            Some(CellRef::new(Col::new(line)?, Row::new(cross)?))
+        }
+    };
+    let lines: Vec<u32> = lines.collect();
+    let key_of = |line: u32, key: u32| -> Option<CellValue> {
+        let value = &ws.get(at(line, key)?)?.value;
         match value {
             CellValue::Formula { cached, .. } => cached.as_deref().cloned(),
             other => Some(other.clone()),
         }
         .filter(|v| !v.is_empty())
     };
-    let mut order: Vec<(usize, Vec<Option<CellValue>>)> = rows
+    let mut order: Vec<(usize, Vec<Option<CellValue>>)> = lines
         .iter()
         .enumerate()
-        .map(|(i, &row)| (i, keys.iter().map(|key| key_of(row, key)).collect()))
+        .map(|(i, &line)| (i, keys.iter().map(|&(key, _)| key_of(line, key)).collect()))
         .collect();
     order.sort_by(|(_, a), (_, b)| {
         keys.iter()
             .zip(a.iter().zip(b))
-            .map(|(key, (a, b))| match (a, b) {
+            .map(|(&(_, descending), (a, b))| match (a, b) {
                 (None, None) => std::cmp::Ordering::Equal,
                 (None, Some(_)) => std::cmp::Ordering::Greater,
                 (Some(_), None) => std::cmp::Ordering::Less,
-                (Some(a), Some(b)) if key.descending => sort_order(b, a),
+                (Some(a), Some(b)) if descending => sort_order(b, a),
                 (Some(a), Some(b)) => sort_order(a, b),
             })
             .find(|o| o.is_ne())
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Every row is taken out first, so a row never lands on one not yet read.
-    let taken: Vec<Vec<(Col, Cell)>> = rows
+    // Every line is taken out first, so a line never lands on one not yet read.
+    let taken: Vec<Vec<(u32, Cell)>> = lines
         .iter()
-        .map(|&row| {
-            (area.start.col.index()..=area.end.col.index())
-                .filter_map(Col::new)
-                .filter_map(|col| Some((col, ws.remove(CellRef::new(col, row))?)))
+        .map(|&line| {
+            cross
+                .clone()
+                .filter_map(|c| Some((c, ws.remove(at(line, c)?)?)))
                 .collect()
         })
         .collect();
     for (to, (from, _)) in order.iter().enumerate() {
-        let d_row = i64::try_from(to).unwrap_or(0) - i64::try_from(*from).unwrap_or(0);
-        for (col, cell) in &taken[*from] {
+        let delta = i64::try_from(to).unwrap_or(0) - i64::try_from(*from).unwrap_or(0);
+        for (c, cell) in &taken[*from] {
+            let Some(target) = at(lines[to], *c) else {
+                continue;
+            };
             let mut cell = cell.clone();
-            if d_row != 0
+            if delta != 0
                 && let CellValue::Formula { formula, .. } = &cell.value
             {
+                let (d_col, d_row) = if rows { (0, delta) } else { (delta, 0) };
                 cell.value = CellValue::Formula {
-                    formula: shift_references(formula, 0, d_row),
+                    formula: shift_references(formula, d_col, d_row),
                     cached: None,
                 };
             }
-            *ws.entry(CellRef::new(*col, rows[to])) = cell;
+            *ws.entry(target) = cell;
         }
     }
     Ok(())
