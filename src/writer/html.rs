@@ -234,6 +234,10 @@ fn cell(
         if merge.height() > 1 {
             let _ = write!(out, " rowspan=\"{}\"", merge.height());
         }
+        let edges = merged_edges(book, sheet, style_id, merge);
+        if !edges.is_empty() {
+            let _ = write!(out, " style=\"{edges}\"");
+        }
     }
     let style = book.styles.get(style_id);
     let code = style.map_or(GENERAL, |s| s.number_format.code());
@@ -273,6 +277,42 @@ fn cell(
     out.push_str("</td>");
 }
 
+/// The right and bottom borders of a merged block, where they differ from its
+/// top-left cell's. Excel keeps a merge's border on the cells along each edge,
+/// and the one `<td>` standing for the block has to carry all four.
+fn merged_edges(
+    book: &Spreadsheet,
+    sheet: &Worksheet,
+    own: crate::style::StyleId,
+    merge: Range,
+) -> String {
+    let borders = |at: CellRef| {
+        sheet
+            .get(at)
+            .and_then(|cell| book.styles.get(cell.style))
+            .map(|style| style.borders.clone())
+            .unwrap_or_default()
+    };
+    let anchor = book
+        .styles
+        .get(own)
+        .map(|style| style.borders.clone())
+        .unwrap_or_default();
+    let right = borders(CellRef::new(merge.end.col, merge.start.row)).right;
+    let bottom = borders(CellRef::new(merge.start.col, merge.end.row)).bottom;
+    let mut out = String::new();
+    for (side, edge, mine) in [
+        ("right", right, anchor.right),
+        ("bottom", bottom, anchor.bottom),
+    ] {
+        if edge != mine {
+            let rule = border_css(&edge).unwrap_or_else(|| "none".to_owned());
+            let _ = write!(out, "border-{side}: {rule}; ");
+        }
+    }
+    out.trim_end().to_owned()
+}
+
 /// What the page shows is the value through its format; these attributes keep
 /// the value itself, so that reading the page back gets a number, not
 /// "1 234,50". Text that would read back as text anyway goes without them.
@@ -290,7 +330,10 @@ fn typed(value: &CellValue, out: &mut String) {
         CellValue::Error(e) => write!(out, " data-type=\"e\" data-value=\"{e}\""),
         CellValue::Text(_) | CellValue::RichText(_) => {
             let text = value.plain_text().unwrap_or_default();
-            if matches!(crate::reader::csv::value_of(&text), CellValue::Text(_)) {
+            // A page folds runs of spaces into one, so text that has them
+            // keeps its own copy in the attribute.
+            let folds = text.contains("  ") || text.trim() != text;
+            if !folds && matches!(crate::reader::csv::value_of(&text), CellValue::Text(_)) {
                 return;
             }
             write!(out, " data-type=\"s\" data-value=\"{}\"", attribute(&text))

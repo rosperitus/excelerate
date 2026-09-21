@@ -621,9 +621,6 @@ impl Build {
         if let Some(align) = e.attr("valign").map(vertical) {
             self.restyle_current(|style| style.alignment.vertical = align);
         }
-        if let Some(code) = e.attr("data-format").map(ToOwned::to_owned) {
-            self.restyle_current(|style| style.number_format = NumberFormat::Custom(code));
-        }
 
         if let Some(range) = merge {
             if e.attr("rowspan").is_some() {
@@ -708,9 +705,9 @@ impl Build {
         });
     }
 
-    /// `target` is the range a merged cell covers; `row` is `None` for a
-    /// `<col>`, which carries a width and nothing a cell could hold.
-    fn style_attribute(&mut self, e: &Elem, target: Option<Range>, col: u32, row: Option<u32>) {
+    /// The CSS that applies to an element: its classes' rules from the page's
+    /// stylesheet, then its own `style=`, which wins by coming last.
+    fn declarations(&self, e: &Elem) -> String {
         let mut css: String = e
             .attr("class")
             .into_iter()
@@ -718,7 +715,15 @@ impl Build {
             .filter_map(|class| self.classes.get(class))
             .fold(String::new(), |all, rule| all + rule + ";");
         css.push_str(e.attr("style").unwrap_or_default());
-        if css.is_empty() {
+        css
+    }
+
+    /// `target` is the range a merged cell covers; `row` is `None` for a
+    /// `<col>`, which carries a width and nothing a cell could hold.
+    fn style_attribute(&mut self, e: &Elem, target: Option<Range>, col: u32, row: Option<u32>) {
+        let css = self.declarations(e);
+        let format = e.attr("data-format").filter(|_| row.is_some());
+        if css.is_empty() && format.is_none() {
             return;
         }
         let range = match (target, row) {
@@ -772,7 +777,14 @@ impl Build {
                 },
                 "text-align" => style.alignment.horizontal = HorizontalAlign::parse(value),
                 "vertical-align" => style.alignment.vertical = vertical(value),
-                "word-wrap" => style.alignment.wrap_text = value == "break-word",
+                "word-wrap" | "overflow-wrap" => {
+                    style.alignment.wrap_text = value == "break-word" || value == "anywhere";
+                }
+                // Our writer says `pre-wrap`, Excel's own export `normal`; both
+                // are a cell that wraps, and `nowrap` or `pre` one that does not.
+                "white-space" => {
+                    style.alignment.wrap_text = matches!(value, "normal" | "pre-wrap" | "pre-line");
+                }
                 "text-indent" => {
                     if let Some(indent) = css_pixels(value) {
                         #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -797,16 +809,23 @@ impl Build {
             }
         }
 
+        if let Some(code) = format {
+            style.number_format = NumberFormat::Custom(code.to_owned());
+        }
+
         let Some(range) = range.filter(|_| row.is_some()) else {
             return;
         };
-        let id = self.styles.intern(style);
         let cells = u64::from(range.width()) * u64::from(range.height());
         let range = if cells > MAX_STYLED_SPAN {
             Range::new(range.start, range.start)
         } else {
             range
         };
+        // A merge is one `<td>`, so every cell under it gets the block's style;
+        // what a covered cell had inside the block is not drawn and not on the
+        // page.
+        let id = self.styles.intern(style);
         for at in range.cells() {
             self.sheet.entry(at).style = id;
         }
