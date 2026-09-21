@@ -155,6 +155,59 @@ book.add_sheet(sheet)?;
 `set_row` stops at the last column of the sheet rather than wrapping round to
 column A.
 
+## Add a row that looks like the one above
+
+```rust
+use excelerate::edit::{CopyOrigin, insert_rows_with};
+use excelerate::Row;
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# book.add_sheet(Worksheet::new("Sheet1")?)?;
+
+// A new row 10 with row 9's cell styles and height, as Excel's Insert gives.
+insert_rows_with(&mut book, 0, Row::new(9).unwrap(), 1, CopyOrigin::Before)?;
+# Ok::<(), excelerate::Error>(())
+```
+
+## Sort by a column with a header
+
+```rust
+use excelerate::edit::{SortKey, SortOptions, sort_range_with};
+use excelerate::Range;
+# use excelerate::model::{Spreadsheet, Worksheet};
+# use excelerate::CellRef;
+# let mut book = Spreadsheet::empty();
+# let mut sheet = Worksheet::new("Sheet1")?;
+# sheet.set(CellRef::parse("B1")?, "Amount");
+# book.add_sheet(sheet)?;
+
+let header = SortOptions { header: true, ..SortOptions::default() };
+let keys = [SortKey::header("Amount").descending()];
+sort_range_with(&mut book, 0, Range::parse("A1:D200")?, &keys, header)?;
+# Ok::<(), excelerate::Error>(())
+```
+
+For a table, `edit::sort_table(&mut book, "Sales", &keys)` finds the range and
+the header by itself.
+
+## Number rows, or write out the months
+
+```rust
+use excelerate::edit::{Axis, fill_series};
+use excelerate::{CellRef, Range};
+# use excelerate::model::{Spreadsheet, Worksheet};
+# let mut book = Spreadsheet::empty();
+# book.add_sheet(Worksheet::new("Sheet1")?)?;
+
+let sheet = book.sheet_mut(0).unwrap();
+sheet.set(CellRef::parse("A2")?, 1.0);
+sheet.set(CellRef::parse("A3")?, 2.0);
+sheet.set(CellRef::parse("B1")?, "Jan");
+fill_series(&mut book, 0, Range::parse("A2:A100")?, Axis::Rows)?;     // 1..99
+fill_series(&mut book, 0, Range::parse("B1:M1")?, Axis::Columns)?;    // Jan..Dec
+# Ok::<(), excelerate::Error>(())
+```
+
 ## Find where the data is
 
 ```rust

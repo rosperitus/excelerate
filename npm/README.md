@@ -1,20 +1,22 @@
 # excelerate
 
-Read, write and recalculate spreadsheets in Node - xlsx, xls, ods, csv, html
-and more - with a real formula engine (443 Excel functions). Rust compiled to
-WebAssembly, so there is no native module to build, no Python, no headless
-Office.
+Read, write and recalculate spreadsheets in Node and the browser - xlsx, xls,
+xlsb, ods, csv, html and more - with a formula engine of 518 Excel functions.
+Rust compiled to WebAssembly: no native module to build, no Python, no
+headless Office.
 
-```
-npm install excelerate
+```text
+npm install @rosperitus/excelerate
 ```
 
-TypeScript declarations ship with the package; nothing extra to install.
+TypeScript declarations ship with the package. Only need to read? The
+`@rosperitus/excelerate-reader` package has the reading half of the API in a
+wasm file of 1.0 MB instead of 2.3 MB.
 
 ## Quick start
 
 ```ts
-import { Book } from "excelerate";
+import { Book } from "@rosperitus/excelerate";
 import { readFileSync, writeFileSync } from "node:fs";
 
 // The format is detected from the bytes. The file name is optional and only
@@ -30,21 +32,39 @@ book.recalculateFrom(0, "B4");        // only what depends on B4
 writeFileSync("out.xlsx", book.toXlsx());
 ```
 
-Build one from scratch:
+Build a report from scratch - values, a formula, a styled header, a sort and
+a total row:
 
 ```ts
-import { Book } from "excelerate";
+import { Book } from "@rosperitus/excelerate";
+import { writeFileSync } from "node:fs";
 
 const book = new Book();
-book.set(0, "A1", "Item");
-book.set(0, "B1", "Price");
-book.set(0, "A2", "Bolt");
-book.set(0, "B2", 7.5);
-book.set(0, "A3", "Total");
-book.set(0, "B3", "=SUM(B2:B2)");     // a string starting with = is a formula
+book.setRange(0, "A1", [
+  ["Item", "Qty", "Price", "Sum"],
+  ["Bolt", 40, 0.25, "=B2*C2"],
+  ["Nut", 100, 0.1, null],
+  ["Washer", 250, 0.05, null],
+]);
+book.fillDown(0, "D2:D4");                           // =B3*C3, =B4*C4
+book.setRangeStyle(0, "A1:D1", { font: { bold: true }, fill: { pattern: "solid", foreground: "#FFDDEBF7" } });
+book.setRangeStyle(0, "C2:D5", { numberFormat: "#,##0.00" });
+
+book.recalculate();                                  // the sort reads cached values
+book.sortRange(0, "A1:D4", ["-Sum"], { header: true });
+book.insertRows(0, 5, 1);                            // styled like the row above
+book.setRange(0, "A5", [["Total", null, null, "=SUM(D2:D4)"]]);
 
 book.recalculate();
-console.log(book.toCsv(0));
+book.freezePanes(0, 1, 0);
+writeFileSync("report.xlsx", book.toXlsx());
+```
+
+Continue a series the way the fill handle does:
+
+```ts
+book.setRange(0, "F1", [["Jan", "Кв1", 1], [null, null, 3]]);
+book.fillSeries(0, "F1:H6", "down");   // Feb..Jun, Кв2..Кв6, 5, 7, 9, 11
 ```
 
 ## API
@@ -52,6 +72,8 @@ console.log(book.toCsv(0));
 ```ts
 type CellValue = number | string | boolean | null;
 type CellGrid = CellValue[][];
+type CopyOrigin = "before" | "after" | "none";   // whose formatting new rows take
+type SortKeys = (number | string)[];             // 2 = column B, "-Amount" = header, largest first
 
 class Book {
   constructor();
@@ -79,6 +101,8 @@ class Book {
   getFormatted(sheet: number, address: string): string;   // through the number format
   getRange(sheet: number, range: string): CellGrid;       // one call, not one per cell
   setRange(sheet: number, at: string, values: CellGrid): void;
+  getRangeStyles(sheet: number, range: string): RangeStyles;  // { styles, grid } - each style once
+  setRangeStyles(sheet: number, at: string, styles: RangeStylesPatch): void;
 
   // Cells, by 1-based row and column - no address to build and re-parse
   getAt(sheet: number, row: number, column: number): CellValue;
@@ -115,15 +139,22 @@ class Book {
 
   // The grid itself: formulas everywhere in the workbook follow the cells they
   // read, and so do merges, links, validations, tables and drawings
-  insertRows(sheet: number, at: number, count: number): void;
+  insertRows(sheet: number, at: number, count: number, copyOrigin?: CopyOrigin): void;
   removeRows(sheet: number, at: number, count: number): void;
-  insertColumns(sheet: number, at: number, count: number): void;  // 1-based
+  insertColumns(sheet: number, at: number, count: number, copyOrigin?: CopyOrigin): void;  // 1-based
   removeColumns(sheet: number, at: number, count: number): void;
   copyRange(sheet: number, range: string, to: string, toSheet?: number): void;   // formulas rewritten
   moveRange(sheet: number, range: string, to: string, toSheet?: number): void;   // formulas kept, references follow
-  insertCells(sheet: number, range: string, shift: "down" | "right"): void;
+  insertCells(sheet: number, range: string, shift: "down" | "right", copyOrigin?: CopyOrigin): void;
   removeCells(sheet: number, range: string, shift: "up" | "left"): void;
   moveSheet(from: number, to: number): void;
+
+  // Sorting and filling, as Excel's Data - Sort, Ctrl+D and the fill handle
+  sortRange(sheet: number, range: string, keys: SortKeys, options?: SortRangeOptions): void;
+  sortTable(name: string, keys: SortKeys): void;
+  fillDown(sheet: number, range: string): void;
+  fillRight(sheet: number, range: string): void;
+  fillSeries(sheet: number, range: string, direction: "down" | "right"): void;
 
   // What is on a sheet besides cells
   comments(sheet: number): SheetComment[];
@@ -228,8 +259,20 @@ missing sheet, a truncated package.
   carries, as if they had been written where they land; `moveRange` keeps them
   pointing at the same cells and rewrites the formulas elsewhere that read the
   moved ones. That is Ctrl+C against Ctrl+X, and it is the whole difference.
-- **Objects are read-only here.** `charts`, `images` and `shapes` describe what
-  a sheet carries; the parts themselves travel through a write byte for byte.
+- **Inserted rows look like their neighbours.** `insertRows` copies the row
+  above's cell styles and height, as Excel does. Pass `"after"` for the row
+  below, `"none"` for a blank row.
+- **Sort keys are numbers or names.** `sortRange(0, "A1:D99", [3, -2])` sorts
+  by column C, then by B largest first; with `{ header: true }` the same reads
+  `["Price", "-Qty"]`. Formulas sort by their cached value, so recalculate
+  first if you have edited the inputs. `sortTable("Sales", ["-Amount"])`
+  needs no range at all.
+- **Read and write formatting by the block.** `getRangeStyles` returns each
+  distinct style once and a grid of indexes into them; `setRangeStyles` takes
+  the same shape back, so copying a block's look is two calls.
+- **Charts, pictures and shapes are read-only here.** `charts`, `images` and
+  `shapes` describe what a sheet carries; the parts themselves travel through
+  a write byte for byte.
 - **Cached results.** A formula cell read from a file carries whatever the app
   that saved it computed. Call `recalculate()` before relying on those numbers.
 
@@ -247,8 +290,9 @@ missing sheet, a truncated package.
 SYLK, Gnumeric and SpreadsheetML are read-only in the Rust crate too - there is
 nothing to bind.
 
-One catch on `toXls`: BIFF8 cannot store a formula as text, so every formula
-goes out as its last computed value. Call `recalculate()` first.
+`toXls` compiles formulas to BIFF8 tokens with their cached results; what
+BIFF8 cannot hold (a structured reference, a row past 65,536) goes out as its
+value. Call `recalculate()` first so those values are current.
 
 ## Development
 
@@ -262,14 +306,17 @@ npm start                      # example.js: build a book, calculate, round-trip
 npm run ts                     # typescript/basic.ts, no build step
 npm run typecheck              # tsc --strict over the TypeScript examples
 npm run bench [iterations]     # parse timings, median and best
+../tools/pack-npm.sh           # pkg -> pkg-publish, then: cd pkg-publish && npm publish --otp=...
 ```
 
 | Path | What it is |
 |---|---|
-| `pkg/` | build output, published as-is (git-ignored) |
+| `pkg/` | build output for Node (git-ignored); `pkg-web/` and `pkg-bundler/` for the other targets |
+| `pkg-publish/` | `tools/pack-npm.sh`: a copy of `pkg/` renamed to `@rosperitus/excelerate`, the folder `npm publish` runs in (git-ignored) |
 | `example.js`, `test.js`, `bench.js` | JavaScript examples, tests, benchmark |
 | `typescript/` | TypeScript examples, run from here: `node typescript/basic.ts` (Node 22.6+). No node_modules of their own - they resolve the package from this folder |
-| `files/` | workbooks the benchmark and tests use (git-ignored except `gen.xlsx`) |
+| `browser/` | the same API in a page: `index.html` over `pkg-web/` |
+| `files/` | workbooks the tests read (`gen.xlsx`, `grouped.xlsx`, committed) and whatever the benchmark and examples read and write (git-ignored) |
 
 ## License
 

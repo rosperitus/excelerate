@@ -189,8 +189,16 @@ Reading uses a hand-rolled tag scanner rather than a DOM: attributes, entities,
 implied end tags (`<tr>` closes `<td>`). A page becomes one sheet - tables give
 the grid, `colspan`/`rowspan` become merges, text outside a table (`<p>`,
 `<h1>`) gets a cell per block. Inline `style` and the old `bgcolor`/`align`/
-`width`/`height` attributes are honoured, as are the `data-*` hints our own
-writer emits.
+`width`/`height` attributes are honoured, and so are the rules of a `<style>`
+block that name a class of cells (`.x`, `td.x`, `th.x`) - the inline style
+wins over them. There is no cascade beyond that: rules for one class apply in
+page order.
+
+Our own writer marks each cell so a page reads back as the book it came from:
+`data-type` and `data-value` hold the value itself (the text shows `1 234,50`,
+the attribute says `1234.5`), `data-formula` the formula, `data-format` the
+number format. Text that would read back as text anyway goes without them, so
+a sheet of plain labels costs nothing extra.
 
 The catch nobody escapes: **a page has no cell addresses.** The grid always
 starts at `A1`, so a sheet whose used range began at row 5 comes back shifted
