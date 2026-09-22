@@ -221,6 +221,11 @@ What `fill_series` does with the leading filled cells of each line:
 
 Every filled cell takes the style of the seed cell it continues.
 
+`fill_series_back` is the handle dragged up or left: the seed is the run of
+filled cells at the end of each line, and the series runs back from it - `1, 2`
+goes `0, -1`, a single `Кв3` goes `Кв2`, a single date steps back a day, a
+repeat keeps its phase.
+
 ## Moving a sheet
 
 ```rust

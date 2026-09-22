@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `edit::fill_series_back` - the fill handle dragged up or left: the seed is
+  the last cells of each line and the series runs back from them (`1, 2`
+  above goes `0, -1`, a single `Кв3` goes `Кв2`). JS: `fillSeries` with
+  `"up"` or `"left"`.
+
 ## 0.12.1
 
 ### Added

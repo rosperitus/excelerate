@@ -154,7 +154,7 @@ class Book {
   sortTable(name: string, keys: SortKeys): void;
   fillDown(sheet: number, range: string): void;
   fillRight(sheet: number, range: string): void;
-  fillSeries(sheet: number, range: string, direction: "down" | "right"): void;
+  fillSeries(sheet: number, range: string, direction: "down" | "right" | "up" | "left"): void;
 
   // What is on a sheet besides cells
   comments(sheet: number): SheetComment[];
