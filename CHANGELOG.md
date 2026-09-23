@@ -12,7 +12,7 @@
 ### Fixed
 
 - xls: frozen and split panes are read from `WINDOW2` and `PANE` and written
-  back, along with the scroll position and the gridline, heading, zero and
+  back, the selection of each pane from `SELECTION`, along with the scroll position and the gridline, heading, zero and
   right-to-left switches of the window. Before, a frozen sheet read from xls
   opened unfrozen.
 - xls writer: turning gridlines off cleared the default-gridline-colour bit

@@ -334,8 +334,9 @@ fn outline_levels_and_summary_placement_survive_a_round_trip() {
 }
 
 #[test]
-fn frozen_panes_and_window_switches_survive_a_round_trip() {
-    use excelerate::model::{Pane, PanePosition, PaneState};
+fn frozen_panes_selections_and_window_switches_survive_a_round_trip() {
+    use excelerate::Range;
+    use excelerate::model::{Pane, PanePosition, PaneState, Selection};
     let mut book = Spreadsheet::new();
     let view = &mut book.sheet_mut(0).unwrap().view;
     view.pane = Some(Pane {
@@ -350,6 +351,23 @@ fn frozen_panes_and_window_switches_survive_a_round_trip() {
     view.show_grid_lines = false;
     view.show_zeros = false;
     view.top_left_cell = Some(CellRef::parse("B3").unwrap());
+    // A selection per pane; ONLYOFFICE reads the one in the active pane off
+    // the source workbook as E12:G12 with the cursor on E12.
+    view.selections = vec![
+        Selection {
+            pane: Some(PanePosition::BottomLeft),
+            active_cell: Some(CellRef::parse("A12").unwrap()),
+            sqref: vec![Range::parse("A12").unwrap()],
+        },
+        Selection {
+            pane: Some(PanePosition::BottomRight),
+            active_cell: Some(CellRef::parse("F12").unwrap()),
+            sqref: vec![
+                Range::parse("B20").unwrap(),
+                Range::parse("E12:G12").unwrap(),
+            ],
+        },
+    ];
 
     let expected = book.sheets()[0].view.clone();
     assert_eq!(rewrite(&book).sheets()[0].view, expected);

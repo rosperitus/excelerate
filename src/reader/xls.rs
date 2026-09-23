@@ -38,7 +38,9 @@
 use super::xls_formula::{self, Base, Book, BookKind, Context};
 use crate::error::{Error, Result};
 use crate::model::DefinedName;
-use crate::model::{CellValue, ColumnRun, Pane, PanePosition, PaneState, Spreadsheet, Worksheet};
+use crate::model::{
+    CellValue, ColumnRun, Pane, PanePosition, PaneState, Selection, Spreadsheet, Worksheet,
+};
 use crate::shared::codepage;
 use crate::shared::date::Epoch;
 use crate::shared::palette;
@@ -93,6 +95,8 @@ mod record {
     pub const WINDOW2: u16 = 0x023E;
     /// Where the window is split and which pane is active.
     pub const PANE: u16 = 0x0041;
+    /// The cursor and the selected areas of one pane.
+    pub const SELECTION: u16 = 0x001D;
 }
 
 /// Reads a workbook from a file.
@@ -500,6 +504,15 @@ impl<'a> Reader<'a> {
                     }
                 }
                 record::PANE => sheet.view.pane = Some(pane(record.data, window)),
+                record::SELECTION => {
+                    // Excel writes one for every pane, the untouched ones
+                    // included; xlsx leaves out the one that sits on A1 with
+                    // nothing else selected, because the default says as much.
+                    let selection = selection(record.data, sheet.view.pane.is_some());
+                    if !is_corner(&selection) {
+                        sheet.view.selections.push(selection);
+                    }
+                }
                 record::WSBOOL => {
                     let flags = u16_at(record.data, 0);
                     sheet.properties.summary_below = flags & 0x40 != 0;
@@ -1174,12 +1187,7 @@ fn pane(data: &[u8], window: u16) -> Pane {
         x_split: u32::from(u16_at(data, 0)),
         y_split: u32::from(u16_at(data, 2)),
         top_left_cell: cell_ref(u16_at(data, 6), u16_at(data, 4)).ok(),
-        active_pane: match data.get(8) {
-            Some(1) => PanePosition::TopRight,
-            Some(2) => PanePosition::BottomLeft,
-            Some(3) => PanePosition::TopLeft,
-            _ => PanePosition::BottomRight,
-        },
+        active_pane: pane_position(data.get(8).copied()),
         // Bit 3 freezes, bit 8 takes away the split bar to drag.
         state: match (window & 0x0008 != 0, window & 0x0100 != 0) {
             (false, _) => PaneState::Split,
@@ -1187,6 +1195,51 @@ fn pane(data: &[u8], window: u16) -> Pane {
             (true, true) => PaneState::Frozen,
         },
     }
+}
+
+/// Which pane a number names.
+fn pane_position(value: Option<u8>) -> PanePosition {
+    match value {
+        Some(1) => PanePosition::TopRight,
+        Some(2) => PanePosition::BottomLeft,
+        Some(3) => PanePosition::TopLeft,
+        _ => PanePosition::BottomRight,
+    }
+}
+
+/// A `SELECTION`: the pane, the cursor, then the areas - two rows and two
+/// one-byte columns each.
+fn selection(data: &[u8], split: bool) -> Selection {
+    let count = usize::from(u16_at(data, 7));
+    let sqref = (0..count)
+        .map_while(|i| {
+            let at = 9 + i * 6;
+            let (first, last) = (data.get(at + 4)?, data.get(at + 5)?);
+            Some(Range::new(
+                cell_ref(u16::from(*first), u16_at(data, at)).ok()?,
+                cell_ref(u16::from(*last), u16_at(data, at + 2)).ok()?,
+            ))
+        })
+        .collect();
+    Selection {
+        // An unsplit sheet has one selection, and xlsx names no pane for it.
+        pane: split.then(|| pane_position(data.first().copied())),
+        active_cell: cell_ref(u16_at(data, 3), u16_at(data, 1)).ok(),
+        sqref,
+    }
+}
+
+/// Whether a selection says no more than the default: the cursor on A1 and
+/// that one cell selected.
+fn is_corner(selection: &Selection) -> bool {
+    let Ok(corner) = cell_ref(0, 0) else {
+        return false;
+    };
+    selection.active_cell == Some(corner)
+        && selection
+            .sqref
+            .iter()
+            .all(|range| range.start == corner && range.end == corner)
 }
 
 /// A BIFF row number, which is zero-based.

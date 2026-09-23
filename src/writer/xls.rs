@@ -588,6 +588,7 @@ fn window(out: &mut Vec<u8>, view: &SheetView) {
     record(out, 0x023E, &data);
 
     let Some(pane) = &view.pane else {
+        selections(out, view);
         return;
     };
     let (top, left) = pane
@@ -604,14 +605,51 @@ fn window(out: &mut Vec<u8>, view: &SheetView) {
     );
     data.extend_from_slice(&top.to_le_bytes());
     data.extend_from_slice(&left.to_le_bytes());
-    data.push(match pane.active_pane {
+    data.push(pane_number(pane.active_pane));
+    data.push(0);
+    record(out, 0x0041, &data);
+    selections(out, view);
+}
+
+/// One `SELECTION` per selection the model holds. BIFF8 has one byte for a
+/// column, so an area past column IV is cut at it.
+fn selections(out: &mut Vec<u8>, view: &SheetView) {
+    for selection in &view.selections {
+        let areas = &selection.sqref[..selection.sqref.len().min(1000)];
+        let (row, col) = selection
+            .active_cell
+            .map_or((0, 0), |at| (at.row.index_u16(), at.col.index_u16()));
+        let mut data = vec![pane_number(selection.pane.unwrap_or_default())];
+        data.extend_from_slice(&row.to_le_bytes());
+        data.extend_from_slice(&col.to_le_bytes());
+        // Which area holds the cursor: the first one that does.
+        let holding = selection
+            .active_cell
+            .and_then(|at| areas.iter().position(|r| r.contains(at)));
+        data.extend_from_slice(
+            &u16::try_from(holding.unwrap_or(0))
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
+        data.extend_from_slice(&u16::try_from(areas.len()).unwrap_or(0).to_le_bytes());
+        for range in areas {
+            data.extend_from_slice(&range.start.row.index_u16().to_le_bytes());
+            data.extend_from_slice(&range.end.row.index_u16().to_le_bytes());
+            data.push(u8::try_from(range.start.col.index_u16()).unwrap_or(u8::MAX));
+            data.push(u8::try_from(range.end.col.index_u16()).unwrap_or(u8::MAX));
+        }
+        record(out, 0x001D, &data);
+    }
+}
+
+/// The number BIFF gives a pane.
+const fn pane_number(pane: PanePosition) -> u8 {
+    match pane {
         PanePosition::BottomRight => 0,
         PanePosition::TopRight => 1,
         PanePosition::BottomLeft => 2,
         PanePosition::TopLeft => 3,
-    });
-    data.push(0);
-    record(out, 0x0041, &data);
+    }
 }
 
 /// Every cell of the sheet, in the order the records go out.
