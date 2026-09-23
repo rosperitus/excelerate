@@ -33,7 +33,7 @@ use super::xls_formula::{self, Compiled, Links, Place};
 use crate::error::{Error, Result};
 use crate::formula::eval::{Engine, Origin};
 use crate::formula::value::Value as FormulaValue;
-use crate::model::{CellValue, Spreadsheet, Worksheet};
+use crate::model::{CellValue, PanePosition, PaneState, SheetView, Spreadsheet, Worksheet};
 use crate::shared::date::Epoch;
 use crate::shared::palette;
 use crate::style::{
@@ -548,22 +548,70 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
         record(&mut out, 0x00E5, &data);
     }
 
-    // Without a window record Excel opens the sheet with no gridlines and no
-    // headings, which is not what the model said.
-    let mut window = 0x06B6u16;
-    if !sheet.view.show_grid_lines {
-        window &= !0x0020;
+    window(&mut out, &sheet.view);
+
+    record(&mut out, 0x000A, &[]);
+    out
+}
+
+/// `WINDOW2`, and `PANE` after it when the sheet is split. Without the window
+/// record Excel opens the sheet with no gridlines and no headings, which is
+/// not what the model said.
+fn window(out: &mut Vec<u8>, view: &SheetView) {
+    // Default gridline colour, outline symbols, selected, in page view off.
+    let mut flags = 0x06A0u16;
+    for (on, bit) in [
+        (view.show_grid_lines, 0x0002),
+        (view.show_row_col_headers, 0x0004),
+        (view.show_zeros, 0x0010),
+        (view.right_to_left, 0x0040),
+    ] {
+        if on {
+            flags |= bit;
+        }
     }
-    let mut data = window.to_le_bytes().to_vec();
-    data.extend_from_slice(&[0, 0, 0, 0]);
+    match view.pane.as_ref().map(|pane| pane.state) {
+        Some(PaneState::Frozen) => flags |= 0x0108,
+        Some(PaneState::FrozenSplit) => flags |= 0x0008,
+        Some(PaneState::Split) | None => {}
+    }
+    let (top, left) = view
+        .top_left_cell
+        .map_or((0, 0), |at| (at.row.index_u16(), at.col.index_u16()));
+    let mut data = flags.to_le_bytes().to_vec();
+    data.extend_from_slice(&top.to_le_bytes());
+    data.extend_from_slice(&left.to_le_bytes());
     data.extend_from_slice(&0x0000_0040u32.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
-    record(&mut out, 0x023E, &data);
+    record(out, 0x023E, &data);
 
-    record(&mut out, 0x000A, &[]);
-    out
+    let Some(pane) = &view.pane else {
+        return;
+    };
+    let (top, left) = pane
+        .top_left_cell
+        .map_or((0, 0), |at| (at.row.index_u16(), at.col.index_u16()));
+    let mut data = u16::try_from(pane.x_split)
+        .unwrap_or(u16::MAX)
+        .to_le_bytes()
+        .to_vec();
+    data.extend_from_slice(
+        &u16::try_from(pane.y_split)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    data.extend_from_slice(&top.to_le_bytes());
+    data.extend_from_slice(&left.to_le_bytes());
+    data.push(match pane.active_pane {
+        PanePosition::BottomRight => 0,
+        PanePosition::TopRight => 1,
+        PanePosition::BottomLeft => 2,
+        PanePosition::TopLeft => 3,
+    });
+    data.push(0);
+    record(out, 0x0041, &data);
 }
 
 /// Every cell of the sheet, in the order the records go out.

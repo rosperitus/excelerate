@@ -38,7 +38,7 @@
 use super::xls_formula::{self, Base, Book, BookKind, Context};
 use crate::error::{Error, Result};
 use crate::model::DefinedName;
-use crate::model::{CellValue, ColumnRun, Spreadsheet, Worksheet};
+use crate::model::{CellValue, ColumnRun, Pane, PanePosition, PaneState, Spreadsheet, Worksheet};
 use crate::shared::codepage;
 use crate::shared::date::Epoch;
 use crate::shared::palette;
@@ -89,6 +89,10 @@ mod record {
     pub const SUPBOOK: u16 = 0x01AE;
     pub const EXTERNNAME: u16 = 0x0023;
     pub const EXTERNSHEET: u16 = 0x0017;
+    /// Display switches of the sheet window, among them whether it is frozen.
+    pub const WINDOW2: u16 = 0x023E;
+    /// Where the window is split and which pane is active.
+    pub const PANE: u16 = 0x0041;
 }
 
 /// Reads a workbook from a file.
@@ -475,11 +479,27 @@ impl<'a> Reader<'a> {
         {
             at = bof.next;
         }
+        // `PANE` comes after `WINDOW2` and only says where the split is;
+        // whether it is frozen is a bit of the window.
+        let mut window = 0u16;
         while let Some(record) = record_at(self.stream, at) {
             at = record.next;
             match record.id {
                 record::EOF => break,
                 record::DIMENSION | record::BOF => {}
+                record::WINDOW2 => {
+                    window = u16_at(record.data, 0);
+                    let view = &mut sheet.view;
+                    view.show_grid_lines = window & 0x0002 != 0;
+                    view.show_row_col_headers = window & 0x0004 != 0;
+                    view.show_zeros = window & 0x0010 != 0;
+                    view.right_to_left = window & 0x0040 != 0;
+                    let (top, left) = (u16_at(record.data, 2), u16_at(record.data, 4));
+                    if (top, left) != (0, 0) {
+                        view.top_left_cell = cell_ref(left, top).ok();
+                    }
+                }
+                record::PANE => sheet.view.pane = Some(pane(record.data, window)),
                 record::WSBOOL => {
                     let flags = u16_at(record.data, 0);
                     sheet.properties.summary_below = flags & 0x40 != 0;
@@ -1145,6 +1165,28 @@ fn fill_pattern(value: u8) -> Pattern {
 /// The cell a row and a column number name.
 fn cell_ref(col: u16, row: u16) -> Result<CellRef> {
     Ok(CellRef::new(column(col)?, self::row(row)?))
+}
+
+/// A `PANE`: the split in cells when frozen and in twips when not, the first
+/// cell of the bottom-right pane and the active one.
+fn pane(data: &[u8], window: u16) -> Pane {
+    Pane {
+        x_split: u32::from(u16_at(data, 0)),
+        y_split: u32::from(u16_at(data, 2)),
+        top_left_cell: cell_ref(u16_at(data, 6), u16_at(data, 4)).ok(),
+        active_pane: match data.get(8) {
+            Some(1) => PanePosition::TopRight,
+            Some(2) => PanePosition::BottomLeft,
+            Some(3) => PanePosition::TopLeft,
+            _ => PanePosition::BottomRight,
+        },
+        // Bit 3 freezes, bit 8 takes away the split bar to drag.
+        state: match (window & 0x0008 != 0, window & 0x0100 != 0) {
+            (false, _) => PaneState::Split,
+            (true, false) => PaneState::FrozenSplit,
+            (true, true) => PaneState::Frozen,
+        },
+    }
 }
 
 /// A BIFF row number, which is zero-based.

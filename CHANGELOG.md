@@ -9,6 +9,15 @@
   above goes `0, -1`, a single `Кв3` goes `Кв2`). JS: `fillSeries` with
   `"up"` or `"left"`.
 
+### Fixed
+
+- xls: frozen and split panes are read from `WINDOW2` and `PANE` and written
+  back, along with the scroll position and the gridline, heading, zero and
+  right-to-left switches of the window. Before, a frozen sheet read from xls
+  opened unfrozen.
+- xls writer: turning gridlines off cleared the default-gridline-colour bit
+  instead of the gridline bit, so the grid stayed on.
+
 ## 0.12.1
 
 ### Added

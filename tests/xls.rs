@@ -332,3 +332,25 @@ fn outline_levels_and_summary_placement_survive_a_round_trip() {
     let run = sheet.column_run(Col::new(2).unwrap()).unwrap();
     assert_eq!((run.outline_level, run.collapsed), (1, true));
 }
+
+#[test]
+fn frozen_panes_and_window_switches_survive_a_round_trip() {
+    use excelerate::model::{Pane, PanePosition, PaneState};
+    let mut book = Spreadsheet::new();
+    let view = &mut book.sheet_mut(0).unwrap().view;
+    view.pane = Some(Pane {
+        x_split: 4,
+        y_split: 11,
+        top_left_cell: Some(CellRef::parse("E1459").unwrap()),
+        active_pane: PanePosition::BottomRight,
+        state: PaneState::Frozen,
+    });
+    // Gridlines are bit 1 of `WINDOW2`; the writer used to clear bit 5, the
+    // default gridline colour, and leave the grid on.
+    view.show_grid_lines = false;
+    view.show_zeros = false;
+    view.top_left_cell = Some(CellRef::parse("B3").unwrap());
+
+    let expected = book.sheets()[0].view.clone();
+    assert_eq!(rewrite(&book).sheets()[0].view, expected);
+}
