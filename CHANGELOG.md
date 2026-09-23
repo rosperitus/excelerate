@@ -11,6 +11,10 @@
 
 ### Fixed
 
+- xls reader: style 0 is the workbook's Normal style from the default cell
+  format (XF 15), not the Calibri 11 default. Column widths are counted in
+  digits of its font, so an Arial 8 book written back to xls or xlsx opened
+  in Excel with every column wider.
 - xls: frozen and split panes are read from `WINDOW2` and `PANE` and written
   back, the selection of each pane from `SELECTION`, along with the scroll position and the gridline, heading, zero and
   right-to-left switches of the window. Before, a frozen sheet read from xls

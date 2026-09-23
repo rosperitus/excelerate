@@ -303,6 +303,28 @@ fn a_formula_the_format_cannot_hold_is_written_as_its_value() {
 }
 
 #[test]
+fn the_normal_font_survives_a_round_trip() {
+    // Column widths are counted in digits of this font, so losing it to the
+    // Calibri 11 default made every column of an Arial 8 book wider.
+    let mut normal = Style::default();
+    normal.font.name = "Arial".to_owned();
+    normal.font.set_size_points(8.0);
+    let mut book = Spreadsheet::empty();
+    book.styles = excelerate::style::StyleTable::from_styles(vec![normal.clone()]);
+    let mut sheet = excelerate::model::Worksheet::new("S").unwrap();
+    sheet.set(CellRef::parse("A1").unwrap(), 1.0);
+    book.add_sheet(sheet).unwrap();
+    let back = rewrite(&book);
+    let font = &back
+        .styles
+        .get(excelerate::style::StyleId::default())
+        .unwrap()
+        .font;
+    assert_eq!((font.name.as_str(), font.size_points()), ("Arial", 8.0));
+    assert_eq!(style(&back, "A1").font, normal.font);
+}
+
+#[test]
 fn outline_levels_and_summary_placement_survive_a_round_trip() {
     use excelerate::{Col, Row};
     let mut book = Spreadsheet::new();

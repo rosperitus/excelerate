@@ -289,6 +289,13 @@ impl<'a> Reader<'a> {
     /// Reads the globals, then each sheet.
     fn read(mut self) -> Result<Spreadsheet> {
         self.globals()?;
+        // Style 0 is the workbook's Normal style: unstyled cells take it, and
+        // column widths are counted in digits of its font. The default cell
+        // format, XF 15, carries it; a file with fewer XFs, its first one.
+        let normal = self.cell_formats.get(15).or(self.cell_formats.first());
+        if let Some(xf) = normal.copied() {
+            self.styles = StyleTable::from_styles(vec![self.style(&xf)]);
+        }
         self.context.sheets = self.sheets.iter().map(|(name, _)| name.clone()).collect();
         self.defined_names();
         let sheets = std::mem::take(&mut self.sheets);
