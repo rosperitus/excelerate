@@ -1132,29 +1132,32 @@ fn worksheet(
     s.push_str("<sheetData>");
 
     // Cells arrive row by row already, so a row closes as soon as the row index
-    // changes; xlsx requires both rows and cells in ascending order.
-    let mut open_row: Option<u32> = None;
+    // changes; xlsx requires both rows and cells in ascending order. A row can
+    // carry a height or be hidden without holding any cell: both sequences are
+    // sorted, so those are merged in on the way rather than searched for.
+    let arrays = ArrayFormulas::of(&sheet.array_formulas);
+    let mut bare_rows = sheet.rows.iter().peekable();
+    let mut open_row = None;
     for (at, cell) in sheet.iter() {
-        let row = at.row.one_based();
-        if open_row != Some(row) {
+        if open_row != Some(at.row) {
             if open_row.is_some() {
                 s.push_str("</row>");
             }
-            s.push_str(&row_open_tag(at.row, sheet.rows.get(&at.row)));
-            open_row = Some(row);
+            while let Some((row, props)) = bare_rows.next_if(|(row, _)| **row < at.row) {
+                let _ = write!(s, "{}</row>", row_open_tag(*row, Some(props)));
+            }
+            let props = bare_rows
+                .next_if(|(row, _)| **row == at.row)
+                .map(|(_, p)| p);
+            s.push_str(&row_open_tag(at.row, props));
+            open_row = Some(at.row);
         }
-        s.push_str(&cell_xml(at, cell, pool, &sheet.array_formulas));
+        s.push_str(&cell_xml(at, cell, pool, &arrays));
     }
     if open_row.is_some() {
         s.push_str("</row>");
     }
-
-    // A row can carry a height or be hidden without holding any cell, so the
-    // ones the loop above never opened are written here.
-    for (row, props) in &sheet.rows {
-        if sheet.iter().any(|(at, _)| at.row == *row) {
-            continue;
-        }
+    for (row, props) in bare_rows {
         let _ = write!(s, "{}</row>", row_open_tag(*row, Some(props)));
     }
     s.push_str("</sheetData>");
@@ -1334,8 +1337,18 @@ fn print_tail_xml(sheet: &crate::model::Worksheet, outside: &[&crate::model::Hyp
     let mut s = String::new();
     if !sheet.hyperlinks.is_empty() {
         s.push_str("<hyperlinks>");
+        // `outside` lists the external links in this same order, so the n-th
+        // one met here holds the n-th relationship id.
+        let mut next_id = 0;
         for link in &sheet.hyperlinks {
-            s.push_str(&hyperlink_xml(link, outside));
+            let id = match link.target {
+                crate::model::LinkTarget::Outside(_) if next_id < outside.len() => {
+                    next_id += 1;
+                    Some(next_id)
+                }
+                _ => None,
+            };
+            s.push_str(&hyperlink_xml(link, id));
         }
         s.push_str("</hyperlinks>");
     }
@@ -1678,16 +1691,16 @@ fn sheet_rels(
     s
 }
 
-/// Renders one `<hyperlink>` element.
-fn hyperlink_xml(link: &crate::model::Hyperlink, outside: &[&crate::model::Hyperlink]) -> String {
+/// Renders one `<hyperlink>` element; `id` numbers the relationship of an external link.
+fn hyperlink_xml(link: &crate::model::Hyperlink, id: Option<usize>) -> String {
     let mut s = format!(r#"<hyperlink ref="{}""#, sqref(&[link.range]));
     match &link.target {
         crate::model::LinkTarget::Inside(location) => {
             let _ = write!(s, r#" location="{}""#, escape(location));
         }
         crate::model::LinkTarget::Outside(_) => {
-            if let Some(i) = outside.iter().position(|l| std::ptr::eq(*l, link)) {
-                let _ = write!(s, r#" r:id="rId{}""#, i + 1);
+            if let Some(id) = id {
+                let _ = write!(s, r#" r:id="rId{id}""#);
             }
         }
     }
@@ -2197,12 +2210,39 @@ fn row_open_tag(
     s
 }
 
+/// A sheet's array formulas, indexed once so a cell does not search them all.
+struct ArrayFormulas<'a> {
+    /// Each array by its top-left cell, where its formula is written.
+    starts: HashMap<crate::coordinate::CellRef, &'a crate::coordinate::Range>,
+    /// The arrays wider than one cell: only these have cells inside that are
+    /// not their start.
+    // ponytail: linear scan per formula cell; old books are mostly single-cell
+    // arrays, so this stays short. An interval index if blocks run to thousands.
+    blocks: Vec<&'a crate::coordinate::Range>,
+}
+
+impl<'a> ArrayFormulas<'a> {
+    fn of(ranges: &'a [crate::coordinate::Range]) -> Self {
+        Self {
+            // Reversed, so that of two arrays claiming one start the first
+            // wins, as a search in file order would pick it.
+            starts: ranges.iter().rev().map(|r| (r.start, r)).collect(),
+            blocks: ranges.iter().filter(|r| r.start != r.end).collect(),
+        }
+    }
+
+    /// Whether `at` lies inside somebody else's array.
+    fn inside_another(&self, at: crate::coordinate::CellRef) -> bool {
+        self.blocks.iter().any(|r| r.contains(at) && r.start != at)
+    }
+}
+
 /// Renders one `<c>` element.
 fn cell_xml(
     at: crate::coordinate::CellRef,
     cell: &crate::model::Cell,
     pool: &StringPool<'_>,
-    array_formulas: &[crate::coordinate::Range],
+    arrays: &ArrayFormulas<'_>,
 ) -> String {
     let style = cell.style.index();
     let attrs = if style == 0 {
@@ -2233,10 +2273,7 @@ fn cell_xml(
             // Inside somebody else's array the cell shows its part of the
             // result and holds no formula of its own. Excel refuses a file
             // that says otherwise: it strips the cells of the sheet.
-            if array_formulas
-                .iter()
-                .any(|r| r.contains(at) && r.start != at)
-            {
+            if arrays.inside_another(at) {
                 let value = cached.as_deref().unwrap_or(&CellValue::Empty).clone();
                 return cell_xml(
                     at,
@@ -2245,7 +2282,7 @@ fn cell_xml(
                         ..cell.clone()
                     },
                     pool,
-                    array_formulas,
+                    arrays,
                 );
             }
             let value = match cached.as_deref() {
@@ -2263,7 +2300,7 @@ fn cell_xml(
                 Some(CellValue::Error(_)) => r#" t="e""#,
                 _ => "",
             };
-            let f = match array_formulas.iter().find(|r| r.start == at) {
+            let f = match arrays.starts.get(&at) {
                 Some(r) => format!(r#"<f t="array" ref="{r}">"#),
                 None => "<f>".to_owned(),
             };
@@ -2292,6 +2329,7 @@ fn number(n: f64) -> String {
 mod tests {
     use super::{auto_filter_xml, sheet_protection_xml, worksheet};
     use crate::coordinate::Range;
+    use crate::model::CellValue;
     use crate::model::{
         Attachment, AutoFilter, ColumnFilter, CustomFilter, FilterOperator, PasswordHash,
         SheetProtection, Worksheet,
@@ -2405,6 +2443,142 @@ mod tests {
             rels.contains(r#"Id="rId1""#) && rels.contains("../tables/table1.xml"),
             "{rels}"
         );
+    }
+
+    #[test]
+    fn a_row_without_cells_takes_its_place_among_the_others() {
+        // ECMA-376 wants `<row>` in ascending order; a row that only carries
+        // a height must not trail after the rows that hold cells.
+        let mut sheet = Worksheet::new("R").unwrap_or_default();
+        sheet.set(
+            crate::coordinate::CellRef::parse("A5").expect("a written reference"),
+            1.0,
+        );
+        let row = |n| crate::coordinate::Row::from_one_based(n).expect("a written row");
+        sheet.set_row_height(row(2), Some(30.0));
+        sheet.set_row_height(row(5), Some(20.0));
+        sheet.set_row_hidden(row(9), true);
+        let empty = crate::model::Spreadsheet::empty();
+        let pool = super::collect_shared_strings(&empty);
+        let xml = worksheet(&sheet, &pool, &[]);
+        let rows: Vec<&str> = xml
+            .split("<row r=\"")
+            .skip(1)
+            .filter_map(|tail| tail.split('"').next())
+            .collect();
+        assert_eq!(rows, ["2", "5", "9"], "{xml}");
+        assert!(xml.contains(r#"<row r="5" ht="20" customHeight="1"><c r="A5">"#));
+    }
+
+    #[test]
+    fn many_rows_with_heights_are_written_in_one_pass() {
+        // Each row with a height used to search every cell of the sheet:
+        // 20 000 rows made it 4e8 steps.
+        let mut sheet = Worksheet::new("R").unwrap_or_default();
+        for n in 1..=20_000u32 {
+            let row = crate::coordinate::Row::new(n * 2).expect("a small row");
+            sheet.set_row_height(row, Some(15.0));
+            sheet.set(
+                crate::coordinate::CellRef::new(crate::coordinate::Col::new(0).expect("A"), row),
+                f64::from(n),
+            );
+            let empty_row = crate::coordinate::Row::new(n * 2 + 1).expect("a small row");
+            sheet.set_row_height(empty_row, Some(15.0));
+        }
+        let empty = crate::model::Spreadsheet::empty();
+        let pool = super::collect_shared_strings(&empty);
+        let started = std::time::Instant::now();
+        let xml = worksheet(&sheet, &pool, &[]);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(xml.matches("<row ").count(), 40_000);
+    }
+
+    #[test]
+    fn many_array_formulas_are_looked_up_not_searched() {
+        // Old workbooks hold a single-cell array formula in every row; each
+        // formula cell used to walk the whole list of them, twice.
+        let mut sheet = Worksheet::new("R").unwrap_or_default();
+        let a = crate::coordinate::Col::new(0).expect("A");
+        for n in 0..60_000u32 {
+            let at = crate::coordinate::CellRef::new(
+                a,
+                crate::coordinate::Row::new(n).expect("a small row"),
+            );
+            sheet.set(
+                at,
+                CellValue::Formula {
+                    formula: "SUM(B1:B2*C1:C2)".into(),
+                    cached: None,
+                },
+            );
+            sheet.array_formulas.push(Range::new(at, at));
+        }
+        // One real block, so the "inside another array" path still runs.
+        sheet.array_formulas.push(range("B1:B2"));
+        sheet.set(
+            crate::coordinate::CellRef::parse("B2").expect("a written reference"),
+            CellValue::Formula {
+                formula: "ROW()".into(),
+                cached: Some(Box::new(CellValue::Number(2.0))),
+            },
+        );
+        let empty = crate::model::Spreadsheet::empty();
+        let pool = super::collect_shared_strings(&empty);
+        let started = std::time::Instant::now();
+        let xml = worksheet(&sheet, &pool, &[]);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+        assert_eq!(xml.matches(r#"<f t="array" ref="A"#).count(), 60_000);
+        assert!(xml.contains(r#"<c r="B2"><v>2</v></c>"#), "{xml:.2000}");
+    }
+
+    #[test]
+    fn many_outside_links_are_numbered_without_a_search() {
+        // Each external link used to look itself up among all of them.
+        let mut sheet = Worksheet::new("R").unwrap_or_default();
+        let a = crate::coordinate::Col::new(0).expect("A");
+        for n in 0..60_000u32 {
+            let at = crate::coordinate::CellRef::new(
+                a,
+                crate::coordinate::Row::new(n).expect("a small row"),
+            );
+            let target = if n == 1 {
+                crate::model::LinkTarget::Inside("R!A1".into())
+            } else {
+                crate::model::LinkTarget::Outside(format!("https://example.com/{n}"))
+            };
+            sheet.hyperlinks.push(crate::model::Hyperlink {
+                range: Range::new(at, at),
+                target,
+                display: None,
+                tooltip: None,
+            });
+        }
+        let outside = super::external_links(&sheet);
+        let started = std::time::Instant::now();
+        let xml = super::print_tail_xml(&sheet, &outside);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "took {:?}",
+            started.elapsed()
+        );
+        // The inside link takes no id, so the one after it gets the second.
+        assert!(
+            xml.contains(r#"<hyperlink ref="A1" r:id="rId1"/>"#),
+            "{xml:.300}"
+        );
+        assert!(
+            xml.contains(r#"<hyperlink ref="A3" r:id="rId2"/>"#),
+            "{xml:.300}"
+        );
+        assert!(xml.contains(r#"<hyperlink ref="A60000" r:id="rId59999"/>"#));
     }
 
     /// The names of the elements one level inside `root`, in the order written.
