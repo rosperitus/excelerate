@@ -56,16 +56,22 @@ pub enum Color {
 }
 
 impl Color {
-    /// A colour from `AARRGGBB`, as written in xlsx.
+    /// A colour from `AARRGGBB`, as written in xlsx, or from `RRGGBB`,
+    /// which some writers emit and Excel reads as opaque.
     ///
     /// # Errors
-    /// Returns `None` if the string is not eight hex digits.
+    /// Returns `None` if the string is not six or eight hex digits.
     #[must_use]
     pub fn from_argb_str(s: &str) -> Option<Self> {
-        (s.len() == 8)
-            .then(|| u32::from_str_radix(s, 16).ok())
-            .flatten()
-            .map(Self::Argb)
+        if !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let v = u32::from_str_radix(s, 16).ok()?;
+        match s.len() {
+            8 => Some(Self::Argb(v)),
+            6 => Some(Self::Argb(0xFF00_0000 | v)),
+            _ => None,
+        }
     }
 
     /// The `AARRGGBB` form, for colours that have one.
@@ -760,6 +766,20 @@ mod tests {
     };
 
     #[test]
+    fn argb_str_accepts_rrggbb_as_opaque() {
+        assert_eq!(
+            Color::from_argb_str("D8D8D8"),
+            Some(Color::Argb(0xFFD8_D8D8))
+        );
+        assert_eq!(
+            Color::from_argb_str("80D8D8D8"),
+            Some(Color::Argb(0x80D8_D8D8))
+        );
+        assert_eq!(Color::from_argb_str("D8D8"), None);
+        assert_eq!(Color::from_argb_str("+D8D8D8"), None);
+    }
+
+    #[test]
     fn default_style_is_index_zero() {
         let t = StyleTable::default();
         assert_eq!(t.len(), 1);
@@ -809,10 +829,6 @@ mod tests {
         let c = Color::from_argb_str("FFFF0000").expect("valid argb");
         assert_eq!(c, Color::Argb(0xFFFF_0000));
         assert_eq!(c.to_argb_str().as_deref(), Some("FFFF0000"));
-        assert!(
-            Color::from_argb_str("FF0000").is_none(),
-            "six digits is not argb"
-        );
         assert!(Color::from_argb_str("zzzzzzzz").is_none());
         assert!(Color::Auto.to_argb_str().is_none());
     }

@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.2
+
+### Changed
+
+- xls reader: 2.4 times faster on large files and a quarter less memory.
+  The shared string table no longer searches for `CONTINUE` breaks on
+  every byte, and cells share the table's text instead of copying it.
+
+### Added
+
+- `edit::fill_series_back` - the fill handle dragged up or left: the seed is
+  the last cells of each line and the series runs back from them (`1, 2`
+  above goes `0, -1`, a single `Кв3` goes `Кв2`). JS: `fillSeries` with
+  `"up"` or `"left"`.
+
+### Fixed
+
+- xls reader: style 0 is the workbook's Normal style from the default cell
+  format (XF 15), not the Calibri 11 default. Column widths are counted in
+  digits of its font, so an Arial 8 book written back to xls or xlsx opened
+  in Excel with every column wider.
+- xls: frozen and split panes are read from `WINDOW2` and `PANE` and written
+  back, the selection of each pane from `SELECTION`, along with the scroll position and the gridline, heading, zero and
+  right-to-left switches of the window. Before, a frozen sheet read from xls
+  opened unfrozen.
+- xls writer: turning gridlines off cleared the default-gridline-colour bit
+  instead of the gridline bit, so the grid stayed on.
+
 ## 0.12.1
 
 ### Added

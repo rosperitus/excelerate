@@ -38,7 +38,9 @@
 use super::xls_formula::{self, Base, Book, BookKind, Context};
 use crate::error::{Error, Result};
 use crate::model::DefinedName;
-use crate::model::{CellValue, ColumnRun, Spreadsheet, Worksheet};
+use crate::model::{
+    CellValue, ColumnRun, Pane, PanePosition, PaneState, Selection, Spreadsheet, Worksheet,
+};
 use crate::shared::codepage;
 use crate::shared::date::Epoch;
 use crate::shared::palette;
@@ -66,6 +68,8 @@ mod record {
     pub const DIMENSION: u16 = 0x0200;
     pub const ROW: u16 = 0x0208;
     pub const COLINFO: u16 = 0x007D;
+    /// Sheet options; the outline says where group summaries sit.
+    pub const WSBOOL: u16 = 0x0081;
     pub const MERGEDCELLS: u16 = 0x00E5;
     pub const BLANK: u16 = 0x0201;
     pub const MULBLANK: u16 = 0x00BE;
@@ -87,6 +91,12 @@ mod record {
     pub const SUPBOOK: u16 = 0x01AE;
     pub const EXTERNNAME: u16 = 0x0023;
     pub const EXTERNSHEET: u16 = 0x0017;
+    /// Display switches of the sheet window, among them whether it is frozen.
+    pub const WINDOW2: u16 = 0x023E;
+    /// Where the window is split and which pane is active.
+    pub const PANE: u16 = 0x0041;
+    /// The cursor and the selected areas of one pane.
+    pub const SELECTION: u16 = 0x001D;
 }
 
 /// Reads a workbook from a file.
@@ -221,8 +231,9 @@ struct Reader<'a> {
     forced_codepage: Option<u16>,
     book: Spreadsheet,
     styles: StyleTable,
-    /// The shared string table, indexed by `LABELSST`.
-    strings: Vec<String>,
+    /// The shared string table, indexed by `LABELSST`. Each entry is the
+    /// value a cell gets, so cells share one `Arc<str>` instead of copying.
+    strings: Vec<CellValue>,
     /// Format code by its index, for the codes the file spells out.
     formats: HashMap<u16, String>,
     /// What each `XF` record says, in record order.
@@ -279,6 +290,13 @@ impl<'a> Reader<'a> {
     /// Reads the globals, then each sheet.
     fn read(mut self) -> Result<Spreadsheet> {
         self.globals()?;
+        // Style 0 is the workbook's Normal style: unstyled cells take it, and
+        // column widths are counted in digits of its font. The default cell
+        // format, XF 15, carries it; a file with fewer XFs, its first one.
+        let normal = self.cell_formats.get(15).or(self.cell_formats.first());
+        if let Some(xf) = normal.copied() {
+            self.styles = StyleTable::from_styles(vec![self.style(&xf)]);
+        }
         self.context.sheets = self.sheets.iter().map(|(name, _)| name.clone()).collect();
         self.defined_names();
         let sheets = std::mem::take(&mut self.sheets);
@@ -433,7 +451,7 @@ impl<'a> Reader<'a> {
 
     /// The shared string table, which is one record plus however many
     /// `CONTINUE` records it needs. Returns where the reader should carry on.
-    fn shared_strings(&self, sst: &Record<'_>, mut at: usize) -> (Vec<String>, usize) {
+    fn shared_strings(&self, sst: &Record<'_>, mut at: usize) -> (Vec<CellValue>, usize) {
         let unique = u32_at(sst.data, 4) as usize;
         let mut data = sst.data[8.min(sst.data.len())..].to_vec();
         // Where each continuation begins: a string may be cut in half there,
@@ -457,7 +475,7 @@ impl<'a> Reader<'a> {
             let Some((text, next)) = sst_string(&data, pos, &breaks) else {
                 break;
             };
-            strings.push(text);
+            strings.push(CellValue::text(text));
             pos = next;
         }
         (strings, at)
@@ -473,11 +491,41 @@ impl<'a> Reader<'a> {
         {
             at = bof.next;
         }
+        // `PANE` comes after `WINDOW2` and only says where the split is;
+        // whether it is frozen is a bit of the window.
+        let mut window = 0u16;
         while let Some(record) = record_at(self.stream, at) {
             at = record.next;
             match record.id {
                 record::EOF => break,
                 record::DIMENSION | record::BOF => {}
+                record::WINDOW2 => {
+                    window = u16_at(record.data, 0);
+                    let view = &mut sheet.view;
+                    view.show_grid_lines = window & 0x0002 != 0;
+                    view.show_row_col_headers = window & 0x0004 != 0;
+                    view.show_zeros = window & 0x0010 != 0;
+                    view.right_to_left = window & 0x0040 != 0;
+                    let (top, left) = (u16_at(record.data, 2), u16_at(record.data, 4));
+                    if (top, left) != (0, 0) {
+                        view.top_left_cell = cell_ref(left, top).ok();
+                    }
+                }
+                record::PANE => sheet.view.pane = Some(pane(record.data, window)),
+                record::SELECTION => {
+                    // Excel writes one for every pane, the untouched ones
+                    // included; xlsx leaves out the one that sits on A1 with
+                    // nothing else selected, because the default says as much.
+                    let selection = selection(record.data, sheet.view.pane.is_some());
+                    if !is_corner(&selection) {
+                        sheet.view.selections.push(selection);
+                    }
+                }
+                record::WSBOOL => {
+                    let flags = u16_at(record.data, 0);
+                    sheet.properties.summary_below = flags & 0x40 != 0;
+                    sheet.properties.summary_right = flags & 0x80 != 0;
+                }
                 record::MERGEDCELLS => {
                     let count = usize::from(u16_at(record.data, 0));
                     for i in 0..count {
@@ -493,12 +541,16 @@ impl<'a> Reader<'a> {
                 record::COLINFO => {
                     let (first, last) = (u16_at(record.data, 0), u16_at(record.data, 2));
                     let width = f64::from(u16_at(record.data, 4)) / 256.0;
-                    let hidden = u16_at(record.data, 8) & 1 != 0;
+                    // Bit 0 hides, bits 8-10 are the outline level, bit 12
+                    // collapses the group.
+                    let options = u16_at(record.data, 8);
                     if let (Ok(first), Ok(last)) = (column(first), column(last)) {
                         let mut run = ColumnRun::new(first, last);
                         run.width = Some(width);
                         run.custom_width = true;
-                        run.hidden = hidden;
+                        run.hidden = options & 1 != 0;
+                        run.outline_level = u8::try_from((options >> 8) & 0x07).unwrap_or_default();
+                        run.collapsed = options & 0x1000 != 0;
                         sheet.columns.push(run);
                     }
                 }
@@ -514,6 +566,7 @@ impl<'a> Reader<'a> {
                         }
                         properties.hidden = flags & 0x20 != 0;
                         properties.outline_level = u8::try_from(flags & 0x07).unwrap_or_default();
+                        properties.collapsed = flags & 0x10 != 0;
                     }
                 }
                 _ => self.cell_record(&mut sheet, &record, &mut at),
@@ -579,8 +632,9 @@ impl<'a> Reader<'a> {
             }
             record::LABELSST => {
                 let index = u32_at(data, 6) as usize;
-                let text = self.strings.get(index).cloned().unwrap_or_default();
-                self.put(sheet, r, c, u16_at(data, 4), CellValue::text(text));
+                let text = self.strings.get(index).cloned();
+                let text = text.unwrap_or_else(|| CellValue::text(""));
+                self.put(sheet, r, c, u16_at(data, 4), text);
             }
             record::BOOLERR => {
                 let value = data.get(6).copied().unwrap_or(0);
@@ -1135,6 +1189,68 @@ fn cell_ref(col: u16, row: u16) -> Result<CellRef> {
     Ok(CellRef::new(column(col)?, self::row(row)?))
 }
 
+/// A `PANE`: the split in cells when frozen and in twips when not, the first
+/// cell of the bottom-right pane and the active one.
+fn pane(data: &[u8], window: u16) -> Pane {
+    Pane {
+        x_split: u32::from(u16_at(data, 0)),
+        y_split: u32::from(u16_at(data, 2)),
+        top_left_cell: cell_ref(u16_at(data, 6), u16_at(data, 4)).ok(),
+        active_pane: pane_position(data.get(8).copied()),
+        // Bit 3 freezes, bit 8 takes away the split bar to drag.
+        state: match (window & 0x0008 != 0, window & 0x0100 != 0) {
+            (false, _) => PaneState::Split,
+            (true, false) => PaneState::FrozenSplit,
+            (true, true) => PaneState::Frozen,
+        },
+    }
+}
+
+/// Which pane a number names.
+fn pane_position(value: Option<u8>) -> PanePosition {
+    match value {
+        Some(1) => PanePosition::TopRight,
+        Some(2) => PanePosition::BottomLeft,
+        Some(3) => PanePosition::TopLeft,
+        _ => PanePosition::BottomRight,
+    }
+}
+
+/// A `SELECTION`: the pane, the cursor, then the areas - two rows and two
+/// one-byte columns each.
+fn selection(data: &[u8], split: bool) -> Selection {
+    let count = usize::from(u16_at(data, 7));
+    let sqref = (0..count)
+        .map_while(|i| {
+            let at = 9 + i * 6;
+            let (first, last) = (data.get(at + 4)?, data.get(at + 5)?);
+            Some(Range::new(
+                cell_ref(u16::from(*first), u16_at(data, at)).ok()?,
+                cell_ref(u16::from(*last), u16_at(data, at + 2)).ok()?,
+            ))
+        })
+        .collect();
+    Selection {
+        // An unsplit sheet has one selection, and xlsx names no pane for it.
+        pane: split.then(|| pane_position(data.first().copied())),
+        active_cell: cell_ref(u16_at(data, 3), u16_at(data, 1)).ok(),
+        sqref,
+    }
+}
+
+/// Whether a selection says no more than the default: the cursor on A1 and
+/// that one cell selected.
+fn is_corner(selection: &Selection) -> bool {
+    let Ok(corner) = cell_ref(0, 0) else {
+        return false;
+    };
+    selection.active_cell == Some(corner)
+        && selection
+            .sqref
+            .iter()
+            .all(|range| range.start == corner && range.end == corner)
+}
+
 /// A BIFF row number, which is zero-based.
 fn row(value: u16) -> Result<Row> {
     Row::from_one_based(u64::from(value) + 1)
@@ -1322,14 +1438,17 @@ fn sst_string(data: &[u8], at: usize, breaks: &[usize]) -> Option<(String, usize
 
     let mut wide = flags & 0x01 != 0;
     let mut units = Vec::with_capacity(count.min(1 << 16));
+    // The string is read forwards a byte at a time, so the next break to
+    // watch for only moves on: one search per string, not one per byte.
+    let mut next = breaks.partition_point(|&b| b < pos);
     for _ in 0..count {
         // A break right where a character starts sets the width of that
         // character; one inside it sets the width of the next.
-        skip_break(data, &mut pos, breaks, &mut wide);
+        skip_break(data, &mut pos, breaks, &mut next, &mut wide);
         let here = wide;
-        let low = take_byte(data, &mut pos, breaks, &mut wide)?;
+        let low = take_byte(data, &mut pos, breaks, &mut next, &mut wide)?;
         let high = if here {
-            take_byte(data, &mut pos, breaks, &mut wide)?
+            take_byte(data, &mut pos, breaks, &mut next, &mut wide)?
         } else {
             0
         };
@@ -1345,19 +1464,29 @@ fn sst_string(data: &[u8], at: usize, breaks: &[usize]) -> Option<(String, usize
 }
 
 /// Steps over the flag byte a `CONTINUE` record opens with, taking the width
-/// from it.
-fn skip_break(data: &[u8], pos: &mut usize, breaks: &[usize], wide: &mut bool) {
-    // The breaks are in stream order, and this is asked for every byte of
-    // every string: a linear scan made a 30 MB workbook take seconds.
-    if breaks.binary_search(pos).is_ok() {
+/// from it. `next` is the first break not yet behind `pos`.
+fn skip_break(data: &[u8], pos: &mut usize, breaks: &[usize], next: &mut usize, wide: &mut bool) {
+    // An empty `CONTINUE` leaves two breaks at one place; the loop steps
+    // past whichever are already behind.
+    while breaks.get(*next).is_some_and(|&b| b < *pos) {
+        *next += 1;
+    }
+    if breaks.get(*next) == Some(pos) {
         *wide = data.get(*pos).copied().unwrap_or(0) & 1 != 0;
         *pos += 1;
+        *next += 1;
     }
 }
 
 /// One byte of a shared string, stepping over a flag byte first.
-fn take_byte(data: &[u8], pos: &mut usize, breaks: &[usize], wide: &mut bool) -> Option<u8> {
-    skip_break(data, pos, breaks, wide);
+fn take_byte(
+    data: &[u8],
+    pos: &mut usize,
+    breaks: &[usize],
+    next: &mut usize,
+    wide: &mut bool,
+) -> Option<u8> {
+    skip_break(data, pos, breaks, next, wide);
     let byte = data.get(*pos).copied()?;
     *pos += 1;
     Some(byte)
@@ -1441,6 +1570,22 @@ mod tests {
         data.extend_from_slice(&[0x00, b'x']);
         let (text, _) = sst_string(&data, 0, &[boundary]).expect("the string parses");
         assert_eq!(text, "абвx");
+    }
+
+    /// Breaks are tracked forwards, not searched: an empty `CONTINUE` puts
+    /// two at one place, and the one after it must still be seen.
+    #[test]
+    fn a_shared_string_crosses_an_empty_continuation_and_another_break() {
+        // "ab" narrow, an empty record, then a wide "в", then narrow "c".
+        let mut data = vec![4, 0, 0x00, b'a', b'b'];
+        let first = data.len();
+        data.extend_from_slice(&[0x01, 0x32, 0x04]);
+        let second = data.len();
+        data.extend_from_slice(&[0x00, b'c']);
+        let breaks = [first, first, second];
+        let (text, end) = sst_string(&data, 0, &breaks).expect("the string parses");
+        assert_eq!(text, "abвc");
+        assert_eq!(end, data.len());
     }
 
     fn push(out: &mut Vec<u8>, id: u16, data: &[u8]) {

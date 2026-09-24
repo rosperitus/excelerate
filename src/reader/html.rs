@@ -320,7 +320,8 @@ fn entity(name: &str) -> Option<char> {
 }
 
 /// The rules of every `<style>` block that name a class of cells: `.x`,
-/// `td.x`, `th.x`, as our writer and Excel's export write them. Descendant
+/// `td.x`, `th.x`, as our writer and Excel's export write them, and of
+/// columns and rows, `col.x` and `tr.x`, as `PhpSpreadsheet` sizes them. Descendant
 /// selectors count by their last part; anything fancier is ignored.
 // ponytail: no specificity or cascade order; rules of one class apply in page order.
 fn stylesheet(html: &str) -> HashMap<String, String> {
@@ -350,8 +351,10 @@ fn stylesheet(html: &str) -> HashMap<String, String> {
                 let Some((tag, class)) = last.split_once('.') else {
                     continue;
                 };
-                if matches!(tag.to_ascii_lowercase().as_str(), "" | "td" | "th")
-                    && !class.is_empty()
+                if matches!(
+                    tag.to_ascii_lowercase().as_str(),
+                    "" | "td" | "th" | "col" | "tr"
+                ) && !class.is_empty()
                 {
                     let entry = classes.entry(class.to_owned()).or_default();
                     entry.push_str(declarations);
@@ -584,6 +587,20 @@ impl Build {
             .unwrap_or(1);
         self.content.clear();
         self.children(&e.children);
+        // Only the height of a row's CSS is kept: the rest styles cells.
+        let height = self
+            .declarations(e)
+            .split(';')
+            .rev()
+            .find_map(|declaration| {
+                let (name, value) = declaration.split_once(':')?;
+                (name.trim().eq_ignore_ascii_case("height"))
+                    .then(|| css_height(value.trim()))
+                    .flatten()
+            });
+        if let Some(height) = height {
+            self.set_row_height(self.row, height);
+        }
         if let Some(height) = e.number("height") {
             self.set_row_height(self.row, height);
         }
@@ -1332,6 +1349,29 @@ mod tests {
             .expect("the height was set");
         // The `height` attribute of the row is applied last and wins.
         assert!((height - 20.0).abs() < 1e-6, "{height}");
+    }
+
+    #[test]
+    fn column_and_row_classes_size_the_grid() {
+        let book = read_html_str(
+            "<style>table.sheet0 col.col1 { width: 108pt; }\n\
+             table.sheet0 tr.row1 { height: 24pt; }</style>\
+             <table class=\"sheet0\"><colgroup><col class=\"col1\"></colgroup>\
+             <tr class=\"row1\"><td>x</td></tr>\
+             <tr style=\"height:2pt\"><td>y</td></tr></table>",
+        );
+        let sheet = book.sheet(0).expect("one sheet");
+        let width = sheet
+            .column_width(Col::from_one_based(1).expect("column A"))
+            .expect("the width was set");
+        // 108pt is 144px, in Calibri 11 characters.
+        assert!((width - 20.566_406_25).abs() < 1e-6, "{width}");
+        for (row, expected) in [(1, 24.0), (2, 2.0)] {
+            let height = sheet
+                .row_height(Row::from_one_based(row).expect("row"))
+                .expect("the height was set");
+            assert!((height - expected).abs() < 1e-6, "{row}: {height}");
+        }
     }
 
     #[test]

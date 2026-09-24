@@ -1716,11 +1716,10 @@ impl Worksheet {
         // to nine cells holds room for sixteen, which over a million rows was
         // most of the memory reading a sheet peaked at.
         let cells = Arc::make_mut(&mut self.cells);
-        if !cells.contains_key(&at.row) {
-            let width = cells.last_key_value().map_or(0, |(_, line)| line.len());
-            cells.insert(at.row, Vec::with_capacity(width));
-        }
-        let line = cells.entry(at.row).or_default();
+        let width = cells.last_key_value().map_or(0, |(_, line)| line.len());
+        let line = cells
+            .entry(at.row)
+            .or_insert_with(|| Vec::with_capacity(width));
         // Cells arrive in column order when a sheet is read, so the end of
         // the row is checked before a search.
         let index = match line.last() {

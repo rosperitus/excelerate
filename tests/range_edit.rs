@@ -487,6 +487,39 @@ fn fill_series_continues_what_the_seed_starts() {
 }
 
 #[test]
+fn fill_series_back_runs_the_series_up_from_the_end() {
+    use excelerate::edit::{Axis, fill_series_back};
+
+    let at = |a: &str| CellRef::parse(a).unwrap();
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    for (address, value) in [
+        ("A3", CellValue::Number(1.0)),
+        ("A4", CellValue::Number(2.0)),
+        ("B4", CellValue::text("Кв3")),
+        ("C4", CellValue::text("Пн")),
+        ("D3", CellValue::text("x")),
+        ("D4", CellValue::text("y")),
+    ] {
+        sheet.set(at(address), value);
+    }
+    fill_series_back(&mut book, 0, Range::parse("A1:D4").unwrap(), Axis::Rows).unwrap();
+    let sheet = book.sheet(0).unwrap();
+    let value = |a: &str| sheet.get(at(a)).unwrap().value.clone();
+    assert_eq!(value("A2"), CellValue::Number(0.0));
+    assert_eq!(value("A1"), CellValue::Number(-1.0));
+    assert_eq!(value("B3"), CellValue::text("Кв2"), "one seed counts down");
+    assert_eq!(value("B1"), CellValue::text("Кв0"));
+    assert_eq!(value("C3"), CellValue::text("Вс"));
+    assert_eq!(
+        value("D2"),
+        CellValue::text("y"),
+        "the repeat keeps its phase"
+    );
+    assert_eq!(value("D1"), CellValue::text("x"));
+}
+
+#[test]
 fn a_table_sorts_by_its_column_names() {
     use excelerate::edit::{SortKey, sort_table};
     use excelerate::model::table::{Table, TableColumn};

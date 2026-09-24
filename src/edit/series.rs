@@ -86,6 +86,33 @@ const LISTS: [&[&str]; 8] = [
 /// # Errors
 /// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
 pub fn fill_series(book: &mut Spreadsheet, sheet: usize, area: Range, axis: Axis) -> Result<()> {
+    auto_fill(book, sheet, area, axis, false)
+}
+
+/// [`fill_series`] the other way: the fill handle dragged up (`Axis::Rows`)
+/// or left (`Axis::Columns`). The seed is the run of filled cells at the end
+/// of the area, and the series runs back from it: `1, 2` above goes `0, -1`,
+/// a single `Кв3` goes `Кв2`, `Кв1`, a single date steps back a day.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+pub fn fill_series_back(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    area: Range,
+    axis: Axis,
+) -> Result<()> {
+    auto_fill(book, sheet, area, axis, true)
+}
+
+/// Both directions of the fill handle: `back` walks each line from its end.
+fn auto_fill(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    area: Range,
+    axis: Axis,
+    back: bool,
+) -> Result<()> {
     let dates: Vec<bool> = book
         .styles
         .all()
@@ -114,7 +141,10 @@ pub fn fill_series(book: &mut Spreadsheet, sheet: usize, area: Range, axis: Axis
             Some(CellRef::new(Col::new(along)?, Row::new(across)?))
         }
     };
-    let along: Vec<u32> = along.collect();
+    let mut along: Vec<u32> = along.collect();
+    if back {
+        along.reverse();
+    }
 
     for cross in across {
         let seed: Vec<Cell> = along
@@ -135,7 +165,7 @@ pub fn fill_series(book: &mut Spreadsheet, sheet: usize, area: Range, axis: Axis
                 .get(seed[0].style.index() as usize)
                 .copied()
                 .unwrap_or(false);
-        let next = continuation(&seed, date);
+        let next = continuation(&seed, date, back);
         for (step, &i) in along.iter().enumerate().skip(seed.len()) {
             let Some(target) = at(i, cross) else { continue };
             let source = &seed[step % seed.len()];
@@ -144,6 +174,7 @@ pub fn fill_series(book: &mut Spreadsheet, sheet: usize, area: Range, axis: Axis
                 None => match &source.value {
                     CellValue::Formula { formula, .. } => {
                         let moved = i64::try_from(step - step % seed.len()).unwrap_or(0);
+                        let moved = if back { -moved } else { moved };
                         let (d_col, d_row) = if down { (0, moved) } else { (moved, 0) };
                         CellValue::Formula {
                             formula: shift_references(formula, d_col, d_row),
@@ -165,7 +196,9 @@ pub fn fill_series(book: &mut Spreadsheet, sheet: usize, area: Range, axis: Axis
 /// when the seed is only repeated.
 type Next = Box<dyn Fn(usize) -> CellValue>;
 
-fn continuation(seed: &[Cell], date: bool) -> Option<Next> {
+/// `back` only matters for a single seed, which has no step of its own: it
+/// then counts down instead of up.
+fn continuation(seed: &[Cell], date: bool, back: bool) -> Option<Next> {
     let numbers: Option<Vec<f64>> = seed
         .iter()
         .map(|c| match c.value {
@@ -174,7 +207,7 @@ fn continuation(seed: &[Cell], date: bool) -> Option<Next> {
         })
         .collect();
     if let Some(numbers) = numbers {
-        return trend(&numbers, date);
+        return trend(&numbers, date, back);
     }
     let texts: Option<Vec<String>> = seed
         .iter()
@@ -184,17 +217,19 @@ fn continuation(seed: &[Cell], date: bool) -> Option<Next> {
         })
         .collect();
     let texts = texts?;
-    listed(&texts).or_else(|| counted(&texts))
+    listed(&texts, back).or_else(|| counted(&texts, back))
 }
 
 /// Numbers: the least-squares line through the seed, which for two values is
 /// their step. One number is copied, unless it is a date.
 #[expect(clippy::cast_precision_loss)]
-fn trend(numbers: &[f64], date: bool) -> Option<Next> {
+fn trend(numbers: &[f64], date: bool, back: bool) -> Option<Next> {
     if numbers.len() == 1 {
         let start = numbers[0];
-        return date
-            .then(|| Box::new(move |step: usize| CellValue::Number(start + step as f64)) as Next);
+        let day = if back { -1.0 } else { 1.0 };
+        return date.then(|| {
+            Box::new(move |step: usize| CellValue::Number(start + day * step as f64)) as Next
+        });
     }
     let n = numbers.len() as f64;
     let mean_x = (n - 1.0) / 2.0;
@@ -214,7 +249,7 @@ fn trend(numbers: &[f64], date: bool) -> Option<Next> {
 
 /// Month and day names: every seed from one list, stepping by the distance
 /// between the last two.
-fn listed(texts: &[String]) -> Option<Next> {
+fn listed(texts: &[String], back: bool) -> Option<Next> {
     let list = LISTS.iter().find(|list| {
         texts.iter().all(|t| {
             list.iter()
@@ -230,6 +265,7 @@ fn listed(texts: &[String]) -> Option<Next> {
     let len = list.len();
     let latest = positions[positions.len() - 1];
     let step = match positions.len() {
+        1 if back => len - 1,
         1 => 1,
         k => (latest + len - positions[k - 2]) % len,
     };
@@ -252,7 +288,7 @@ fn listed(texts: &[String]) -> Option<Next> {
 
 /// Text around a number: the last run of digits counts on, the text around it
 /// stays, and leading zeros keep its width.
-fn counted(texts: &[String]) -> Option<Next> {
+fn counted(texts: &[String], back: bool) -> Option<Next> {
     let parts: Vec<(String, u64, usize, String)> = texts
         .iter()
         .map(|t| {
@@ -280,6 +316,7 @@ fn counted(texts: &[String]) -> Option<Next> {
     }
     let last = i128::from(parts[parts.len() - 1].1);
     let step = match parts.len() {
+        1 if back => -1,
         1 => 1,
         k => last - i128::from(parts[k - 2].1),
     };

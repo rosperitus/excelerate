@@ -301,3 +301,96 @@ fn a_formula_the_format_cannot_hold_is_written_as_its_value() {
         Some(CellValue::Number(5.0))
     );
 }
+
+#[test]
+fn the_normal_font_survives_a_round_trip() {
+    // Column widths are counted in digits of this font, so losing it to the
+    // Calibri 11 default made every column of an Arial 8 book wider.
+    let mut normal = Style::default();
+    normal.font.name = "Arial".to_owned();
+    normal.font.set_size_points(8.0);
+    let mut book = Spreadsheet::empty();
+    book.styles = excelerate::style::StyleTable::from_styles(vec![normal.clone()]);
+    let mut sheet = excelerate::model::Worksheet::new("S").unwrap();
+    sheet.set(CellRef::parse("A1").unwrap(), 1.0);
+    book.add_sheet(sheet).unwrap();
+    let back = rewrite(&book);
+    let font = &back
+        .styles
+        .get(excelerate::style::StyleId::default())
+        .unwrap()
+        .font;
+    assert_eq!((font.name.as_str(), font.size_points()), ("Arial", 8.0));
+    assert_eq!(style(&back, "A1").font, normal.font);
+}
+
+#[test]
+fn outline_levels_and_summary_placement_survive_a_round_trip() {
+    use excelerate::{Col, Row};
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.properties.summary_below = false;
+    sheet.properties.summary_right = false;
+    for r in 1..=3 {
+        let row = sheet.rows.entry(Row::new(r).unwrap()).or_default();
+        row.outline_level = 2;
+        row.hidden = true;
+    }
+    sheet
+        .rows
+        .entry(Row::new(0).unwrap())
+        .or_default()
+        .collapsed = true;
+    let run = sheet.column_entry(Col::new(2).unwrap());
+    run.outline_level = 1;
+    run.collapsed = true;
+
+    let back = rewrite(&book);
+    let sheet = &back.sheets()[0];
+    assert!(!sheet.properties.summary_below);
+    assert!(!sheet.properties.summary_right);
+    assert_eq!(sheet.row_outline_level(Row::new(2).unwrap()), 2);
+    assert!(sheet.rows[&Row::new(0).unwrap()].collapsed);
+    let run = sheet.column_run(Col::new(2).unwrap()).unwrap();
+    assert_eq!((run.outline_level, run.collapsed), (1, true));
+}
+
+#[test]
+fn frozen_panes_selections_and_window_switches_survive_a_round_trip() {
+    use excelerate::Range;
+    use excelerate::model::{Pane, PanePosition, PaneState, Selection};
+    let mut book = Spreadsheet::new();
+    let view = &mut book.sheet_mut(0).unwrap().view;
+    view.pane = Some(Pane {
+        x_split: 4,
+        y_split: 11,
+        top_left_cell: Some(CellRef::parse("E1459").unwrap()),
+        active_pane: PanePosition::BottomRight,
+        state: PaneState::Frozen,
+    });
+    // Gridlines are bit 1 of `WINDOW2`; the writer used to clear bit 5, the
+    // default gridline colour, and leave the grid on.
+    view.show_grid_lines = false;
+    view.show_zeros = false;
+    view.top_left_cell = Some(CellRef::parse("B3").unwrap());
+    // A selection per pane; ONLYOFFICE reads the one in the active pane off
+    // the source workbook as E12:G12 with the cursor on E12.
+    view.selections = vec![
+        Selection {
+            pane: Some(PanePosition::BottomLeft),
+            active_cell: Some(CellRef::parse("A12").unwrap()),
+            sqref: vec![Range::parse("A12").unwrap()],
+        },
+        Selection {
+            pane: Some(PanePosition::BottomRight),
+            active_cell: Some(CellRef::parse("F12").unwrap()),
+            sqref: vec![
+                Range::parse("B20").unwrap(),
+                Range::parse("E12:G12").unwrap(),
+            ],
+        },
+    ];
+
+    let expected = book.sheets()[0].view.clone();
+    assert_eq!(rewrite(&book).sheets()[0].view, expected);
+}

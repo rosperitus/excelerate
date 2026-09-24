@@ -2476,21 +2476,35 @@ impl Book {
     /// Continues what the first cells of a range start, as dragging the fill
     /// handle does: `1, 2` goes on `3, 4`, `Кв1` to `Кв2`, `Jan` to `Feb`, a
     /// date by a day; anything else repeats. `"down"` fills each column,
-    /// `"right"` each row.
+    /// `"right"` each row; `"up"` and `"left"` run the series back from the
+    /// last cells.
     #[wasm_bindgen(js_name = fillSeries)]
     pub fn fill_series(
         &mut self,
         sheet: usize,
         range: &str,
-        #[wasm_bindgen(unchecked_param_type = "\"down\" | \"right\"")] direction: &str,
+        #[wasm_bindgen(unchecked_param_type = "\"down\" | \"right\" | \"up\" | \"left\"")]
+        direction: &str,
     ) -> Result<(), JsError> {
+        use crate::edit::Axis;
         let area = Range::parse(range).map_err(js)?;
-        let axis = match direction {
-            "down" => crate::edit::Axis::Rows,
-            "right" => crate::edit::Axis::Columns,
-            _ => return Err(JsError::new(r#"a fill goes "down" or "right""#)),
+        let (axis, back) = match direction {
+            "down" => (Axis::Rows, false),
+            "right" => (Axis::Columns, false),
+            "up" => (Axis::Rows, true),
+            "left" => (Axis::Columns, true),
+            _ => {
+                return Err(JsError::new(
+                    r#"a fill goes "down", "right", "up" or "left""#,
+                ));
+            }
         };
-        crate::edit::fill_series(&mut self.book, sheet, area, axis).map_err(js)?;
+        if back {
+            crate::edit::fill_series_back(&mut self.book, sheet, area, axis)
+        } else {
+            crate::edit::fill_series(&mut self.book, sheet, area, axis)
+        }
+        .map_err(js)?;
         self.forget_dependencies();
         Ok(())
     }

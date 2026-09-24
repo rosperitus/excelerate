@@ -33,7 +33,7 @@ use super::xls_formula::{self, Compiled, Links, Place};
 use crate::error::{Error, Result};
 use crate::formula::eval::{Engine, Origin};
 use crate::formula::value::Value as FormulaValue;
-use crate::model::{CellValue, Spreadsheet, Worksheet};
+use crate::model::{CellValue, PanePosition, PaneState, SheetView, Spreadsheet, Worksheet};
 use crate::shared::date::Epoch;
 use crate::shared::palette;
 use crate::style::{
@@ -409,6 +409,62 @@ fn string_of(value: &CellValue) -> Option<String> {
     }
 }
 
+/// COLINFO: width, visibility and outline of each run of columns.
+fn column_records(out: &mut Vec<u8>, sheet: &Worksheet) {
+    for run in &sheet.columns {
+        let mut data = Vec::with_capacity(12);
+        data.extend_from_slice(&run.first.index_u16().to_le_bytes());
+        data.extend_from_slice(&run.last.index_u16().to_le_bytes());
+        // The width is in 256ths of a character.
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a column width is a small positive number"
+        )]
+        let width = (run.width.unwrap_or(8.43) * 256.0).round().max(0.0) as u32;
+        data.extend_from_slice(&u16::try_from(width).unwrap_or(u16::MAX).to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        let options = u16::from(run.hidden)
+            | (u16::from(run.outline_level.min(7)) << 8)
+            | (u16::from(run.collapsed) << 12);
+        data.extend_from_slice(&options.to_le_bytes());
+        data.extend_from_slice(&0u16.to_le_bytes());
+        record(out, 0x007D, &data);
+    }
+}
+
+/// GUTS and WSBOOL: the outline depths and where group summaries sit.
+fn outline_records(out: &mut Vec<u8>, sheet: &Worksheet) {
+    // GUTS: without the outline depths Excel draws no outline bar; the
+    // widths are left for it to work out.
+    let depth = |levels: &mut dyn Iterator<Item = u8>| {
+        levels
+            .max()
+            .filter(|&l| l > 0)
+            .map_or(0, |l| u16::from(l) + 1)
+    };
+    let mut guts = [0u8; 8];
+    guts[4..6]
+        .copy_from_slice(&depth(&mut sheet.rows.values().map(|r| r.outline_level)).to_le_bytes());
+    guts[6..8]
+        .copy_from_slice(&depth(&mut sheet.columns.iter().map(|c| c.outline_level)).to_le_bytes());
+    record(out, 0x0080, &guts);
+
+    // WSBOOL: automatic page breaks and the outline symbols shown, and where
+    // group summaries sit.
+    let mut wsbool = 0x0401u16;
+    if sheet.properties.summary_below {
+        wsbool |= 0x40;
+    }
+    if sheet.properties.summary_right {
+        wsbool |= 0x80;
+    }
+    if sheet.properties.fit_to_page {
+        wsbool |= 0x100;
+    }
+    record(out, 0x0081, &wsbool.to_le_bytes());
+}
+
 /// One sheet substream.
 fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
     let mut out = Vec::new();
@@ -437,25 +493,11 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
     dimension.extend_from_slice(&u16::try_from(first_col).unwrap_or(0).to_le_bytes());
     dimension.extend_from_slice(&u16::try_from(last_col).unwrap_or(0).to_le_bytes());
     dimension.extend_from_slice(&0u16.to_le_bytes());
+    outline_records(&mut out, sheet);
+
     record(&mut out, 0x0200, &dimension);
 
-    for run in &sheet.columns {
-        let mut data = Vec::with_capacity(12);
-        data.extend_from_slice(&run.first.index_u16().to_le_bytes());
-        data.extend_from_slice(&run.last.index_u16().to_le_bytes());
-        // The width is in 256ths of a character.
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a column width is a small positive number"
-        )]
-        let width = (run.width.unwrap_or(8.43) * 256.0).round().max(0.0) as u32;
-        data.extend_from_slice(&u16::try_from(width).unwrap_or(u16::MAX).to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        data.extend_from_slice(&u16::from(run.hidden).to_le_bytes());
-        data.extend_from_slice(&0u16.to_le_bytes());
-        record(&mut out, 0x007D, &data);
-    }
+    column_records(&mut out, sheet);
 
     for (row, properties) in &sheet.rows {
         let mut data = Vec::with_capacity(16);
@@ -481,6 +523,9 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
         if properties.height.is_some() {
             flags |= 0x40;
         }
+        if properties.collapsed {
+            flags |= 0x10;
+        }
         flags |= u32::from(properties.outline_level) & 0x07;
         data.extend_from_slice(&flags.to_le_bytes());
         record(&mut out, 0x0208, &data);
@@ -503,22 +548,108 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
         record(&mut out, 0x00E5, &data);
     }
 
-    // Without a window record Excel opens the sheet with no gridlines and no
-    // headings, which is not what the model said.
-    let mut window = 0x06B6u16;
-    if !sheet.view.show_grid_lines {
-        window &= !0x0020;
+    window(&mut out, &sheet.view);
+
+    record(&mut out, 0x000A, &[]);
+    out
+}
+
+/// `WINDOW2`, and `PANE` after it when the sheet is split. Without the window
+/// record Excel opens the sheet with no gridlines and no headings, which is
+/// not what the model said.
+fn window(out: &mut Vec<u8>, view: &SheetView) {
+    // Default gridline colour, outline symbols, selected, in page view off.
+    let mut flags = 0x06A0u16;
+    for (on, bit) in [
+        (view.show_grid_lines, 0x0002),
+        (view.show_row_col_headers, 0x0004),
+        (view.show_zeros, 0x0010),
+        (view.right_to_left, 0x0040),
+    ] {
+        if on {
+            flags |= bit;
+        }
     }
-    let mut data = window.to_le_bytes().to_vec();
-    data.extend_from_slice(&[0, 0, 0, 0]);
+    match view.pane.as_ref().map(|pane| pane.state) {
+        Some(PaneState::Frozen) => flags |= 0x0108,
+        Some(PaneState::FrozenSplit) => flags |= 0x0008,
+        Some(PaneState::Split) | None => {}
+    }
+    let (top, left) = view
+        .top_left_cell
+        .map_or((0, 0), |at| (at.row.index_u16(), at.col.index_u16()));
+    let mut data = flags.to_le_bytes().to_vec();
+    data.extend_from_slice(&top.to_le_bytes());
+    data.extend_from_slice(&left.to_le_bytes());
     data.extend_from_slice(&0x0000_0040u32.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
-    record(&mut out, 0x023E, &data);
+    record(out, 0x023E, &data);
 
-    record(&mut out, 0x000A, &[]);
-    out
+    let Some(pane) = &view.pane else {
+        selections(out, view);
+        return;
+    };
+    let (top, left) = pane
+        .top_left_cell
+        .map_or((0, 0), |at| (at.row.index_u16(), at.col.index_u16()));
+    let mut data = u16::try_from(pane.x_split)
+        .unwrap_or(u16::MAX)
+        .to_le_bytes()
+        .to_vec();
+    data.extend_from_slice(
+        &u16::try_from(pane.y_split)
+            .unwrap_or(u16::MAX)
+            .to_le_bytes(),
+    );
+    data.extend_from_slice(&top.to_le_bytes());
+    data.extend_from_slice(&left.to_le_bytes());
+    data.push(pane_number(pane.active_pane));
+    data.push(0);
+    record(out, 0x0041, &data);
+    selections(out, view);
+}
+
+/// One `SELECTION` per selection the model holds. BIFF8 has one byte for a
+/// column, so an area past column IV is cut at it.
+fn selections(out: &mut Vec<u8>, view: &SheetView) {
+    for selection in &view.selections {
+        let areas = &selection.sqref[..selection.sqref.len().min(1000)];
+        let (row, col) = selection
+            .active_cell
+            .map_or((0, 0), |at| (at.row.index_u16(), at.col.index_u16()));
+        let mut data = vec![pane_number(selection.pane.unwrap_or_default())];
+        data.extend_from_slice(&row.to_le_bytes());
+        data.extend_from_slice(&col.to_le_bytes());
+        // Which area holds the cursor: the first one that does.
+        let holding = selection
+            .active_cell
+            .and_then(|at| areas.iter().position(|r| r.contains(at)));
+        data.extend_from_slice(
+            &u16::try_from(holding.unwrap_or(0))
+                .unwrap_or(0)
+                .to_le_bytes(),
+        );
+        data.extend_from_slice(&u16::try_from(areas.len()).unwrap_or(0).to_le_bytes());
+        for range in areas {
+            data.extend_from_slice(&range.start.row.index_u16().to_le_bytes());
+            data.extend_from_slice(&range.end.row.index_u16().to_le_bytes());
+            data.push(u8::try_from(range.start.col.index_u16()).unwrap_or(u8::MAX));
+            data.push(u8::try_from(range.end.col.index_u16()).unwrap_or(u8::MAX));
+        }
+        record(out, 0x001D, &data);
+    }
+}
+
+/// The number BIFF gives a pane.
+const fn pane_number(pane: PanePosition) -> u8 {
+    match pane {
+        PanePosition::BottomRight => 0,
+        PanePosition::TopRight => 1,
+        PanePosition::BottomLeft => 2,
+        PanePosition::TopLeft => 3,
+    }
 }
 
 /// Every cell of the sheet, in the order the records go out.
