@@ -231,8 +231,9 @@ struct Reader<'a> {
     forced_codepage: Option<u16>,
     book: Spreadsheet,
     styles: StyleTable,
-    /// The shared string table, indexed by `LABELSST`.
-    strings: Vec<String>,
+    /// The shared string table, indexed by `LABELSST`. Each entry is the
+    /// value a cell gets, so cells share one `Arc<str>` instead of copying.
+    strings: Vec<CellValue>,
     /// Format code by its index, for the codes the file spells out.
     formats: HashMap<u16, String>,
     /// What each `XF` record says, in record order.
@@ -450,7 +451,7 @@ impl<'a> Reader<'a> {
 
     /// The shared string table, which is one record plus however many
     /// `CONTINUE` records it needs. Returns where the reader should carry on.
-    fn shared_strings(&self, sst: &Record<'_>, mut at: usize) -> (Vec<String>, usize) {
+    fn shared_strings(&self, sst: &Record<'_>, mut at: usize) -> (Vec<CellValue>, usize) {
         let unique = u32_at(sst.data, 4) as usize;
         let mut data = sst.data[8.min(sst.data.len())..].to_vec();
         // Where each continuation begins: a string may be cut in half there,
@@ -474,7 +475,7 @@ impl<'a> Reader<'a> {
             let Some((text, next)) = sst_string(&data, pos, &breaks) else {
                 break;
             };
-            strings.push(text);
+            strings.push(CellValue::text(text));
             pos = next;
         }
         (strings, at)
@@ -631,8 +632,9 @@ impl<'a> Reader<'a> {
             }
             record::LABELSST => {
                 let index = u32_at(data, 6) as usize;
-                let text = self.strings.get(index).cloned().unwrap_or_default();
-                self.put(sheet, r, c, u16_at(data, 4), CellValue::text(text));
+                let text = self.strings.get(index).cloned();
+                let text = text.unwrap_or_else(|| CellValue::text(""));
+                self.put(sheet, r, c, u16_at(data, 4), text);
             }
             record::BOOLERR => {
                 let value = data.get(6).copied().unwrap_or(0);
@@ -1436,14 +1438,17 @@ fn sst_string(data: &[u8], at: usize, breaks: &[usize]) -> Option<(String, usize
 
     let mut wide = flags & 0x01 != 0;
     let mut units = Vec::with_capacity(count.min(1 << 16));
+    // The string is read forwards a byte at a time, so the next break to
+    // watch for only moves on: one search per string, not one per byte.
+    let mut next = breaks.partition_point(|&b| b < pos);
     for _ in 0..count {
         // A break right where a character starts sets the width of that
         // character; one inside it sets the width of the next.
-        skip_break(data, &mut pos, breaks, &mut wide);
+        skip_break(data, &mut pos, breaks, &mut next, &mut wide);
         let here = wide;
-        let low = take_byte(data, &mut pos, breaks, &mut wide)?;
+        let low = take_byte(data, &mut pos, breaks, &mut next, &mut wide)?;
         let high = if here {
-            take_byte(data, &mut pos, breaks, &mut wide)?
+            take_byte(data, &mut pos, breaks, &mut next, &mut wide)?
         } else {
             0
         };
@@ -1459,19 +1464,29 @@ fn sst_string(data: &[u8], at: usize, breaks: &[usize]) -> Option<(String, usize
 }
 
 /// Steps over the flag byte a `CONTINUE` record opens with, taking the width
-/// from it.
-fn skip_break(data: &[u8], pos: &mut usize, breaks: &[usize], wide: &mut bool) {
-    // The breaks are in stream order, and this is asked for every byte of
-    // every string: a linear scan made a 30 MB workbook take seconds.
-    if breaks.binary_search(pos).is_ok() {
+/// from it. `next` is the first break not yet behind `pos`.
+fn skip_break(data: &[u8], pos: &mut usize, breaks: &[usize], next: &mut usize, wide: &mut bool) {
+    // An empty `CONTINUE` leaves two breaks at one place; the loop steps
+    // past whichever are already behind.
+    while breaks.get(*next).is_some_and(|&b| b < *pos) {
+        *next += 1;
+    }
+    if breaks.get(*next) == Some(pos) {
         *wide = data.get(*pos).copied().unwrap_or(0) & 1 != 0;
         *pos += 1;
+        *next += 1;
     }
 }
 
 /// One byte of a shared string, stepping over a flag byte first.
-fn take_byte(data: &[u8], pos: &mut usize, breaks: &[usize], wide: &mut bool) -> Option<u8> {
-    skip_break(data, pos, breaks, wide);
+fn take_byte(
+    data: &[u8],
+    pos: &mut usize,
+    breaks: &[usize],
+    next: &mut usize,
+    wide: &mut bool,
+) -> Option<u8> {
+    skip_break(data, pos, breaks, next, wide);
     let byte = data.get(*pos).copied()?;
     *pos += 1;
     Some(byte)
@@ -1555,6 +1570,22 @@ mod tests {
         data.extend_from_slice(&[0x00, b'x']);
         let (text, _) = sst_string(&data, 0, &[boundary]).expect("the string parses");
         assert_eq!(text, "абвx");
+    }
+
+    /// Breaks are tracked forwards, not searched: an empty `CONTINUE` puts
+    /// two at one place, and the one after it must still be seen.
+    #[test]
+    fn a_shared_string_crosses_an_empty_continuation_and_another_break() {
+        // "ab" narrow, an empty record, then a wide "в", then narrow "c".
+        let mut data = vec![4, 0, 0x00, b'a', b'b'];
+        let first = data.len();
+        data.extend_from_slice(&[0x01, 0x32, 0x04]);
+        let second = data.len();
+        data.extend_from_slice(&[0x00, b'c']);
+        let breaks = [first, first, second];
+        let (text, end) = sst_string(&data, 0, &breaks).expect("the string parses");
+        assert_eq!(text, "abвc");
+        assert_eq!(end, data.len());
     }
 
     fn push(out: &mut Vec<u8>, id: u16, data: &[u8]) {
