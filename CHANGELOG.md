@@ -8,6 +8,15 @@
   sheet keeps instead of walking every row: 23 ms to 2 us on a million rows.
   It walks only after a cell in an edge column has been removed.
 
+### Fixed
+
+- xlsx writer: a row with a height or hidden but no cells is written in its
+  place among the others. Before, such rows came after every row with cells,
+  out of the ascending order the format requires, and each one searched every
+  cell of the sheet: a sheet of 4 million cells and 330 000 row records took
+  17 minutes to write and now takes 3 seconds. Array formulas and
+  external hyperlinks are no longer searched for each cell or link either.
+
 ## 0.12.2
 
 ### Changed
