@@ -56,8 +56,9 @@ book.sheetVisibility(0);    // "visible" | "hidden" | "veryHidden"
 call takes is the sheet's position in the workbook, and skipping the hidden
 ones would shift it.
 
-`usedRangeHint` answers the same question as `usedRange` without walking the
-cells - it repeats what the file says about its own shape - and `columnWidth`
+`usedRangeHint` answers the same question as `usedRange` without ever walking
+the rows (`usedRange` walks them only after a cell in an edge column was
+removed, and the hint may then be wider), and `columnWidth`
 and `rowHeight` come back `undefined` where the sheet leaves them to the
 default.
 

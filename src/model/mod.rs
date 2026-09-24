@@ -1518,10 +1518,14 @@ pub struct Worksheet {
     /// The columns cells have been written in: the leftmost and the rightmost
     /// ever seen, kept rather than searched.
     ///
-    /// An upper bound, not the exact span: a removed cell does not narrow it,
-    /// because narrowing means the walk this field exists to avoid. See
-    /// [`Worksheet::dimension_hint`].
+    /// Exact until `span_stale` is set, an upper bound after: a removed cell
+    /// does not narrow it, because narrowing means the walk this field exists
+    /// to avoid. See [`Worksheet::dimension_hint`].
     col_span: Option<(Col, Col)>,
+    /// Set when a cell in an edge column of `col_span` is removed: the span
+    /// may be wider than the cells from then on, and [`Worksheet::dimension`]
+    /// walks the rows instead of trusting it.
+    span_stale: bool,
     /// Merged areas.
     pub merges: Vec<Range>,
     /// Areas of the array formulas entered with Ctrl+Shift+Enter (and the
@@ -1752,6 +1756,15 @@ impl Worksheet {
             cells.remove(&at.row);
         }
         self.count -= 1;
+        if self.count == 0 {
+            self.col_span = None;
+            self.span_stale = false;
+        } else if self
+            .col_span
+            .is_some_and(|(lo, hi)| at.col == lo || at.col == hi)
+        {
+            self.span_stale = true;
+        }
         Some(cell)
     }
 
@@ -1902,11 +1915,10 @@ impl Worksheet {
     /// sheet, without walking the rows.
     ///
     /// Rows are exact; columns are an upper bound, because a removed cell
-    /// never narrows the span. Callers that only size a scrollbar or clip a
-    /// viewport want this one: [`Worksheet::dimension`] walks every row of the
-    /// sheet, which on a sheet of seven hundred thousand rows is some twenty
-    /// milliseconds, and it is paid again for every sheet the user switches
-    /// to.
+    /// never narrows the span. Until a cell in the leftmost or the rightmost
+    /// column is removed the two are the same, and [`Worksheet::dimension`]
+    /// answers from here too; after that it walks every row, which on a sheet
+    /// of seven hundred thousand rows is some twenty milliseconds.
     ///
     /// ```
     /// use excelerate::model::Worksheet;
@@ -1938,8 +1950,15 @@ impl Worksheet {
 
     /// The smallest rectangle covering every non-empty cell, or `None` for an
     /// empty sheet.
+    ///
+    /// Answered without a walk unless a cell in an edge column has been
+    /// removed since the sheet was read: only then can the span kept for
+    /// [`Worksheet::dimension_hint`] be too wide.
     #[must_use]
     pub fn dimension(&self) -> Option<Range> {
+        if !self.span_stale {
+            return self.dimension_hint();
+        }
         let (&first_row, _) = self.cells.first_key_value()?;
         let (&last_row, _) = self.cells.last_key_value()?;
         // Rows are sorted by column, so each gives its extremes at its ends:
@@ -2286,6 +2305,27 @@ mod tests {
             Worksheet::new("'quoted'").is_err(),
             "apostrophe at the edges"
         );
+    }
+
+    /// `dimension` trusts the kept column span until an edge column loses a
+    /// cell; this pins the cases where trusting it would be wrong or needless.
+    #[test]
+    fn the_used_range_stays_exact_through_removals() {
+        let at = |a: &str| CellRef::parse(a).expect("a valid reference");
+        let range = |a: &str| Range::parse(a).expect("a valid range");
+        let mut sheet = Worksheet::new("S").expect("a valid title");
+        for a in ["B2", "C5", "E3"] {
+            sheet.set(at(a), 1.0);
+        }
+        sheet.remove(at("C5"));
+        assert_eq!(sheet.dimension(), Some(range("B2:E3")), "an inner column");
+        sheet.remove(at("E3"));
+        assert_eq!(sheet.dimension(), Some(range("B2:B2")), "an edge column");
+        sheet.remove(at("B2"));
+        assert_eq!(sheet.dimension(), None, "emptied");
+        sheet.set(at("D7"), 1.0);
+        assert_eq!(sheet.dimension(), Some(range("D7:D7")), "filled again");
+        assert_eq!(sheet.dimension_hint(), sheet.dimension());
     }
 
     #[test]

@@ -79,7 +79,7 @@ on Node 22.6+, no build step and no separate install.
 | `sheetVisibility(sheet)` | `"visible"`, `"hidden"` or `"veryHidden"` |
 | `mergedRanges(sheet)` | the sheet's merged areas as `"A1:C1"` strings |
 | `mergedRangesAt(sheet)` | the same areas as one `Uint32Array`, four numbers each: `[r1, c1, r2, c2]` |
-| `usedRangeHint(sheet)` | the used range as the file states it, without walking the cells |
+| `usedRangeHint(sheet)` | the used range without ever walking the rows; columns may be wider after a removal |
 | `columnWidth(sheet, column)` / `rowHeight(sheet, row)` | the size the sheet gives them, `undefined` when it leaves it to the default |
 | `setColumnWidth` / `setRowHeight` / `setColumnHidden` / `setRowHidden` | write those; `undefined` for a size gives it back to the default |
 | `setSheetVisibility(sheet, state)` | `"visible"`, `"hidden"` or `"veryHidden"` |
