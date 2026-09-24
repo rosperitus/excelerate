@@ -91,7 +91,7 @@ class Book {
   removeSheet(sheet: number): void;               // references to it become #REF!
   cellCount(sheet?: number | null): number;
   usedRange(sheet: number): string | undefined;   // "A1:D9", by walking the cells
-  usedRangeHint(sheet: number): string | undefined; // the same, as the file states it
+  usedRangeHint(sheet: number): string | undefined; // the same, never walking; columns may be wider after a removal
 
   // Cells, by address
   get(sheet: number, address: string): CellValue;

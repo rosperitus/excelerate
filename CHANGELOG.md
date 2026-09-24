@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `Worksheet::dimension` (JS `usedRange`) answers from the column span the
+  sheet keeps instead of walking every row: 23 ms to 2 us on a million rows.
+  It walks only after a cell in an edge column has been removed.
+
 ## 0.12.2
 
 ### Changed

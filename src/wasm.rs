@@ -1229,12 +1229,12 @@ impl Book {
         String::from_utf8(out).map_err(js)
     }
 
-    /// The used range of a sheet as `"A1:D20"`, taken from what the file says
-    /// rather than from walking the cells; `undefined` when it says nothing.
+    /// The used range of a sheet as `"A1:D20"` without walking the rows;
+    /// `undefined` for an empty sheet.
     ///
-    /// A reader that only needs the shape of a sheet pays nothing for it;
-    /// `usedRange` walks every cell and answers for a sheet built in memory
-    /// too, where the file has nothing to say.
+    /// Rows are exact, columns an upper bound: removing a cell never narrows
+    /// them. `usedRange` answers the same until a cell in an edge column is
+    /// removed, and walks the rows after that to give the exact rectangle.
     #[wasm_bindgen(js_name = usedRangeHint)]
     pub fn used_range_hint(&self, sheet: usize) -> Result<Option<String>, JsError> {
         Ok(self
