@@ -2818,7 +2818,7 @@ fn field(object: &JsValue, key: &str) -> Option<JsValue> {
     (!value.is_undefined()).then_some(value)
 }
 
-/// A colour as the JS side spells it: `#AARRGGBB`, `indexed:N`, `theme:N` with
+/// A colour as the JS side spells it: `#AARRGGBB` (or `#RRGGBB`), `indexed:N`, `theme:N` with
 /// an optional `@tint`, or `null` for the one the file leaves open.
 #[cfg(feature = "write")]
 fn color_from_js(value: &JsValue) -> Result<crate::style::Color, JsError> {

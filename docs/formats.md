@@ -67,9 +67,16 @@ Two deliberate calls:
 
 Reads sheets, every value type, the shared string table (including
 continuation records), the whole cell format - number format, font, fill,
-borders, alignment and protection - merges, column widths, row heights, row and column outline (levels, collapsed
-groups, whether summaries sit below and to the right) and the
-workbook epoch. Writes the same back.
+borders, alignment and protection - merges, column widths, row heights, row
+and column outline (levels, collapsed groups, whether summaries sit below and
+to the right), the sheet view (frozen or split panes, the selection of each
+pane, scroll position, the gridline, heading, zero and right-to-left
+switches) and the workbook epoch. Writes the same back.
+
+Style 0 is the workbook's Normal style, taken from the default cell format
+(XF 15). It matters beyond looks: column widths are counted in digits of its
+font, so a book in Arial 8 read as Calibri 11 would open with every column
+wider.
 
 Colours in BIFF8 are indexes into a 56-entry palette. Reading resolves them to
 RGB through the file's own palette, so a colour means the same thing once it

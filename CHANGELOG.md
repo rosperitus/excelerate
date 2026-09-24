@@ -31,8 +31,18 @@
   the last cells of each line and the series runs back from them (`1, 2`
   above goes `0, -1`, a single `Кв3` goes `Кв2`). JS: `fillSeries` with
   `"up"` or `"left"`.
+- HTML reader: column widths from `col.x` rules and row heights from `tr.x`
+  rules of a `<style>` block, the way PhpSpreadsheet sizes its export.
 
 ### Fixed
+
+- xlsx reader: a six-digit `rgb="D8D8D8"` in `styles.xml` is read as an
+  opaque colour, as Excel reads it. Before, it was dropped and the fill came
+  out blank. The JS style patch takes `#RRGGBB` for the same reason.
+- xls: row and column outline levels, collapsed groups and where summaries
+  sit (`WSBOOL`) are read and written back, with the `GUTS` record Excel needs
+  to show the outline bar. Before, a sheet with summaries above its groups
+  came back with them below, and column levels were lost.
 
 - xls reader: style 0 is the workbook's Normal style from the default cell
   format (XF 15), not the Calibri 11 default. Column widths are counted in
