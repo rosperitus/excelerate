@@ -74,11 +74,12 @@ type CellValue = number | string | boolean | null;
 type CellGrid = CellValue[][];
 type CopyOrigin = "before" | "after" | "none";   // whose formatting new rows take
 type SortKeys = (number | string)[];             // 2 = column B, "-Amount" = header, largest first
+type Progress = { stage: "reading" | "writing" | "recalculating"; done: number;
+                  total: number | null; what: string; fraction: number | null };
 
 class Book {
   constructor();
-  static fromXlsx(bytes: Uint8Array): Book;
-  static read(bytes: Uint8Array, name?: string | null, maxExpanded?: number | null): Book;
+  static read(bytes: Uint8Array, name?: string | null, maxExpanded?: number | null, onProgress?: (p: Progress) => void): Book;
   static readCsv(bytes: Uint8Array, options: CsvOptions): Book;   // shape stated, not guessed
 
   // Sheets
@@ -112,6 +113,8 @@ class Book {
   getFormattedAt(sheet: number, row: number, column: number): string;
   getRangeAt(sheet: number, row: number, column: number, rows: number, columns: number): CellGrid;
   setRangeAt(sheet: number, row: number, column: number, values: CellGrid): void;
+  getRangeStylesAt(sheet: number, row: number, column: number, rows: number, columns: number): RangeStyles;
+  setRangeStylesAt(sheet: number, row: number, column: number, styles: RangeStylesPatch): void;
   recalculateCellAt(sheet: number, row: number, column: number): boolean;
   recalculateFromAt(sheet: number, row: number, column: number): number;
 
@@ -165,7 +168,9 @@ class Book {
   imageData(sheet: number, index: number): Uint8Array;
   shapes(sheet: number): SheetShape[];
 
-  // Style, written as a patch over what the cell has
+  // Style: read whole, written as a patch over what the cell has
+  cellStyle(sheet: number, address: string): CellStyle;   // numberFormat, font, fill, borders, alignment
+  cellStyleAt(sheet: number, row: number, column: number): CellStyle;
   setCellStyle(sheet: number, address: string, patch: CellStylePatch): void;
   setCellStyleAt(sheet: number, row: number, column: number, patch: CellStylePatch): void;
   setRangeStyle(sheet: number, range: string, patch: CellStylePatch): void;
@@ -180,8 +185,7 @@ class Book {
 
   // The saved view
   sheetView(sheet: number): SheetViewInfo;
-  freezePanes(sheet: number, rows: number, columns: number): void;   // (0, 1, 0) pins the header
-  unfreezePanes(sheet: number): void;
+  freezePanes(sheet: number, rows: number, columns: number): void;   // (0, 1, 0) pins the header, (0, 0, 0) unfreezes
   setZoom(sheet: number, percent?: number): void;
   setShowGridLines(sheet: number, show: boolean, headers?: boolean): void;
 
@@ -209,18 +213,22 @@ class Book {
 
   // Calculation
   evaluate(sheet: number, address: string, formula: string): CellValue;
-  recalculate(sheet?: number | null): number;
+  recalculate(sheet?: number | null, onProgress?: (p: Progress) => void): number;
   recalculateCell(sheet: number, address: string): boolean;
   recalculateFrom(sheet: number, address: string): number;
   recalculateFromMany(sheet: number, addresses: string[]): number;
 
+  // Functions of your own, for names no built-in claims
+  registerFunction(name: string, fn: (...args: (CellValue | CellGrid)[]) => CellValue | CellGrid): void;
+  unregisterFunction(name: string): boolean;
+  registeredFunctions(): string[];
+
   // Output
-  toXlsx(): Uint8Array;
+  toXlsx(onProgress?: (p: Progress) => void): Uint8Array;
   toOds(): Uint8Array;
   toXls(): Uint8Array;
   toHtml(sheet?: number | null, fragment?: boolean | null): string;
-  toCsv(sheet: number): string;
-  toCsvWith(sheet: number, options: CsvOptions): string;   // a delimiter of your own
+  toCsv(sheet: number, options?: CsvOptions): string;   // { delimiter: ";" } for a delimiter of your own
 
   free(): void;
 }
@@ -273,6 +281,14 @@ missing sheet, a truncated package.
 - **Charts, pictures and shapes are read-only here.** `charts`, `images` and
   `shapes` describe what a sheet carries; the parts themselves travel through
   a write byte for byte.
+- **Functions of your own.** `book.registerFunction("MYTOTAL", (range) =>
+  range.flat().reduce((a, b) => a + (b ?? 0), 0))` - arguments arrive
+  evaluated, a range as a grid. A built-in name stays the built-in's, an
+  unregistered one reads `#NAME?`, and a function that throws gives
+  `#VALUE!` rather than an exception out of the formula.
+- **Progress.** `Book.read`, `toXlsx` and `recalculate` take a callback last;
+  it gets `{ stage, done, total, what, fraction }` per sheet, part or formula.
+  `total` is `null` while a read has not reached the workbook part yet.
 - **Cached results.** A formula cell read from a file carries whatever the app
   that saved it computed. Call `recalculate()` before relying on those numbers.
 

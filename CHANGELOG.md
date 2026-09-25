@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.13.0
+
+### Changed
+
+- JS bindings: `src/wasm.rs` (3200 lines) is split by topic into
+  `src/wasm/` - cells, sheet, style, objects, formulas, edit, output. The
+  string and numeric twins of each call share one body, sheet lookups and
+  the progress callback go through one helper each, and painting a cell and
+  painting a grid of styles are the same code.
+- `setRangeStyle` and `setCellStyle` work out every style before writing
+  any, as `setRangeStyles` already did: a bad patch leaves the sheet as it
+  was instead of half painted.
+- `set` and `setRange` both tell the dependency index when a formula is
+  overwritten by a value; `setRange` used to notice only new formulas.
+
+- npm docs: the README, `docs/wasm.md` and the reader's README list
+  `cellStyle`, `cellStyleAt`, `getRangeStylesAt`, `setRangeStylesAt`,
+  `recalculateCell`, the progress callback and `registerFunction`, which the
+  package had and the docs did not. The reader's README linked to an
+  unrelated unscoped `excelerate` package.
+- New TypeScript example `npm/typescript/long-operations.ts`: progress over
+  read, recalculation and write, and a function of your own.
+
+### Removed (breaking)
+
+- `Book.fromXlsx` - `Book.read` reads xlsx and every other format.
+- `toCsvWith(sheet, options)` - `toCsv(sheet, options?)` takes the options.
+- `unfreezePanes(sheet)` - `freezePanes(sheet, 0, 0)` does the same.
+
 ## 0.12.3
 
 ### Changed

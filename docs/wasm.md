@@ -46,8 +46,9 @@ book.free();     // wasm memory is not the JS heap; let it go when you are done
 
 Runnable TypeScript examples live in
 [`npm/typescript/`](../npm/typescript): building a workbook, reading any
-format, batching edits, and taking an inventory of a sheet's charts, pictures,
-shapes, tables and notes. Run them from `npm/` - `node typescript/basic.ts`
+format, batching edits, painting a report, taking an inventory of a sheet's
+charts, pictures, shapes, tables and notes, and a progress bar with a function
+of your own. Run them from `npm/` - `node typescript/basic.ts`
 on Node 22.6+, no build step and no separate install.
 
 ## The API
@@ -55,8 +56,7 @@ on Node 22.6+, no build step and no separate install.
 | Method | Does |
 |---|---|
 | `new Book()` | empty workbook with one sheet |
-| `Book.fromXlsx(bytes)` | read an xlsx package |
-| `Book.read(bytes, name?, maxExpanded?)` | read any supported format |
+| `Book.read(bytes, name?, maxExpanded?, onProgress?)` | read any supported format |
 | `sheetNames()` / `sheetIndex(name)` | sheet titles; the index of one, case-insensitively |
 | `addSheet(title)` / `renameSheet(sheet, title)` | append a sheet; rename one |
 | `activeSheet()` / `setActiveSheet(sheet)` | the tab a reader opens on |
@@ -70,7 +70,8 @@ on Node 22.6+, no build step and no separate install.
 | `getRangeStyles(sheet, range)` / `setRangeStyles(sheet, at, styles)` | a rectangle's formatting in one crossing: `{ styles, grid }`, each distinct style once and a grid of indexes into it; what `get` returns, `set` takes back |
 | `getAt` / `setAt` / `clearAt` / `getFormulaAt` / `getFormattedAt` / `cellIndentAt` | the same cell operations by 1-based row and column |
 | `getRangeAt(sheet, row, col, rows, cols)` / `setRangeAt(sheet, row, col, grid)` | a rectangle by numbers |
-| `recalculateFromAt(sheet, row, column)` | recalculate from a cell named by numbers |
+| `getRangeStylesAt` / `setRangeStylesAt` | its formatting by numbers |
+| `recalculateCellAt` / `recalculateFromAt(sheet, row, column)` | recalculate a cell, or from a cell, named by numbers |
 | `cellIndent(sheet, address)` | the cell's indent steps, 0 when it has none |
 | `rowLevel(sheet, row)` / `columnLevel(sheet, "C")` | outline depth of a row or column, 0 when ungrouped |
 | `cellBold(sheet, address)` / `cellBoldAt(sheet, row, col)` | whether the cell is bold, without building the rest of its style |
@@ -95,25 +96,28 @@ on Node 22.6+, no build step and no separate install.
 | `removeSheet(sheet)` | drop a sheet - references to it become `#REF!` |
 | `comments(sheet)` / `hyperlinks(sheet)` / `tables(sheet)` | what the sheet carries besides cells |
 | `charts(sheet)` / `shapes(sheet)` / `images(sheet)` | the drawing objects, each with its anchor; `imageData(sheet, i)` for a picture's bytes |
+| `cellStyle(sheet, address)` / `cellStyleAt` | the whole style: `numberFormat`, `font`, `fill`, `borders`, `alignment`; a colour is `#AARRGGBB`, `indexed:N`, `theme:N` or `null` |
 | `setCellStyle(sheet, address, patch)` / `setCellStyleAt` / `setRangeStyle` | paint a cell or a rectangle: number format, font, fill, borders, alignment. A patch is laid over what the cell had |
 | `setComment` / `removeComment` | put a note on a cell, take it off |
 | `setHyperlink` / `removeHyperlink` | link a cell or a block of them |
 | `addTable(sheet, name, range, headerRow?)` / `removeTable` | draw a table, the thing `Sales[Amount]` names |
 | `sheetView(sheet)` | how the sheet is frozen and shown |
-| `freezePanes(sheet, rows, columns)` / `unfreezePanes` | pin the header row and the first columns |
+| `freezePanes(sheet, rows, columns)` | pin the header row and the first columns; `(sheet, 0, 0)` unfreezes |
 | `setZoom(sheet, percent?)` / `setShowGridLines(sheet, show, headers?)` | how a reader opens it |
 | `definedNames()` / `setDefinedName(name, formula, sheet?)` / `removeDefinedName` | the names a formula can use |
 | `dataValidations(sheet)` / `conditionalFormats(sheet)` / `autoFilter(sheet)` | the rules over a sheet |
 | `pivotTables(sheet)` / `arrayFormulas(sheet)` / `externalBooks()` | pivot reports, array areas, the workbooks this one reads |
 | `protectSheet(sheet, password?)` / `unprotectSheet` / `sheetProtection(sheet)` / `verifySheetPassword` | the lock Excel offers under "Protect Sheet" - it stops editing, it does not encrypt |
 | `protectWorkbook(password?, windows?)` / `unprotectWorkbook` / `workbookProtection()` | the same for the workbook's structure |
-| `Book.readCsv(bytes, options)` / `toCsvWith(sheet, options)` | CSV with the delimiter and the rest stated rather than guessed |
+| `Book.readCsv(bytes, options)` / `toCsv(sheet, options)` | CSV with the delimiter and the rest stated rather than guessed |
 | `evaluate(sheet, address, formula)` | evaluate without storing |
-| `recalculate(sheet?)` | recompute everything, or one sheet |
+| `recalculate(sheet?, onProgress?)` | recompute everything, or one sheet |
+| `recalculateCell(sheet, address)` | recompute one formula and store its result |
 | `recalculateFrom(sheet, address)` | recompute what one edit reached |
 | `recalculateFromMany(sheet, addresses)` | same, for a batch of edits |
-| `toXlsx()` / `toOds()` / `toXls()` | the workbook as bytes |
-| `toHtml(sheet?, fragment?)` / `toCsv(sheet)` | the workbook as text |
+| `registerFunction(name, fn)` / `unregisterFunction` / `registeredFunctions()` | functions of your own for names no built-in claims |
+| `toXlsx(onProgress?)` / `toOds()` / `toXls()` | the workbook as bytes |
+| `toHtml(sheet?, fragment?)` / `toCsv(sheet, options?)` | the workbook as text |
 | `free()` | release the wasm memory it holds |
 
 Everything that writes - the setters above, the grid edits, the output methods
@@ -139,6 +143,11 @@ index in step - so a loop of edit-then-recalc does not rebuild it each time.
 - **Cross the boundary once.** `getRange`/`setRange` move a whole rectangle per
   call; a loop of `get` pays the crossing per cell. The same goes for
   formatting: `getRangeStyles` instead of `cellStyle` per cell.
+- **Progress and functions of your own.** `Book.read`, `toXlsx` and
+  `recalculate` take a callback last, called with
+  `{ stage, done, total, what, fraction }`. `registerFunction` gives a formula
+  a name no built-in claims; a function that throws reads `#VALUE!`. Both are
+  the JS face of [long operations](long-operations.md).
 - **Batch your edits.** `recalculateFromMany` runs one pass for the whole batch;
   calling `recalculateFrom` in a loop runs one per cell, and on a big book the
   difference is roughly 20x.
