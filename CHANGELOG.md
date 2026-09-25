@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `Spreadsheet::template`: the book is a template. The xlsx writer gives the
+  main part the template content type (`spreadsheetml.template.main+xml`, or
+  `ms-excel.template.macroEnabled.main+xml` with a VBA project) - Excel will
+  not open an `.xltx` written as a plain workbook - and the xlsx reader sets
+  the flag from that type, so a template opened and saved stays one.
+
+### Fixed
+
+- `SUBTOTAL` counted a nested `SUBTOTAL` or `AGGREGATE` in its references
+  again, so a grand total over group totals came out doubled. Cells whose
+  formula calls either are now left out, as Excel does; `AGGREGATE` does the
+  same with options 0 to 3 and counts them with 4 to 7.
+
 ## 0.13.0
 
 ### Fixed

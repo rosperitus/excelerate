@@ -1664,3 +1664,31 @@ fn summaries_of_a_table_in_one_formula() {
         (r#"REGEXTEST("abc","[")"#, "#VALUE!"),
     ]);
 }
+
+#[test]
+fn subtotal_passes_over_nested_subtotals() {
+    // B4 and B6 are subtotals of their groups; the grand total over the whole
+    // column must count 1 + 2 + 10 once, not the group totals on top.
+    let mut wb = Spreadsheet::empty();
+    let mut ws = Worksheet::new("S").unwrap();
+    ws.set(at("B2"), 1.0);
+    ws.set(at("B3"), 2.0);
+    ws.set(at("B4"), CellValue::formula("SUBTOTAL(9,B2:B3)"));
+    ws.set(at("B5"), 10.0);
+    ws.set(at("B6"), CellValue::formula("AGGREGATE(9,0,B5:B5)+0"));
+    wb.add_sheet(ws).unwrap();
+    let mut engine = Engine::new(&wb);
+    let origin = Origin::new(0, at("D1"));
+    let mut eval = |f: &str| engine.eval(origin, f);
+    assert_eq!(eval("SUBTOTAL(9,B2:B6)"), Value::Number(13.0));
+    assert_eq!(eval("SUBTOTAL(109,B2:B6)"), Value::Number(13.0));
+    // A single-cell reference to a subtotal is passed over as well.
+    assert_eq!(eval("SUBTOTAL(9,B4,B5)"), Value::Number(10.0));
+    // AGGREGATE leaves nested totals out with options 0 to 3 ...
+    assert_eq!(eval("AGGREGATE(9,3,B2:B6)"), Value::Number(13.0));
+    // ... and counts them with options 4 to 7.
+    assert_eq!(eval("AGGREGATE(9,4,B2:B6)"), Value::Number(26.0));
+    assert_eq!(eval("AGGREGATE(9,6,B2:B6)"), Value::Number(26.0));
+    // Plain SUM knows nothing of the rule.
+    assert_eq!(eval("SUM(B2:B6)"), Value::Number(26.0));
+}

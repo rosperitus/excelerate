@@ -338,16 +338,22 @@ const ROOT_RELS: &str = concat!(
 
 /// The content type of the workbook part. A workbook that carries a VBA
 /// project is macro-enabled, and says so here: Excel refuses to open an `.xlsm`
-/// whose main part claims to be a plain workbook, macros and all.
+/// whose main part claims to be a plain workbook, macros and all. A template
+/// is the same story for `.xltx` and `.xltm`.
 fn main_content_type(book: &Spreadsheet) -> &'static str {
     let macros = book
         .parts
         .iter()
         .any(|p| p.content_type.as_deref() == Some("application/vnd.ms-office.vbaProject"));
-    if macros {
-        "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
-    } else {
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    match (book.template, macros) {
+        (false, false) => {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+        }
+        (false, true) => "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+        (true, false) => {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"
+        }
+        (true, true) => "application/vnd.ms-excel.template.macroEnabled.main+xml",
     }
 }
 

@@ -2035,6 +2035,10 @@ pub struct Spreadsheet {
     /// The stylesheet's `<colors>`: the palette an `indexed` colour counts
     /// into, and the colours last picked in the dialog.
     pub palette: Option<String>,
+    /// Whether the book is a template (`.xltx`, `.xltm`). Only the content
+    /// type of the main part says so, and Excel will not open a template
+    /// written as a plain workbook; the xlsx reader sets it from that type.
+    pub template: bool,
 }
 
 impl Default for Spreadsheet {
@@ -2059,6 +2063,7 @@ impl Default for Spreadsheet {
             style_extensions: None,
             table_styles: None,
             palette: None,
+            template: false,
         }
     }
 }

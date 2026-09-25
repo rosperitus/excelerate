@@ -404,6 +404,56 @@ impl<'a> Engine<'a> {
         (area.start != area.end).then_some((sheet, area))
     }
 
+    /// `value`, read from the reference `expr`, with the cells whose formula
+    /// calls `SUBTOTAL` or `AGGREGATE` blanked, so that a total over totals
+    /// counts each figure once. Anything that is not a reference is returned
+    /// as it is.
+    pub(crate) fn without_totals(&mut self, origin: Origin, expr: &Expr, value: Value) -> Value {
+        let found = match expr {
+            Expr::Range { sheet, range, .. } => Some((sheet.clone(), *range)),
+            _ => self.area_of(origin, expr, 0),
+        };
+        let Some((sheet, range)) = found else {
+            return value;
+        };
+        let book = self.book;
+        let Some(ws) = self
+            .sheet_index(origin, sheet.as_deref())
+            .and_then(|i| book.sheet(i))
+        else {
+            return value;
+        };
+        let mut is_total = |at: CellRef| match ws.get(at).map(|c| &c.value) {
+            Some(CellValue::Formula { formula, .. }) => {
+                self.parsed(formula).is_some_and(|e| calls_total(&e))
+            }
+            _ => false,
+        };
+        match value {
+            // The array starts where the reference does: clipping to the used
+            // part of the sheet only pulls the far corner in.
+            Value::Array(rows) => {
+                let (top, left) = (range.start.row.index(), range.start.col.index());
+                let rows = Arc::unwrap_or_clone(rows)
+                    .into_iter()
+                    .zip(top..)
+                    .map(|(row, r)| {
+                        row.into_iter()
+                            .zip(left..)
+                            .map(|(v, c)| match (Col::new(c), Row::new(r)) {
+                                (Some(c), Some(r)) if is_total(CellRef::new(c, r)) => Value::Blank,
+                                _ => v,
+                            })
+                            .collect()
+                    })
+                    .collect();
+                Value::array(rows)
+            }
+            _ if range.start == range.end && is_total(range.start) => Value::Blank,
+            other => other,
+        }
+    }
+
     /// The value of one cell, computing its formula if it holds one.
     ///
     /// A cell holds one value. A formula that works out to an array -
@@ -1006,6 +1056,22 @@ impl<'a> Engine<'a> {
             }
         }
         Value::array(rows)
+    }
+}
+
+/// Whether a formula calls `SUBTOTAL` or `AGGREGATE` anywhere in it: Excel
+/// leaves such a cell out of another total's references, not only a cell that
+/// is the bare call.
+fn calls_total(expr: &Expr) -> bool {
+    match expr {
+        Expr::Call { name, args } => {
+            name == "SUBTOTAL" || name == "AGGREGATE" || args.iter().any(calls_total)
+        }
+        Expr::Apply { callee, args } => calls_total(callee) || args.iter().any(calls_total),
+        Expr::Unary(_, x) => calls_total(x),
+        Expr::Binary(_, a, b) => calls_total(a) || calls_total(b),
+        Expr::Array(rows) => rows.iter().flatten().any(calls_total),
+        _ => false,
     }
 }
 

@@ -118,6 +118,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
     };
 
     let mut book = Spreadsheet::empty();
+    book.template = matches!(types.get(&workbook_path), Some(t) if t.contains(".template."));
     if let Some(r) = rels.values().find(|r| r.kind.ends_with("/styles")) {
         let styles_path = resolve(base, &r.target);
         if let Ok(xml) = read_part(&mut zip, &styles_path) {

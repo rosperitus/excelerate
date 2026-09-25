@@ -1364,6 +1364,62 @@ fn a_workbook_with_macros_is_written_as_macro_enabled() {
     );
 }
 
+/// A template is told apart from a workbook only by the content type of its
+/// main part; Excel refuses an `.xltx` written as a plain workbook. The flag
+/// comes back from reading, so a template opened and saved stays one.
+#[test]
+fn a_template_is_written_and_read_back_as_a_template() {
+    use excelerate::model::{Attachment, OpaquePart};
+    let write = |book: &Spreadsheet| {
+        let mut bytes = Vec::new();
+        write_xlsx_to(book, Cursor::new(&mut bytes)).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("[Content_Types].xml").unwrap(), &mut text)
+            .unwrap();
+        (bytes, text)
+    };
+    let main = |kind: &str| format!(r#"PartName="/xl/workbook.xml" ContentType="{kind}""#);
+
+    let mut book = Spreadsheet::new();
+    assert!(!book.template);
+    let (_, text) = write(&book);
+    assert!(
+        text.contains(&main(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+        )),
+        "{text}"
+    );
+
+    book.template = true;
+    let (bytes, text) = write(&book);
+    assert!(
+        text.contains(&main(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"
+        )),
+        "{text}"
+    );
+    assert!(read_xlsx_from(Cursor::new(bytes)).unwrap().template);
+
+    book.parts.push(OpaquePart {
+        path: "xl/vbaProject.bin".to_owned(),
+        content_type: Some("application/vnd.ms-office.vbaProject".to_owned()),
+        data: vec![0xD0, 0xCF, 0x11, 0xE0],
+    });
+    book.attachments.push(Attachment {
+        kind: "http://schemas.microsoft.com/office/2006/relationships/vbaProject".to_owned(),
+        target: "xl/vbaProject.bin".to_owned(),
+    });
+    let (bytes, text) = write(&book);
+    assert!(
+        text.contains(&main(
+            "application/vnd.ms-excel.template.macroEnabled.main+xml"
+        )),
+        "{text}"
+    );
+    assert!(read_xlsx_from(Cursor::new(bytes)).unwrap().template);
+}
+
 /// `chart1.xlsx` keeps 50 differential formats in `<dxfs>` and 48 more for its
 /// slicer styles in `<extLst>`. The extension travels whole; read as the
 /// part's own, its formats were added to the book's and written out again on

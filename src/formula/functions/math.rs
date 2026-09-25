@@ -1264,9 +1264,15 @@ fn aggregate_by_code(
     };
     // Options 2, 3, 6 and 7 say to pass over errors rather than report them.
     let skip_errors = matches!(code_of(options), 2 | 3 | 6 | 7);
+    // Options 0 to 3 leave out nested SUBTOTAL and AGGREGATE cells, 4 to 7
+    // count them; SUBTOTAL comes here with 0.
+    let skip_totals = matches!(code_of(options), 0..=3);
     let mut values: Vec<Arg> = Vec::with_capacity(args.len());
     for arg in args {
-        let value = engine.eval_expr(origin, arg);
+        let mut value = engine.eval_expr(origin, arg);
+        if skip_totals {
+            value = engine.without_totals(origin, arg, value);
+        }
         if skip_errors {
             values.push(Arg {
                 value: without_errors(value),
