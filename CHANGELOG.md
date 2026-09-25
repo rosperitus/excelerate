@@ -2,6 +2,13 @@
 
 ## 0.13.0
 
+### Fixed
+
+- xlsx: a cell with `t="inlineStr"` read as empty - its text sits in
+  `<is><t>`, and the sheet reader only looked in `<v>`. 1C exports write every
+  text cell this way, so whole columns came back `null`. Runs of a rich
+  inline string are joined as plain text; `<rPh>` phonetics are skipped.
+
 ### Changed
 
 - JS bindings: `src/wasm.rs` (3200 lines) is split by topic into

@@ -1828,6 +1828,7 @@ fn read_sheet<R: Read + Seek>(
         formula: String::new(),
         in_value: false,
         in_formula: false,
+        in_phonetic: false,
         shared_index: None,
         masters: HashMap::new(),
         header_part: None,
@@ -1983,6 +1984,9 @@ struct SheetReader<'a> {
     formula: String,
     in_value: bool,
     in_formula: bool,
+    /// Inside `<rPh>` of an inline string: a reading guide for the text, not
+    /// part of it.
+    in_phonetic: bool,
     /// `si` of the shared formula this cell takes part in, and the master cell
     /// of each group: xlsx writes the text once and leaves every other cell of
     /// the run to offset it.
@@ -2037,7 +2041,7 @@ impl SheetReader<'_> {
             || self.start_filter(name, e);
     }
 
-    /// `<c>` and the two elements that live inside one.
+    /// `<c>` and the elements that live inside one.
     fn start_cell(
         &mut self,
         name: &str,
@@ -2084,6 +2088,17 @@ impl SheetReader<'_> {
             // every later run of text in the sheet - down to the formulas of
             // its data validations - be swallowed as formula source.
             "v" => self.in_value = !empty,
+            // `t="inlineStr"` keeps its text in `<is><t>`, or in a `<t>` per
+            // run of `<is><r>`; the runs are joined and their fonts dropped.
+            // ponytail: rich inline text reads as plain; parse `<r>` like the
+            // shared string pool does if a file needs the formatting.
+            "rPh" => self.in_phonetic = !empty,
+            "t" if self.at.is_some()
+                && self.kind == CellKind::InlineString
+                && !self.in_phonetic =>
+            {
+                self.in_value = !empty;
+            }
             "f" => {
                 self.in_formula = !empty;
                 self.shared_index = attr(e, "si");
@@ -2359,7 +2374,8 @@ impl SheetReader<'_> {
             return;
         }
         match name {
-            "v" => self.in_value = false,
+            "v" | "t" => self.in_value = false,
+            "rPh" => self.in_phonetic = false,
             "f" => self.in_formula = false,
             "colorScale" | "dataBar" | "iconSet" => self.in_scale = false,
             "formula" => self.in_cf_formula = false,
@@ -3172,6 +3188,40 @@ mod tests {
                 .and_then(|c| c.value.plain_text()),
             Some("one\r\ntwo".to_owned()),
             "the CR of a CRLF is the author's, not the XML's"
+        );
+    }
+
+    #[test]
+    fn an_inline_string_is_read_from_inside_the_cell() {
+        // 1C writes every text cell as `t="inlineStr"`; reading only `<v>`
+        // left a whole column of such an export empty.
+        let book = read_xlsx_from(Cursor::new(package(concat!(
+            r#"<sheetData><row r="1">"#,
+            r#"<c r="A1" t="inlineStr"><is><t xml:space="preserve">41.01 </t></is></c>"#,
+            r#"<c r="B1" t="inlineStr"><is><r><t>Bold</t></r><r><rPr><b/></rPr><t> part</t></r>"#,
+            r#"<rPh sb="0" eb="1"><t>ignored</t></rPh></is></c>"#,
+            r#"<c r="C1" t="inlineStr"><is><t/></is></c><c r="D1"><v>5</v></c>"#,
+            r#"</row></sheetData>"#
+        ))))
+        .expect("package reads");
+        let sheet = book.sheet(0).expect("one sheet");
+        let text = |a: &str| {
+            sheet
+                .get(CellRef::parse(a).unwrap())
+                .and_then(|c| c.value.plain_text())
+        };
+        assert_eq!(text("A1"), Some("41.01 ".to_owned()));
+        assert_eq!(
+            text("B1"),
+            Some("Bold part".to_owned()),
+            "runs join, phonetics do not"
+        );
+        assert_eq!(text("C1"), None);
+        assert_eq!(
+            sheet
+                .get(CellRef::parse("D1").unwrap())
+                .map(|c| c.value.clone()),
+            Some(CellValue::Number(5.0))
         );
     }
 
