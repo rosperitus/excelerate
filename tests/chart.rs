@@ -13,9 +13,10 @@ use excelerate::coordinate::{Col, Row};
 use excelerate::edit::insert_rows;
 use excelerate::model::Spreadsheet;
 use excelerate::model::chart::{
-    Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartEx, ChartText, DataSource, Dimension,
-    DimensionRole, ExSeries, Grouping, LegendPosition, Marker, Plot, PlotKind, Series,
-    SeriesLayout, Title,
+    Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartColor, ChartEx, ChartText, ColorBase,
+    ColorTransform, DataLabels, DataSource, Dimension, DimensionRole, ExSeries, Fill, Grouping,
+    LabelPosition, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, Series,
+    SeriesLayout, ShapeFormat, Title,
 };
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
@@ -96,8 +97,12 @@ fn a_combination_chart_is_read_whole() {
         panic!("dates are numbers");
     };
     assert_eq!(format_code.as_deref(), Some("m/d/yyyy"));
-    // The fill is not modelled, but it is carried in place.
-    assert!(total.markup.before_data.contains("00B150"));
+    // The fill is modelled; what the model does not name is carried in place.
+    assert_eq!(
+        total.format.as_ref().unwrap().fill,
+        Some(Fill::Solid(ChartColor::rgb(0x00_B150)))
+    );
+    assert!(total.markup.after_format.contains("invertIfNegative"));
 
     // Each plot has its own pair of axes, and each id a plot names exists.
     assert_eq!(chart.axes.len(), 4);
@@ -517,4 +522,267 @@ fn a_funnel_made_in_code_is_written() {
         again.sheet(0).unwrap().extended_charts,
         sheet.extended_charts
     );
+}
+
+/// The chart whose part is `path`.
+fn chart_at<'a>(book: &'a Spreadsheet, path: &str) -> &'a Chart {
+    book.sheets()
+        .iter()
+        .flat_map(|s| &s.charts)
+        .find(|c| c.origin.as_ref().is_some_and(|o| o.part() == path))
+        .unwrap_or_else(|| panic!("a chart in {path}"))
+}
+
+fn chart_at_mut<'a>(book: &'a mut Spreadsheet, path: &str) -> &'a mut Chart {
+    let sheet = (0..book.sheets().len())
+        .find(|&i| {
+            book.sheet(i)
+                .unwrap()
+                .charts
+                .iter()
+                .any(|c| chart_part(c) == path)
+        })
+        .unwrap_or_else(|| panic!("a chart in {path}"));
+    book.sheet_mut(sheet)
+        .unwrap()
+        .charts
+        .iter_mut()
+        .find(|c| chart_part(c) == path)
+        .unwrap()
+}
+
+fn text_of(book: &Spreadsheet, path: &str) -> String {
+    String::from_utf8(part(book, path).to_vec()).unwrap()
+}
+
+#[test]
+fn series_formatting_and_labels_are_read() {
+    let book = open("chart2.xlsx");
+    let chart = &book.sheet(0).unwrap().charts[0];
+    let series = &chart.plots[1].series;
+    assert_eq!(
+        series[0].format.as_ref().unwrap().fill,
+        Some(Fill::Solid(ChartColor::rgb(0xFF_C000)))
+    );
+    // The third series is an invisible spacer stacked on the second.
+    let spacer = &series[1];
+    assert_eq!(spacer.format.as_ref().unwrap().fill, Some(Fill::None));
+    assert!(spacer.labels.as_ref().unwrap().deleted);
+    let plot_labels = chart.plots[0].labels.as_ref().unwrap();
+    assert!(!plot_labels.deleted && !plot_labels.show_value && !plot_labels.show_percent);
+
+    let book = open("chart1.xlsx");
+    // A pie that gives each slice its colour.
+    let pie = &chart_at(&book, "xl/charts/chart4.xml").plots[0];
+    assert!(matches!(pie.kind, PlotKind::Pie { .. }));
+    let points = &pie.series[0].data_points;
+    assert_eq!(
+        points.iter().map(|p| p.index).collect::<Vec<_>>(),
+        [0, 1, 2, 3, 4]
+    );
+    let slice = points[1].format.as_ref().unwrap();
+    assert_eq!(slice.fill, Some(Fill::Solid(ChartColor::rgb(0x66_FFFF))));
+    assert_eq!(
+        slice.line,
+        Some(LineFormat {
+            fill: Some(Fill::None),
+            width: Some(19050)
+        })
+    );
+    // A gradient is not described, but it is known to be there.
+    assert_eq!(points[0].format.as_ref().unwrap().fill, Some(Fill::Other));
+    assert!(pie.labels.is_some());
+
+    // A dashed line with no markers.
+    let line = &chart_at(&book, "xl/charts/chart2.xml").plots;
+    let planned = line
+        .iter()
+        .flat_map(|p| &p.series)
+        .find(|s| s.name.as_ref().and_then(ChartText::shown) == Some("Planned"))
+        .unwrap();
+    let stroke = planned.format.as_ref().unwrap().line.as_ref().unwrap();
+    assert_eq!(stroke.width, Some(19050));
+    assert_eq!(stroke.fill, Some(Fill::Solid(ChartColor::rgb(0xA5_14F6))));
+    assert_eq!(
+        planned.marker.as_ref().unwrap().symbol,
+        Some(MarkerSymbol::None)
+    );
+
+    // Labels above the points, and a theme colour with its transforms.
+    let chart = chart_at(&book, "xl/charts/chart102.xml");
+    let labels: Vec<&DataLabels> = chart
+        .plots
+        .iter()
+        .flat_map(|p| p.series.iter().filter_map(|s| s.labels.as_ref()))
+        .collect();
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.show_value && l.position == Some(LabelPosition::Top)),
+        "{labels:?}"
+    );
+    let book = open("fixtures/chart.xlsx");
+    let labels = book.sheet(0).unwrap().charts[0].plots[0].series[0]
+        .labels
+        .clone()
+        .unwrap();
+    assert!(!labels.show_value && !labels.deleted);
+}
+
+#[test]
+fn a_theme_colour_resolves_through_its_transforms() {
+    let accent = |transforms| ChartColor {
+        base: ColorBase::Scheme("accent1".into()),
+        transforms,
+    };
+    // Office's accent 1 and Excel's own names for two of its shades.
+    assert_eq!(accent(vec![]).resolve(None), Some(0x44_72C4));
+    assert_eq!(
+        accent(vec![ColorTransform::LumMod(75000)]).resolve(None),
+        Some(0x2F_5597),
+        "darker 25%"
+    );
+    // Excel rounds through its own HSL; a unit per channel apart is the same
+    // colour.
+    let lighter = accent(vec![
+        ColorTransform::LumMod(60000),
+        ColorTransform::LumOff(40000),
+    ])
+    .resolve(None)
+    .unwrap();
+    let excel: u32 = 0x8F_AADC;
+    for shift in [16, 8, 0] {
+        let channel = |c: u32| i64::from((c >> shift) & 0xFF);
+        assert!(
+            (channel(lighter) - channel(excel)).abs() <= 1,
+            "lighter 40%: {lighter:06X}"
+        );
+    }
+    assert_eq!(ChartColor::scheme("phClr").resolve(None), None);
+}
+
+#[test]
+fn a_changed_series_colour_is_written_and_read_back() {
+    let mut book = open("chart2.xlsx");
+    let path = chart_part(&book.sheet(0).unwrap().charts[0]).to_owned();
+    let before = text_of(&book, &path);
+    let chart = &mut book.sheet_mut(0).unwrap().charts[0];
+    let red = Some(Fill::Solid(ChartColor::rgb(0xFF_0000)));
+    chart.plots[0].series[0].format.as_mut().unwrap().fill = red.clone();
+    let labels = chart.plots[0].labels.as_mut().unwrap();
+    labels.show_value = true;
+    labels.position = Some(LabelPosition::OutsideEnd);
+    let edited = chart.clone();
+
+    let back = cycle(&book);
+    let text = text_of(&back, &path);
+    let after = &back.sheet(0).unwrap().charts[0];
+    let total = &after.plots[0].series[0];
+    assert_eq!(total.format.as_ref().unwrap().fill, red);
+    assert!(!text.contains("00B150"), "the old colour is gone");
+    // What was not modelled around it stays.
+    assert_eq!(total.markup, edited.plots[0].series[0].markup);
+    assert!(total.labels.as_ref().unwrap().deleted);
+    let labels = after.plots[0].labels.as_ref().unwrap();
+    assert!(labels.show_value && !labels.show_category_name);
+    assert_eq!(labels.position, Some(LabelPosition::OutsideEnd));
+    assert!(text.contains(r#"<c:showBubbleSize val="0"/>"#));
+    // The series nobody touched keep their elements byte for byte.
+    let other = r#"<c:spPr><a:solidFill><a:srgbClr val="FFC000"/></a:solidFill></c:spPr>"#;
+    assert!(before.contains(other) && text.contains(other));
+    assert_eq!(after.plots[1], edited.plots[1]);
+}
+
+#[test]
+fn a_recoloured_slice_keeps_the_rest_of_its_formatting() {
+    let path = "xl/charts/chart4.xml";
+    let mut book = open("chart1.xlsx");
+    let chart = chart_at_mut(&mut book, path);
+    let theme = ChartColor {
+        base: ColorBase::Scheme("accent2".into()),
+        transforms: vec![ColorTransform::LumMod(50000)],
+    };
+    let points = &mut chart.plots[0].series[0].data_points;
+    points[1].format.as_mut().unwrap().fill = Some(Fill::Solid(theme.clone()));
+    // A line made thicker, and a point that had no formatting of its own.
+    points[2]
+        .format
+        .as_mut()
+        .unwrap()
+        .line
+        .as_mut()
+        .unwrap()
+        .width = Some(38100);
+    points.push(excelerate::model::chart::DataPoint {
+        index: 7,
+        format: Some(ShapeFormat::solid(ChartColor::rgb(0x12_3456))),
+        source: None,
+    });
+
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    let points = &chart_at(&back, path).plots[0].series[0].data_points;
+    assert_eq!(
+        points[1].format.as_ref().unwrap().fill,
+        Some(Fill::Solid(theme))
+    );
+    assert_eq!(
+        points[2].format.as_ref().unwrap().line,
+        Some(LineFormat {
+            fill: Some(Fill::None),
+            width: Some(38100)
+        })
+    );
+    assert_eq!(
+        (
+            points[5].index,
+            points[5].format.as_ref().unwrap().fill.clone()
+        ),
+        (7, Some(Fill::Solid(ChartColor::rgb(0x12_3456))))
+    );
+    // The slice kept its outline, effects and extension, and the gradient of
+    // the one before it is untouched.
+    let slice = &text[text.find(r#"<c:idx val="1"/>"#).unwrap()..];
+    let slice = &slice[..slice.find("</c:dPt>").unwrap()];
+    assert!(slice.contains(r#"<a:ln w="19050"><a:noFill/></a:ln><a:effectLst/>"#));
+    assert!(slice.contains("c16:uniqueId") && slice.contains("<c:bubble3D"));
+    assert!(text.contains(r#"<a:gs pos="100000"><a:srgbClr val="8940D9"/>"#));
+    assert!(
+        text.contains(r#"<a:ln w="38100"><a:noFill/></a:ln>"#),
+        "{text}"
+    );
+}
+
+/// A chart changed elsewhere writes its series formatting as it was read.
+#[test]
+fn formatting_the_model_did_not_change_is_written_as_read() {
+    for path in [
+        "xl/charts/chart2.xml",
+        "xl/charts/chart4.xml",
+        "xl/charts/chart102.xml",
+    ] {
+        let mut book = open("chart1.xlsx");
+        let before = text_of(&book, path);
+        let chart = chart_at_mut(&mut book, path);
+        chart.auto_title_deleted = !chart.auto_title_deleted;
+        let edited = chart.clone();
+        let back = cycle(&book);
+        let text = text_of(&back, path);
+        assert_ne!(before, text);
+        let series = edited.plots.iter().flat_map(|p| &p.series);
+        for s in series {
+            let sources = s
+                .format
+                .iter()
+                .filter_map(|f| f.source.as_deref())
+                .chain(s.marker.iter().filter_map(|m| m.source.as_deref()))
+                .chain(s.data_points.iter().filter_map(|p| p.source.as_deref()))
+                .chain(s.labels.iter().filter_map(|l| l.source.as_deref()));
+            for source in sources {
+                assert!(text.contains(source), "{path}: {source}");
+            }
+        }
+        let after = chart_at(&back, path);
+        assert_eq!(after.plots, edited.plots, "{path}");
+    }
 }

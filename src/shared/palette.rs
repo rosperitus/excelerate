@@ -126,6 +126,17 @@ fn tinted(rgb: u32, tint: f64) -> u32 {
     if tint == 0.0 {
         return rgb;
     }
+    map_lightness(rgb, |lightness| {
+        if tint < 0.0 {
+            lightness * (1.0 + tint)
+        } else {
+            lightness * (1.0 - tint) + tint
+        }
+    })
+}
+
+/// A colour with its HSL lightness passed through `f`, clamped to `0..=1`.
+pub(crate) fn map_lightness(rgb: u32, f: impl Fn(f64) -> f64) -> u32 {
     let channel = |shift: u32| f64::from((rgb >> shift) & 0xFF) / 255.0;
     let (red, green, blue) = (channel(16), channel(8), channel(0));
     let max = red.max(green).max(blue);
@@ -145,11 +156,7 @@ fn tinted(rgb: u32, tint: f64) -> u32 {
         };
         (hue * 60.0, saturation)
     };
-    let lightness = if tint < 0.0 {
-        lightness * (1.0 + tint)
-    } else {
-        lightness * (1.0 - tint) + tint
-    };
+    let lightness = f(lightness).clamp(0.0, 1.0);
 
     let chroma = (1.0 - (2.0 * lightness - 1.0).abs()) * saturation;
     let second = chroma * (1.0 - ((hue / 60.0).rem_euclid(2.0) - 1.0).abs());

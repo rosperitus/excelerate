@@ -17,8 +17,14 @@ use super::xmlesc::escape;
 use crate::error::{Error, Result};
 use crate::model::chart::{Anchor, ChartText, DataSource, Marker, Plot, PlotKind, Title};
 use crate::model::chart::{BarDirection, Chart, ChartAxis};
+use crate::model::chart::{
+    ChartColor, ColorBase, DataLabels, DataPoint, Fill, LineFormat, SeriesMarker, ShapeFormat,
+};
 use crate::model::{Attachment, OpaquePart, Spreadsheet, Worksheet};
-use crate::reader::chart::{children, read_chart, rich_text, scan_drawing};
+use crate::reader::chart::{FILLS, Node, children, read_chart, rich_text, scan_drawing};
+use crate::reader::chart::{
+    read_fill, read_labels, read_line, read_marker, read_point, read_shape_format, tag_attr,
+};
 use core::ops::Range;
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -699,6 +705,19 @@ impl Out {
                 }
                 None => {}
             }
+            if let Some(format) = &series.format {
+                self.s.push_str(&shape_format(&self.p, format));
+            }
+            self.s.push_str(&series.markup.after_format);
+            if let Some(marker) = &series.marker {
+                self.s.push_str(&series_marker(&self.p, marker));
+            }
+            for point in &series.data_points {
+                self.s.push_str(&data_point(&self.p, point));
+            }
+            if let Some(labels) = &series.labels {
+                self.s.push_str(&data_labels(&self.p, labels));
+            }
             self.s.push_str(&series.markup.before_data);
             let (cat, val) = if xy { ("xVal", "yVal") } else { ("cat", "val") };
             if let Some(data) = &series.categories {
@@ -712,6 +731,9 @@ impl Out {
             }
             self.s.push_str(&series.markup.after_data);
             self.close("ser");
+        }
+        if let Some(labels) = &plot.labels {
+            self.s.push_str(&data_labels(&self.p, labels));
         }
         self.s.push_str(&plot.markup);
         for id in &plot.axis_ids {
@@ -855,4 +877,291 @@ impl Out {
         self.s.push_str(&axis.markup.tail);
         self.close(element);
     }
+}
+
+// Formatting the model names inside elements it does not fully model: each is
+// written back as read while the model still says what the element says, and
+// otherwise rebuilt from what was read with the model's children put in.
+
+/// Children of `c:spPr`, in schema order; names that share a slot are
+/// alternatives.
+const SHAPE: &[&[&str]] = &[
+    &["xfrm"],
+    &["custGeom", "prstGeom"],
+    &FILLS,
+    &["ln"],
+    &["effectLst", "effectDag"],
+    &["scene3d"],
+    &["sp3d"],
+    &["extLst"],
+];
+const LINE: &[&[&str]] = &[
+    &FILLS,
+    &["prstDash", "custDash"],
+    &["round", "bevel", "miter"],
+    &["headEnd"],
+    &["tailEnd"],
+    &["extLst"],
+];
+const MARKER: &[&[&str]] = &[&["symbol"], &["size"], &["spPr"], &["extLst"]];
+const POINT: &[&[&str]] = &[
+    &["idx"],
+    &["invertIfNegative"],
+    &["marker"],
+    &["bubble3D"],
+    &["explosion"],
+    &["spPr"],
+    &["pictureOptions"],
+    &["extLst"],
+];
+const LABELS: &[&[&str]] = &[
+    &["dLbl"],
+    &["delete"],
+    &["numFmt"],
+    &["spPr"],
+    &["txPr"],
+    &["dLblPos"],
+    &["showLegendKey"],
+    &["showVal"],
+    &["showCatName"],
+    &["showSerName"],
+    &["showPercent"],
+    &["showBubbleSize"],
+    &["separator"],
+    &["showLeaderLines"],
+    &["leaderLines"],
+    &["extLst"],
+];
+
+/// The element a stretch of carried markup is.
+fn element(xml: &str) -> Option<Node<'_>> {
+    children(xml).into_iter().next()
+}
+
+/// An element that was read, rewritten: the children in the `owned` slots of
+/// `order` are replaced by the text given (dropped when it is empty), those in
+/// slots `drop` accepts go, and everything else stays as it was. `tag`
+/// replaces the start tag.
+fn rebuild(
+    node: &Node<'_>,
+    order: &[&[&str]],
+    owned: &[(usize, String)],
+    drop: impl Fn(usize) -> bool,
+    tag: Option<String>,
+) -> String {
+    let mut items: Vec<(usize, &str)> = Vec::new();
+    let mut last = 0;
+    for kid in node.children() {
+        // A child the schema does not list stays beside the one before it.
+        let slot = order
+            .iter()
+            .position(|names| names.contains(&kid.name))
+            .unwrap_or(last);
+        last = slot;
+        if !drop(slot) && !owned.iter().any(|(s, _)| *s == slot) {
+            items.push((slot, kid.outer));
+        }
+    }
+    for (slot, text) in owned.iter().filter(|(_, t)| !t.is_empty()) {
+        let at = items
+            .iter()
+            .position(|(s, _)| s > slot)
+            .unwrap_or(items.len());
+        items.insert(at, (*slot, text));
+    }
+    let tag = tag.unwrap_or_else(|| node.tag.to_owned());
+    let open = match tag.strip_suffix("/>") {
+        Some(start) => format!("{}>", start.trim_end()),
+        None => tag,
+    };
+    let name = if node.prefix.is_empty() {
+        node.name.to_owned()
+    } else {
+        format!("{}:{}", node.prefix, node.name)
+    };
+    let mut out = open;
+    for (_, text) in items {
+        out.push_str(text);
+    }
+    let _ = write!(out, "</{name}>");
+    out
+}
+
+/// A start tag with one attribute set to `value`, or removed.
+fn set_attr(tag: &str, name: &str, value: Option<String>) -> String {
+    let body = tag.trim_end_matches('>').trim_end_matches('/').trim_end();
+    let body = match tag_attr(body, name) {
+        Some(old) => {
+            let at = old.as_ptr().addr() - body.as_ptr().addr();
+            let start = body[..at].rfind(name).unwrap_or(at);
+            let end = (at + old.len() + 1).min(body.len());
+            format!("{}{}", body[..start].trim_end(), &body[end..])
+        }
+        None => body.to_owned(),
+    };
+    match value {
+        Some(v) => format!(r#"{body} {name}="{}">"#, escape(&v)),
+        None => format!("{body}>"),
+    }
+}
+
+fn color_xml(color: &ChartColor) -> String {
+    let (name, val) = match &color.base {
+        ColorBase::Rgb(rgb) => ("srgbClr", format!("{:06X}", rgb & 0x00FF_FFFF)),
+        ColorBase::Scheme(scheme) => ("schemeClr", escape(scheme)),
+    };
+    if color.transforms.is_empty() {
+        return format!(r#"<a:{name} val="{val}"/>"#);
+    }
+    let mut out = format!(r#"<a:{name} val="{val}">"#);
+    for t in &color.transforms {
+        let (t, v) = t.parts();
+        let _ = write!(out, r#"<a:{t} val="{v}"/>"#);
+    }
+    let _ = write!(out, "</a:{name}>");
+    out
+}
+
+/// A fill made from the model, declaring the namespace it is written in.
+fn fill_xml(fill: &Fill) -> String {
+    match fill {
+        Fill::None => format!(r#"<a:noFill xmlns:a="{MAIN_NS}"/>"#),
+        Fill::Solid(color) => format!(
+            r#"<a:solidFill xmlns:a="{MAIN_NS}">{}</a:solidFill>"#,
+            color_xml(color)
+        ),
+        // Nothing to say it with: a gradient is only ever kept as read.
+        Fill::Other => String::new(),
+    }
+}
+
+/// The fill among `kids` if the model still says it, else one from the model.
+fn fill_or_kept(model: Option<&Fill>, kids: &[Node<'_>]) -> String {
+    let read = kids.iter().find(|n| FILLS.contains(&n.name));
+    if read.map(read_fill).as_ref() == model {
+        read.map_or_else(String::new, |n| n.outer.to_owned())
+    } else {
+        model.map_or_else(String::new, fill_xml)
+    }
+}
+
+fn line_xml(line: &LineFormat, read: Option<&Node<'_>>) -> String {
+    let width = line.width.map(|w| w.to_string());
+    match read {
+        Some(node) if read_line(node) == *line => node.outer.to_owned(),
+        Some(node) => rebuild(
+            node,
+            LINE,
+            &[(0, fill_or_kept(line.fill.as_ref(), &node.children()))],
+            |_| false,
+            Some(set_attr(node.tag, "w", width)),
+        ),
+        None => format!(
+            r#"<a:ln xmlns:a="{MAIN_NS}"{}>{}</a:ln>"#,
+            width.map_or_else(String::new, |w| format!(r#" w="{w}""#)),
+            line.fill.as_ref().map_or_else(String::new, fill_xml)
+        ),
+    }
+}
+
+/// `c:spPr` for a series or a point; `p` is the chart namespace prefix.
+fn shape_format(p: &str, format: &ShapeFormat) -> String {
+    let read = format.source.as_deref().and_then(element);
+    let Some(node) = read else {
+        return format!(
+            "<{p}spPr>{}{}</{p}spPr>",
+            format.fill.as_ref().map_or_else(String::new, fill_xml),
+            format
+                .line
+                .as_ref()
+                .map_or_else(String::new, |l| line_xml(l, None))
+        );
+    };
+    if read_shape_format(&node) == *format {
+        return node.outer.to_owned();
+    }
+    let kids = node.children();
+    let line = format.line.as_ref().map_or_else(String::new, |l| {
+        line_xml(l, kids.iter().find(|n| n.name == "ln"))
+    });
+    rebuild(
+        &node,
+        SHAPE,
+        &[(2, fill_or_kept(format.fill.as_ref(), &kids)), (3, line)],
+        |_| false,
+        None,
+    )
+}
+
+fn series_marker(p: &str, marker: &SeriesMarker) -> String {
+    let symbol = marker.symbol.map_or_else(String::new, |s| {
+        format!(r#"<{p}symbol val="{}"/>"#, s.as_str())
+    });
+    let size = marker
+        .size
+        .map_or_else(String::new, |s| format!(r#"<{p}size val="{s}"/>"#));
+    match marker.source.as_deref().and_then(element) {
+        Some(node) if read_marker(&node) == *marker => node.outer.to_owned(),
+        Some(node) => rebuild(&node, MARKER, &[(0, symbol), (1, size)], |_| false, None),
+        None => format!("<{p}marker>{symbol}{size}</{p}marker>"),
+    }
+}
+
+fn data_point(p: &str, point: &DataPoint) -> String {
+    let idx = format!(r#"<{p}idx val="{}"/>"#, point.index);
+    let format = point
+        .format
+        .as_ref()
+        .map_or_else(String::new, |f| shape_format(p, f));
+    match point.source.as_deref().and_then(element) {
+        Some(node) if read_point(&node) == *point => node.outer.to_owned(),
+        Some(node) => rebuild(&node, POINT, &[(0, idx), (5, format)], |_| false, None),
+        None => format!("<{p}dPt>{idx}{format}</{p}dPt>"),
+    }
+}
+
+fn data_labels(p: &str, labels: &DataLabels) -> String {
+    let read = labels.source.as_deref().and_then(element);
+    if let Some(node) = &read
+        && read_labels(node) == *labels
+    {
+        return node.outer.to_owned();
+    }
+    let flag = |name: &str, on: bool| format!(r#"<{p}{name} val="{}"/>"#, u8::from(on));
+    // Hidden labels have nothing but the `delete`: the schema makes it a
+    // choice between the two.
+    let owned: Vec<(usize, String)> = if labels.deleted {
+        vec![(1, flag("delete", true))]
+    } else {
+        vec![
+            (1, String::new()),
+            (
+                5,
+                labels.position.map_or_else(String::new, |pos| {
+                    format!(r#"<{p}dLblPos val="{}"/>"#, pos.as_str())
+                }),
+            ),
+            (6, flag("showLegendKey", labels.show_legend_key)),
+            (7, flag("showVal", labels.show_value)),
+            (8, flag("showCatName", labels.show_category_name)),
+            (9, flag("showSerName", labels.show_series_name)),
+            (10, flag("showPercent", labels.show_percent)),
+        ]
+    };
+    let deleted = labels.deleted;
+    if let Some(node) = read {
+        return rebuild(
+            &node,
+            LABELS,
+            &owned,
+            |slot| deleted && (2..=14).contains(&slot),
+            None,
+        );
+    }
+    let mut out = format!("<{p}dLbls>");
+    for (_, text) in owned {
+        out.push_str(&text);
+    }
+    let _ = write!(out, "</{p}dLbls>");
+    out
 }

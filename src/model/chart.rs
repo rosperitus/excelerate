@@ -164,12 +164,16 @@ impl Chart {
         }
         for plot in &mut self.plots {
             out.push(&mut plot.markup);
+            // A label can show a cell (`c:dLbl/c:tx/c:strRef`).
+            out.extend(plot.labels.as_mut().and_then(|l| l.source.as_mut()));
             for series in &mut plot.series {
+                out.extend(series.labels.as_mut().and_then(|l| l.source.as_mut()));
                 let SeriesMarkup {
+                    after_format,
                     before_data,
                     after_data,
                 } = &mut series.markup;
-                out.extend([before_data, after_data]);
+                out.extend([after_format, before_data, after_data]);
                 for data in [
                     &mut series.categories,
                     &mut series.values,
@@ -390,8 +394,10 @@ pub struct Plot {
     /// Ids of the axes this plot is drawn against, from [`Chart::axes`].
     /// Two for a flat chart, three for a 3-D one; none for a pie.
     pub axis_ids: Vec<u32>,
-    /// What follows the series - labels, gap width, overlap, hole size, drop
-    /// lines - carried as written.
+    /// Data labels for every series of the plot that has none of its own.
+    pub labels: Option<DataLabels>,
+    /// What follows the labels - gap width, overlap, hole size, drop lines -
+    /// carried as written.
     pub markup: String,
 }
 
@@ -404,6 +410,7 @@ impl Plot {
             vary_colors: None,
             series: Vec::new(),
             axis_ids: Vec::new(),
+            labels: None,
             markup: String::new(),
         }
     }
@@ -647,6 +654,16 @@ pub struct Series {
     pub values: Option<DataSource>,
     /// The size of each bubble, for a bubble plot.
     pub bubble_sizes: Option<DataSource>,
+    /// Fill and outline of the series (`c:spPr`); `None` leaves them to the
+    /// chart style.
+    pub format: Option<ShapeFormat>,
+    /// The markers of a line, scatter or radar series (`c:marker`).
+    pub marker: Option<SeriesMarker>,
+    /// Points formatted apart from the rest (`c:dPt`): a pie gives each slice
+    /// its own colour this way.
+    pub data_points: Vec<DataPoint>,
+    /// The series' data labels (`c:dLbls`), which win over the plot's.
+    pub labels: Option<DataLabels>,
     /// Formatting around the data, carried as written.
     pub markup: SeriesMarkup,
 }
@@ -654,11 +671,385 @@ pub struct Series {
 /// What a series says beyond the model, split where the data sits.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SeriesMarkup {
-    /// Fill and line, markers, per-point formatting, labels, trend lines,
-    /// error bars - everything between the name and the data.
+    /// Between the fill and the marker: `invertIfNegative`,
+    /// `pictureOptions`, `explosion`.
+    pub after_format: String,
+    /// Trend lines and error bars - what sits between the labels and the
+    /// data.
     pub before_data: String,
     /// Smoothing, bar shape, extensions - everything after the data.
     pub after_data: String,
+}
+
+/// Fill and outline of a series, a point or a label (`c:spPr`).
+///
+/// The fields are what a program asks; `source` is the element as read, so
+/// gradients, effects, dashes and colour transforms the model does not name
+/// survive. It is written back as is while the fields still say what it says;
+/// a changed field is written from the model into it, the rest kept.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ShapeFormat {
+    /// The fill; `None` when the element does not state one.
+    pub fill: Option<Fill>,
+    /// The outline (`a:ln`); `None` when there is none.
+    pub line: Option<LineFormat>,
+    /// The element as read; `None` for one made in code.
+    pub source: Option<String>,
+}
+
+impl ShapeFormat {
+    /// A solid fill of one colour.
+    #[must_use]
+    pub fn solid(color: ChartColor) -> Self {
+        Self {
+            fill: Some(Fill::Solid(color)),
+            ..Self::default()
+        }
+    }
+}
+
+/// An outline.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LineFormat {
+    /// The colour of the stroke; `Some(Fill::None)` hides the line.
+    pub fill: Option<Fill>,
+    /// The width in EMU (12 700 to the point); `None` for the default.
+    pub width: Option<u32>,
+}
+
+/// How an area is filled.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Fill {
+    /// Not filled (`a:noFill`).
+    None,
+    /// One colour (`a:solidFill`).
+    Solid(ChartColor),
+    /// A gradient, pattern or picture, or a colour of a kind the model does not
+    /// read: kept in [`ShapeFormat::source`], not described here.
+    Other,
+}
+
+/// A `DrawingML` colour: a value or a theme colour, and what is done to it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChartColor {
+    /// The colour before the transforms.
+    pub base: ColorBase,
+    /// Transforms, applied in order.
+    pub transforms: Vec<ColorTransform>,
+}
+
+impl ChartColor {
+    /// A plain colour, `RRGGBB`.
+    #[must_use]
+    pub const fn rgb(rgb: u32) -> Self {
+        Self {
+            base: ColorBase::Rgb(rgb),
+            transforms: Vec::new(),
+        }
+    }
+
+    /// A colour of the theme, by the name the file uses: `accent1`, `tx1`.
+    #[must_use]
+    pub fn scheme(name: impl Into<String>) -> Self {
+        Self {
+            base: ColorBase::Scheme(name.into()),
+            transforms: Vec::new(),
+        }
+    }
+
+    /// The colour as `RRGGBB`, the theme colours looked up in `theme` (the
+    /// workbook's [`crate::model::Spreadsheet::theme`]) or in Office's default
+    /// one. `None` for a name no theme defines, such as the placeholder
+    /// `phClr`. Alpha is not applied.
+    #[must_use]
+    pub fn resolve(&self, theme: Option<&str>) -> Option<u32> {
+        let mut rgb = match &self.base {
+            ColorBase::Rgb(rgb) => *rgb & 0x00FF_FFFF,
+            ColorBase::Scheme(name) => {
+                let id = match name.as_str() {
+                    "lt1" | "bg1" => 0,
+                    "dk1" | "tx1" => 1,
+                    "lt2" | "bg2" => 2,
+                    "dk2" | "tx2" => 3,
+                    "accent1" => 4,
+                    "accent2" => 5,
+                    "accent3" => 6,
+                    "accent4" => 7,
+                    "accent5" => 8,
+                    "accent6" => 9,
+                    "hlink" => 10,
+                    "folHlink" => 11,
+                    _ => return None,
+                };
+                crate::shared::palette::rgb_of(&crate::style::Color::Theme { id, tint: 0 }, theme)?
+            }
+        };
+        for t in &self.transforms {
+            rgb = t.apply(rgb);
+        }
+        Some(rgb)
+    }
+}
+
+/// Where a [`ChartColor`] starts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColorBase {
+    /// `a:srgbClr`, or the value a system colour had when saved.
+    Rgb(u32),
+    /// `a:schemeClr`: a theme colour by name.
+    Scheme(String),
+}
+
+/// A transform of a [`ChartColor`], in thousandths of a percent as the file
+/// writes them: `100000` is 100 %.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorTransform {
+    /// Luminance multiplied by this much.
+    LumMod(i32),
+    /// Luminance raised by this much.
+    LumOff(i32),
+    /// Mixed with white: this much of the colour is kept.
+    Tint(i32),
+    /// Mixed with black: this much of the colour is kept.
+    Shade(i32),
+    /// Opacity.
+    Alpha(i32),
+}
+
+impl ColorTransform {
+    /// Reads a transform element by its local name.
+    #[must_use]
+    pub fn parse(name: &str, value: i32) -> Option<Self> {
+        Some(match name {
+            "lumMod" => Self::LumMod(value),
+            "lumOff" => Self::LumOff(value),
+            "tint" => Self::Tint(value),
+            "shade" => Self::Shade(value),
+            "alpha" => Self::Alpha(value),
+            _ => return None,
+        })
+    }
+
+    /// The element name and value.
+    #[must_use]
+    pub const fn parts(self) -> (&'static str, i32) {
+        match self {
+            Self::LumMod(v) => ("lumMod", v),
+            Self::LumOff(v) => ("lumOff", v),
+            Self::Tint(v) => ("tint", v),
+            Self::Shade(v) => ("shade", v),
+            Self::Alpha(v) => ("alpha", v),
+        }
+    }
+
+    // ponytail: tint and shade mix in sRGB; Office mixes in linear RGB, so a
+    // strong tint comes out a little darker here. Gamma-correct if it shows.
+    fn apply(self, rgb: u32) -> u32 {
+        let (_, v) = self.parts();
+        let f = f64::from(v) / 100_000.0;
+        match self {
+            Self::LumMod(_) => crate::shared::palette::map_lightness(rgb, |l| l * f),
+            Self::LumOff(_) => crate::shared::palette::map_lightness(rgb, |l| l + f),
+            Self::Tint(_) => map_channels(rgb, |c| c * f + (1.0 - f)),
+            Self::Shade(_) => map_channels(rgb, |c| c * f),
+            Self::Alpha(_) => rgb,
+        }
+    }
+}
+
+fn map_channels(rgb: u32, f: impl Fn(f64) -> f64) -> u32 {
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "clamped to 0..=255 first"
+    )]
+    let channel = |shift: u32| {
+        let c = f64::from((rgb >> shift) & 0xFF) / 255.0;
+        (f(c) * 255.0).round().clamp(0.0, 255.0) as u32
+    };
+    (channel(16) << 16) | (channel(8) << 8) | channel(0)
+}
+
+/// The markers of a series (`c:marker`).
+///
+/// The marker's own fill and outline are not modelled; they stay in
+/// `source`.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SeriesMarker {
+    /// The shape; `None` for the chart's default.
+    pub symbol: Option<MarkerSymbol>,
+    /// The size in points, 2 to 72.
+    pub size: Option<u8>,
+    /// The element as read; `None` for one made in code.
+    pub source: Option<String>,
+}
+
+/// The shape of a marker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkerSymbol {
+    /// Whatever the series' index picks.
+    Auto,
+    /// No marker.
+    None,
+    /// A circle.
+    Circle,
+    /// A short horizontal bar.
+    Dash,
+    /// A diamond.
+    Diamond,
+    /// A small dot.
+    Dot,
+    /// A picture.
+    Picture,
+    /// A plus sign.
+    Plus,
+    /// A square.
+    Square,
+    /// A star.
+    Star,
+    /// A triangle.
+    Triangle,
+    /// An x.
+    X,
+}
+
+impl MarkerSymbol {
+    /// Reads the `symbol` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "auto" => Self::Auto,
+            "none" => Self::None,
+            "circle" => Self::Circle,
+            "dash" => Self::Dash,
+            "diamond" => Self::Diamond,
+            "dot" => Self::Dot,
+            "picture" => Self::Picture,
+            "plus" => Self::Plus,
+            "square" => Self::Square,
+            "star" => Self::Star,
+            "triangle" => Self::Triangle,
+            "x" => Self::X,
+            _ => return None,
+        })
+    }
+
+    /// The value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+            Self::Circle => "circle",
+            Self::Dash => "dash",
+            Self::Diamond => "diamond",
+            Self::Dot => "dot",
+            Self::Picture => "picture",
+            Self::Plus => "plus",
+            Self::Square => "square",
+            Self::Star => "star",
+            Self::Triangle => "triangle",
+            Self::X => "x",
+        }
+    }
+}
+
+/// One point of a series formatted apart from the rest (`c:dPt`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DataPoint {
+    /// The point's index in the series.
+    pub index: u32,
+    /// Its fill and outline.
+    pub format: Option<ShapeFormat>,
+    /// The element as read, which also holds what is not modelled: a pulled-out
+    /// slice, a marker, 3-D bubble; `None` for one made in code.
+    pub source: Option<String>,
+}
+
+/// Data labels of a series or a plot (`c:dLbls`).
+///
+/// Labels of single points (`c:dLbl`), number format, font and fill are not
+/// modelled and stay in `source`.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches, one element each in the file"
+)]
+pub struct DataLabels {
+    /// Hidden altogether (`c:delete`).
+    pub deleted: bool,
+    /// Where each label sits relative to its point; `None` for the default.
+    pub position: Option<LabelPosition>,
+    /// Shows the legend key beside the label.
+    pub show_legend_key: bool,
+    /// Shows the value.
+    pub show_value: bool,
+    /// Shows the category.
+    pub show_category_name: bool,
+    /// Shows the series name.
+    pub show_series_name: bool,
+    /// Shows the share of the whole, on a pie.
+    pub show_percent: bool,
+    /// The element as read; `None` for one made in code.
+    pub source: Option<String>,
+}
+
+/// Where a data label sits (`c:dLblPos`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LabelPosition {
+    /// Wherever it fits, on a pie.
+    BestFit,
+    /// Below the point.
+    Bottom,
+    /// Centred on it.
+    Center,
+    /// Inside the bar, at its base.
+    InsideBase,
+    /// Inside the bar, at its end.
+    InsideEnd,
+    /// Left of the point.
+    Left,
+    /// Past the end of the bar or slice.
+    OutsideEnd,
+    /// Right of the point.
+    Right,
+    /// Above the point.
+    Top,
+}
+
+impl LabelPosition {
+    /// Reads the `dLblPos` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "bestFit" => Self::BestFit,
+            "b" => Self::Bottom,
+            "ctr" => Self::Center,
+            "inBase" => Self::InsideBase,
+            "inEnd" => Self::InsideEnd,
+            "l" => Self::Left,
+            "outEnd" => Self::OutsideEnd,
+            "r" => Self::Right,
+            "t" => Self::Top,
+            _ => return None,
+        })
+    }
+
+    /// The value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BestFit => "bestFit",
+            Self::Bottom => "b",
+            Self::Center => "ctr",
+            Self::InsideBase => "inBase",
+            Self::InsideEnd => "inEnd",
+            Self::Left => "l",
+            Self::OutsideEnd => "outEnd",
+            Self::Right => "r",
+            Self::Top => "t",
+        }
+    }
 }
 
 /// Where a series gets its numbers or labels.

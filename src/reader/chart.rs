@@ -9,9 +9,11 @@
 
 use crate::coordinate::{Col, Row};
 use crate::model::chart::{
-    Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartEx, ChartText,
-    DataSource, Dimension, DimensionRole, EditAs, ExSeries, Grouping, Legend, LegendPosition,
-    Marker, Plot, PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, Title,
+    Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartColor,
+    ChartEx, ChartText, ColorBase, ColorTransform, DataLabels, DataPoint, DataSource, Dimension,
+    DimensionRole, EditAs, ExSeries, Fill, Grouping, LabelPosition, Legend, LegendPosition,
+    LineFormat, Marker, MarkerSymbol, Plot, PlotKind, RadarStyle, ScatterStyle, Series,
+    SeriesLayout, SeriesMarker, ShapeFormat, Title,
 };
 use core::ops::Range;
 use quick_xml::Reader;
@@ -533,6 +535,7 @@ fn read_plot(node: &Node<'_>) -> Option<Plot> {
             "barDir" | "grouping" | "ofPieType" | "scatterStyle" | "radarStyle" | "wireframe" => {}
             "varyColors" => out.vary_colors = Some(child.flag()),
             "ser" => out.series.push(read_series(&child)),
+            "dLbls" => out.labels = Some(read_labels(&child)),
             "axId" => {
                 if let Some(id) = child.val().and_then(|v| v.parse().ok()) {
                     out.axis_ids.push(id);
@@ -566,10 +569,129 @@ fn read_series(node: &Node<'_>) -> Series {
                 out.bubble_sizes = read_data(&child);
             }
             _ if past_data => out.markup.after_data.push_str(child.outer),
+            "spPr" => out.format = Some(read_shape_format(&child)),
+            "marker" => out.marker = Some(read_marker(&child)),
+            "dPt" => out.data_points.push(read_point(&child)),
+            "dLbls" => out.labels = Some(read_labels(&child)),
+            // Named rather than placed: the schema puts these between the fill
+            // and the marker, and so does the writer, even when a file (excelize)
+            // wrote them elsewhere.
+            "invertIfNegative" | "pictureOptions" | "explosion" => {
+                out.markup.after_format.push_str(child.outer);
+            }
             _ => out.markup.before_data.push_str(child.outer),
         }
     }
     out
+}
+
+/// The fill elements of `DrawingML`, one of which a shape or line may hold.
+pub(crate) const FILLS: [&str; 6] = [
+    "noFill",
+    "solidFill",
+    "gradFill",
+    "blipFill",
+    "pattFill",
+    "grpFill",
+];
+
+/// Reads `<c:spPr>`, keeping the element as its source.
+pub(crate) fn read_shape_format(node: &Node<'_>) -> ShapeFormat {
+    let kids = node.children();
+    ShapeFormat {
+        fill: kids.iter().find(|n| FILLS.contains(&n.name)).map(read_fill),
+        line: kids.iter().find(|n| n.name == "ln").map(read_line),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads one fill element.
+pub(crate) fn read_fill(node: &Node<'_>) -> Fill {
+    match node.name {
+        "noFill" => Fill::None,
+        "solidFill" => node
+            .children()
+            .first()
+            .and_then(read_color)
+            .map_or(Fill::Other, Fill::Solid),
+        _ => Fill::Other,
+    }
+}
+
+fn read_color(node: &Node<'_>) -> Option<ChartColor> {
+    let hex = |v: &str| u32::from_str_radix(v, 16).ok().filter(|_| v.len() == 6);
+    let base = match node.name {
+        "srgbClr" => ColorBase::Rgb(hex(node.val()?)?),
+        "sysClr" => ColorBase::Rgb(hex(node.attr("lastClr")?)?),
+        "schemeClr" => ColorBase::Scheme(node.val()?.to_owned()),
+        _ => return None,
+    };
+    let transforms = node
+        .children()
+        .iter()
+        .filter_map(|t| ColorTransform::parse(t.name, t.val()?.parse().ok()?))
+        .collect();
+    Some(ChartColor { base, transforms })
+}
+
+/// Reads `<a:ln>`.
+pub(crate) fn read_line(node: &Node<'_>) -> LineFormat {
+    LineFormat {
+        fill: node
+            .children()
+            .iter()
+            .find(|n| FILLS.contains(&n.name))
+            .map(read_fill),
+        width: node.attr("w").and_then(|w| w.parse().ok()),
+    }
+}
+
+/// Reads `<c:marker>`.
+pub(crate) fn read_marker(node: &Node<'_>) -> SeriesMarker {
+    let kids = node.children();
+    let val = |name: &str| kids.iter().find(|n| n.name == name).and_then(Node::val);
+    SeriesMarker {
+        symbol: val("symbol").and_then(MarkerSymbol::parse),
+        size: val("size").and_then(|v| v.parse().ok()),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads `<c:dPt>`.
+pub(crate) fn read_point(node: &Node<'_>) -> DataPoint {
+    let kids = node.children();
+    DataPoint {
+        index: kids
+            .iter()
+            .find(|n| n.name == "idx")
+            .and_then(Node::val)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        format: kids
+            .iter()
+            .find(|n| n.name == "spPr")
+            .map(read_shape_format),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads `<c:dLbls>`. A flag that is not there is off, as Excel reads it.
+pub(crate) fn read_labels(node: &Node<'_>) -> DataLabels {
+    let kids = node.children();
+    let find = |name: &str| kids.iter().find(|n| n.name == name);
+    let flag = |name: &str| find(name).is_some_and(Node::flag);
+    DataLabels {
+        deleted: flag("delete"),
+        position: find("dLblPos")
+            .and_then(Node::val)
+            .and_then(LabelPosition::parse),
+        show_legend_key: flag("showLegendKey"),
+        show_value: flag("showVal"),
+        show_category_name: flag("showCatName"),
+        show_series_name: flag("showSerName"),
+        show_percent: flag("showPercent"),
+        source: Some(node.outer.to_owned()),
+    }
 }
 
 fn read_data(node: &Node<'_>) -> Option<DataSource> {

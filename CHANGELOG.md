@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- `SeriesMarkup::before_data` no longer holds `c:spPr`, `c:marker`, `c:dPt`
+  and `c:dLbls` (now fields of `Series`), and `invertIfNegative`,
+  `pictureOptions` and `explosion` moved to the new
+  `SeriesMarkup::after_format`; `Plot::markup` no longer holds `c:dLbls`.
+
 ### Added
 
 - `Spreadsheet::template`: the book is a template. The xlsx writer gives the
@@ -9,6 +16,18 @@
   `ms-excel.template.macroEnabled.main+xml` with a VBA project) - Excel will
   not open an `.xltx` written as a plain workbook - and the xlsx reader sets
   the flag from that type, so a template opened and saved stays one.
+- Charts: series formatting and data labels are modelled. `Series` gains
+  `format` (`c:spPr` as `ShapeFormat`: `Fill` - none, solid `ChartColor`,
+  other - and `LineFormat` with colour and width), `marker` (`SeriesMarker`:
+  `MarkerSymbol` and size), `data_points` (`c:dPt` as `DataPoint`: index and
+  its own fill, so pie slices keep their colours) and `labels`; `Plot` gains
+  `labels` (`DataLabels`: `deleted`, `position` as `LabelPosition`, the five
+  `show_*` flags). `ChartColor` keeps a theme colour by name with its
+  `lumMod`/`lumOff`/`tint`/`shade`/`alpha` transforms, and
+  `ChartColor::resolve` turns it into rgb through the workbook's theme. Each
+  element keeps its `source`: while the model still says what it says it is
+  written back as read, otherwise the model's fields are written into it and
+  gradients, dashes, effects and extensions stay.
 
 ### Fixed
 
