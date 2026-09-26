@@ -1026,3 +1026,45 @@ fn labels_of_single_points_are_read_and_rewritten() {
         "{text}"
     );
 }
+
+/// Excel's own caches are what reading the cells again gives, so nothing
+/// changes until a cell does - and then only the series reading it.
+#[test]
+fn chart_caches_are_read_again_from_the_cells() {
+    use excelerate::CellRef;
+    use excelerate::formula::chart::refresh_caches;
+    for name in ["chart1.xlsx", "chart2.xlsx"] {
+        let mut book = open(name);
+        assert_eq!(refresh_caches(&mut book, None), 0, "{name}");
+        let charts = book.sheets().iter().flat_map(|s| &s.charts);
+        assert!(charts.clone().all(Chart::is_unchanged), "{name}");
+    }
+
+    let mut book = open("chart2.xlsx");
+    let b6 = CellRef::parse("B6").unwrap();
+    book.sheet_mut(0).unwrap().set(b6, 999.0);
+    let elsewhere = CellRef::parse("Z100").unwrap();
+    assert_eq!(refresh_caches(&mut book, Some(&[(0, elsewhere)])), 0);
+    assert_eq!(refresh_caches(&mut book, Some(&[(0, b6)])), 1);
+    let chart = &book.sheet(0).unwrap().charts[0];
+    let Some(DataSource::Numbers { points, .. }) = &chart.plots[0].series[0].values else {
+        panic!("numbers");
+    };
+    assert_eq!(points[0], (0, 999.0));
+    assert!(!chart.is_unchanged());
+    let back = cycle(&book);
+    assert_eq!(back.sheet(0).unwrap().charts[0].plots, chart.plots);
+
+    // A chart written without caches gets them.
+    let mut book = open("fixtures/chart.xlsx");
+    assert_eq!(refresh_caches(&mut book, None), 1);
+    let series = &book.sheet(0).unwrap().charts[0].plots[0].series[0];
+    assert_eq!(
+        series.name.as_ref().and_then(ChartText::shown),
+        Some("Sales")
+    );
+    let Some(DataSource::Strings { points, .. }) = &series.categories else {
+        panic!("labels");
+    };
+    assert_eq!(points[3], (3, "Q4".to_owned()));
+}

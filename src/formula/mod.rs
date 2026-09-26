@@ -5,8 +5,10 @@
 //! parser  formula text -> Expr
 //! value   the values and the conversions between them
 //! eval    Expr + a workbook -> Value
+//! chart   chart caches read again from the cells
 //! ```
 
+pub mod chart;
 pub mod custom;
 pub mod eval;
 pub mod functions;

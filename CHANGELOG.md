@@ -43,6 +43,16 @@
   `position` and the five `show_*` flags) are modelled. A point label keeps
   its text, layout and extensions from `source`, and a cell it shows moves
   with inserted rows like the rest of the chart.
+- `formula::chart::refresh_caches(book, changed)`: reads the caches of chart
+  series names, categories, values, bubble sizes and titles again from their
+  cells, for every chart (`None`) or only for references covering the cells
+  an edit touched, and returns how many charts changed. A reference may be a
+  range, a union or a defined name (`[0]!Name` included). The caches come out
+  as Excel writes them - numbers with gaps left out, labels as the cells show
+  them (numbers through their format, text as is), hidden rows and columns
+  skipped under `plotVisOnly` - so on the 133 charts of the test files Excel
+  saved nothing changes, and an untouched chart still goes back byte for
+  byte.
 
 ### Fixed
 

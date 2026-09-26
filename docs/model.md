@@ -166,9 +166,20 @@ assign.
 `Worksheet::charts` holds one `Chart` per chart frame in the sheet's drawing:
 its name, anchor, title, plots with their series, axes and legend. A series
 reads its cells through a formula (`DataSource::formula`) and keeps the values
-Excel cached next to it. Fills, fonts and label positions are not modelled;
-they stay in the `markup` fields as the XML they were written in, so a series
-edited through the model keeps its colour.
+Excel cached next to it. Series fill and line (`ShapeFormat`), markers, data
+points, data labels, and a stock chart's high-low lines and up/down bars are
+fields of the model; each keeps the element it was read from, so gradients,
+effects and extensions the model does not name survive an edit. Fonts,
+trend lines and the rest stay in the `markup` fields as the XML they were
+written in.
+
+The cached values are what a program drawing the chart reads, and they go
+stale when the cells change. `formula::chart::refresh_caches` reads them again
+the way Excel does - numbers with gaps left out, labels as the cells show
+them, hidden cells skipped when the chart plots visible cells only - either
+for every chart or only for the references that cover the cells an edit
+touched. A cache that comes out the same is left alone, so the chart still
+goes back byte for byte.
 
 The writer compares each chart with the copy taken when it was read. An
 unchanged chart goes back as its original bytes. A changed one is rendered from
@@ -201,6 +212,8 @@ if let Some(sheet) = book.sheet_mut(0) {
         ..Chart::default()
     });
 }
+// Fill in the caches from the cells: one chart changed.
+assert_eq!(excelerate::formula::chart::refresh_caches(&mut book, None), 1);
 ```
 
 Two limits. A chart inside a group of shapes is positioned by the group, so
