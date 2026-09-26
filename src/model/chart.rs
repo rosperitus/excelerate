@@ -396,7 +396,16 @@ pub struct Plot {
     pub axis_ids: Vec<u32>,
     /// Data labels for every series of the plot that has none of its own.
     pub labels: Option<DataLabels>,
-    /// What follows the labels - gap width, overlap, hole size, drop lines -
+    /// Lines from each point down to the category axis (`c:dropLines`), on a
+    /// line or area plot.
+    pub drop_lines: Option<ChartLines>,
+    /// A line from the highest value to the lowest at each category
+    /// (`c:hiLowLines`), on a stock or line plot.
+    pub high_low_lines: Option<ChartLines>,
+    /// Bars from the first series to the last at each category
+    /// (`c:upDownBars`): the candles of a stock chart with an opening price.
+    pub up_down_bars: Option<UpDownBars>,
+    /// What follows - gap width, overlap, hole size, markers, smoothing -
     /// carried as written.
     pub markup: String,
 }
@@ -411,9 +420,35 @@ impl Plot {
             series: Vec::new(),
             axis_ids: Vec::new(),
             labels: None,
+            drop_lines: None,
+            high_low_lines: None,
+            up_down_bars: None,
             markup: String::new(),
         }
     }
+}
+
+/// Lines a plot draws besides its series (`c:dropLines`, `c:hiLowLines`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChartLines {
+    /// Their colour and width; `None` leaves them to the chart style.
+    pub format: Option<ShapeFormat>,
+}
+
+/// The bars between the first and the last series of a stock or line plot
+/// (`c:upDownBars`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct UpDownBars {
+    /// The space between bars, as a percentage of a bar's width (0 to 500);
+    /// `None` for the default, 150.
+    pub gap_width: Option<u16>,
+    /// The fill and outline of a bar where the last series ends above the
+    /// first - a day that closed up (`c:upBars`); `None` for the style's.
+    pub up: Option<ShapeFormat>,
+    /// The same where it ends below (`c:downBars`).
+    pub down: Option<ShapeFormat>,
+    /// The element as read; `None` for one made in code.
+    pub source: Option<String>,
 }
 
 /// The chart types of the 2006 schema.

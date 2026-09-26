@@ -10,10 +10,10 @@
 use crate::coordinate::{Col, Row};
 use crate::model::chart::{
     Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartColor,
-    ChartEx, ChartText, ColorBase, ColorTransform, DataLabels, DataPoint, DataSource, Dimension,
-    DimensionRole, EditAs, ExSeries, Fill, Grouping, LabelPosition, Legend, LegendPosition,
-    LineFormat, Marker, MarkerSymbol, Plot, PlotKind, RadarStyle, ScatterStyle, Series,
-    SeriesLayout, SeriesMarker, ShapeFormat, Title,
+    ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabels, DataPoint, DataSource,
+    Dimension, DimensionRole, EditAs, ExSeries, Fill, Grouping, LabelPosition, Legend,
+    LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, RadarStyle, ScatterStyle,
+    Series, SeriesLayout, SeriesMarker, ShapeFormat, Title, UpDownBars,
 };
 use core::ops::Range;
 use quick_xml::Reader;
@@ -536,6 +536,9 @@ fn read_plot(node: &Node<'_>) -> Option<Plot> {
             "varyColors" => out.vary_colors = Some(child.flag()),
             "ser" => out.series.push(read_series(&child)),
             "dLbls" => out.labels = Some(read_labels(&child)),
+            "dropLines" => out.drop_lines = Some(read_lines(&child)),
+            "hiLowLines" => out.high_low_lines = Some(read_lines(&child)),
+            "upDownBars" => out.up_down_bars = Some(read_up_down_bars(&child)),
             "axId" => {
                 if let Some(id) = child.val().and_then(|v| v.parse().ok()) {
                     out.axis_ids.push(id);
@@ -671,6 +674,33 @@ pub(crate) fn read_point(node: &Node<'_>) -> DataPoint {
             .iter()
             .find(|n| n.name == "spPr")
             .map(read_shape_format),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads `<c:dropLines>` or `<c:hiLowLines>`.
+fn read_lines(node: &Node<'_>) -> ChartLines {
+    ChartLines {
+        format: node.child("spPr").as_ref().map(read_shape_format),
+    }
+}
+
+/// Reads `<c:upDownBars>`.
+pub(crate) fn read_up_down_bars(node: &Node<'_>) -> UpDownBars {
+    let kids = node.children();
+    let find = |name: &str| kids.iter().find(|n| n.name == name);
+    let bars = |name: &str| {
+        find(name)
+            .and_then(|n| n.child("spPr"))
+            .as_ref()
+            .map(read_shape_format)
+    };
+    UpDownBars {
+        gap_width: find("gapWidth")
+            .and_then(Node::val)
+            .and_then(|v| v.parse().ok()),
+        up: bars("upBars"),
+        down: bars("downBars"),
         source: Some(node.outer.to_owned()),
     }
 }

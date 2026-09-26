@@ -8,6 +8,9 @@
   and `c:dLbls` (now fields of `Series`), and `invertIfNegative`,
   `pictureOptions` and `explosion` moved to the new
   `SeriesMarkup::after_format`; `Plot::markup` no longer holds `c:dLbls`.
+- `Plot` gains `drop_lines`, `high_low_lines` and `up_down_bars`, so a
+  `Plot { .. }` literal needs them (or `Plot::new`); `Plot::markup` no longer
+  holds `c:dropLines`, `c:hiLowLines` and `c:upDownBars`.
 
 ### Added
 
@@ -28,6 +31,10 @@
   element keeps its `source`: while the model still says what it says it is
   written back as read, otherwise the model's fields are written into it and
   gradients, dashes, effects and extensions stay.
+- Charts: the lines and bars of a stock chart are modelled. `Plot` gains
+  `high_low_lines` and `drop_lines` (`ChartLines`, with their `ShapeFormat`)
+  and `up_down_bars` (`UpDownBars`: `gap_width`, and the fill and outline of
+  the `up` and `down` bars), written back as read while unchanged.
 
 ### Fixed
 

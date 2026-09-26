@@ -13,10 +13,10 @@ use excelerate::coordinate::{Col, Row};
 use excelerate::edit::insert_rows;
 use excelerate::model::Spreadsheet;
 use excelerate::model::chart::{
-    Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartColor, ChartEx, ChartText, ColorBase,
-    ColorTransform, DataLabels, DataSource, Dimension, DimensionRole, ExSeries, Fill, Grouping,
-    LabelPosition, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, Series,
-    SeriesLayout, ShapeFormat, Title,
+    Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartColor, ChartEx, ChartLines, ChartText,
+    ColorBase, ColorTransform, DataLabels, DataSource, Dimension, DimensionRole, ExSeries, Fill,
+    Grouping, LabelPosition, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind,
+    Series, SeriesLayout, ShapeFormat, Title, UpDownBars,
 };
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
@@ -785,4 +785,108 @@ fn formatting_the_model_did_not_change_is_written_as_read() {
         let after = chart_at(&back, path);
         assert_eq!(after.plots, edited.plots, "{path}");
     }
+}
+
+/// A stock chart with an opening price, as Excel writes it: four series,
+/// high-low lines, and candles whose extension a rewrite must keep.
+const STOCK: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" "#,
+    r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+    r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+    r#"<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:stockChart>"#,
+    r#"<c:ser><c:idx val="0"/><c:order val="0"/><c:spPr><a:ln w="19050"><a:noFill/></a:ln></c:spPr>"#,
+    r#"<c:marker><c:symbol val="none"/></c:marker><c:val><c:numRef><c:f>Sheet1!$B$2:$B$3</c:f>"#,
+    r#"</c:numRef></c:val><c:smooth val="0"/></c:ser>"#,
+    r#"<c:hiLowLines><c:spPr><a:ln w="9525"><a:solidFill><a:schemeClr val="tx1"><a:lumMod val="75000"/>"#,
+    r#"<a:lumOff val="25000"/></a:schemeClr></a:solidFill></a:ln></c:spPr></c:hiLowLines>"#,
+    r#"<c:upDownBars><c:gapWidth val="150"/><c:upBars><c:spPr><a:solidFill><a:schemeClr val="lt1"/>"#,
+    r#"</a:solidFill></c:spPr></c:upBars><c:downBars><c:spPr><a:solidFill><a:schemeClr val="dk1"/>"#,
+    r#"</a:solidFill><a:effectLst/></c:spPr></c:downBars><c:extLst><c:ext uri="{X}"/></c:extLst>"#,
+    r#"</c:upDownBars><c:axId val="1"/><c:axId val="2"/></c:stockChart>"#,
+    r#"<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/>"#,
+    r#"<c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling>"#,
+    r#"<c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>"#,
+    r#"<c:crossAx val="1"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/></c:chart></c:chartSpace>"#,
+);
+
+/// `chart2.xlsx` with its one chart part replaced by `xml`, read back.
+fn with_chart_part(xml: &str) -> (Spreadsheet, String) {
+    let mut book = open("chart2.xlsx");
+    let path = chart_part(&book.sheet(0).unwrap().charts[0]).to_owned();
+    let part = book.parts.iter_mut().find(|p| p.path == path).unwrap();
+    part.data = xml.as_bytes().to_vec();
+    // The chart itself is untouched, so the part goes out as it now is.
+    (cycle(&book), path)
+}
+
+#[test]
+fn stock_lines_and_bars_are_read_and_rewritten() {
+    let (mut book, path) = with_chart_part(STOCK);
+    let plot = &book.sheet(0).unwrap().charts[0].plots[0];
+    assert_eq!(plot.kind, PlotKind::Stock);
+    let lines = plot
+        .high_low_lines
+        .as_ref()
+        .unwrap()
+        .format
+        .as_ref()
+        .unwrap();
+    assert_eq!(lines.line.as_ref().unwrap().width, Some(9525));
+    assert_eq!(plot.drop_lines, None);
+    let bars = plot.up_down_bars.as_ref().unwrap();
+    assert_eq!(bars.gap_width, Some(150));
+    let fill = |f: &Option<ShapeFormat>| f.as_ref().unwrap().fill.clone();
+    assert_eq!(fill(&bars.up), Some(Fill::Solid(ChartColor::scheme("lt1"))));
+    assert_eq!(
+        fill(&bars.down),
+        Some(Fill::Solid(ChartColor::scheme("dk1")))
+    );
+    assert!(!plot.markup.contains("hiLowLines") && !plot.markup.contains("upDownBars"));
+
+    // Narrower red candles going up; the down bars and the extension stay.
+    let plot = &mut book.sheet_mut(0).unwrap().charts[0].plots[0];
+    let bars = plot.up_down_bars.as_mut().unwrap();
+    bars.gap_width = Some(50);
+    bars.up = Some(ShapeFormat::solid(ChartColor::rgb(0xFF_0000)));
+    let edited = plot.clone();
+    let back = cycle(&book);
+    let text = text_of(&back, &path);
+    let after = &back.sheet(0).unwrap().charts[0].plots[0];
+    let bars = after.up_down_bars.as_ref().unwrap();
+    let wanted = edited.up_down_bars.as_ref().unwrap();
+    assert_eq!(bars.gap_width, Some(50));
+    assert_eq!(
+        fill(&bars.up),
+        Some(Fill::Solid(ChartColor::rgb(0xFF_0000)))
+    );
+    assert_eq!(bars.down, wanted.down);
+    assert_eq!(after.high_low_lines, edited.high_low_lines);
+    assert!(
+        text.contains(r#"<c:gapWidth val="50"/><c:upBars><c:spPr>"#),
+        "{text}"
+    );
+    assert!(text.contains(concat!(
+        r#"<c:downBars><c:spPr><a:solidFill><a:schemeClr val="dk1"/></a:solidFill>"#,
+        r#"<a:effectLst/></c:spPr></c:downBars><c:extLst><c:ext uri="{X}"/></c:extLst>"#,
+        r#"</c:upDownBars><c:axId val="1"/>"#
+    )));
+    assert!(text.contains("<c:hiLowLines><c:spPr><a:ln w=\"9525\">"));
+
+    // Made in code: plain lines and bars with nothing but the defaults.
+    let mut plot = Plot::new(PlotKind::Stock);
+    plot.axis_ids = vec![1, 2];
+    plot.high_low_lines = Some(ChartLines::default());
+    plot.up_down_bars = Some(UpDownBars::default());
+    let chart = &mut book.sheet_mut(0).unwrap().charts[0];
+    chart.plots = vec![plot];
+    let back = cycle(&book);
+    assert!(
+        text_of(&back, &path).contains(
+            "<c:hiLowLines/><c:upDownBars><c:upBars/><c:downBars/></c:upDownBars><c:axId"
+        )
+    );
+    let plot = &back.sheet(0).unwrap().charts[0].plots[0];
+    assert_eq!(plot.high_low_lines, Some(ChartLines::default()));
+    assert_eq!(plot.up_down_bars.as_ref().unwrap().up, None);
 }

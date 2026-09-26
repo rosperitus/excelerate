@@ -15,15 +15,17 @@
 use super::xlsx::relative_target;
 use super::xmlesc::escape;
 use crate::error::{Error, Result};
-use crate::model::chart::{Anchor, ChartText, DataSource, Marker, Plot, PlotKind, Title};
+use crate::model::chart::{Anchor, ChartText, DataSource, Marker, Plot, PlotKind, Series, Title};
 use crate::model::chart::{BarDirection, Chart, ChartAxis};
 use crate::model::chart::{
     ChartColor, ColorBase, DataLabels, DataPoint, Fill, LineFormat, SeriesMarker, ShapeFormat,
+    UpDownBars,
 };
 use crate::model::{Attachment, OpaquePart, Spreadsheet, Worksheet};
 use crate::reader::chart::{FILLS, Node, children, read_chart, rich_text, scan_drawing};
 use crate::reader::chart::{
-    read_fill, read_labels, read_line, read_marker, read_point, read_shape_format, tag_attr,
+    read_fill, read_labels, read_line, read_marker, read_point, read_shape_format,
+    read_up_down_bars, tag_attr,
 };
 use core::ops::Range;
 use std::borrow::Cow;
@@ -689,57 +691,78 @@ impl Out {
         }
         let xy = plot.kind.plots_xy();
         for series in &plot.series {
-            self.open("ser");
-            self.empty("idx", Some(&series.index.to_string()));
-            self.empty("order", Some(&series.order.to_string()));
-            match &series.name {
-                Some(text @ ChartText::Reference { .. }) => {
-                    self.open("tx");
-                    self.reference(text);
-                    self.close("tx");
-                }
-                Some(ChartText::Text { text, .. }) => {
-                    self.open("tx");
-                    self.text_element("v", text);
-                    self.close("tx");
-                }
-                None => {}
-            }
-            if let Some(format) = &series.format {
-                self.s.push_str(&shape_format(&self.p, format));
-            }
-            self.s.push_str(&series.markup.after_format);
-            if let Some(marker) = &series.marker {
-                self.s.push_str(&series_marker(&self.p, marker));
-            }
-            for point in &series.data_points {
-                self.s.push_str(&data_point(&self.p, point));
-            }
-            if let Some(labels) = &series.labels {
-                self.s.push_str(&data_labels(&self.p, labels));
-            }
-            self.s.push_str(&series.markup.before_data);
-            let (cat, val) = if xy { ("xVal", "yVal") } else { ("cat", "val") };
-            if let Some(data) = &series.categories {
-                self.data(cat, data);
-            }
-            if let Some(data) = &series.values {
-                self.data(val, data);
-            }
-            if let Some(data) = &series.bubble_sizes {
-                self.data("bubbleSize", data);
-            }
-            self.s.push_str(&series.markup.after_data);
-            self.close("ser");
+            self.series(series, xy);
         }
         if let Some(labels) = &plot.labels {
             self.s.push_str(&data_labels(&self.p, labels));
+        }
+        for (name, lines) in [
+            ("dropLines", &plot.drop_lines),
+            ("hiLowLines", &plot.high_low_lines),
+        ] {
+            match lines.as_ref().map(|l| &l.format) {
+                Some(Some(format)) => {
+                    self.open(name);
+                    self.s.push_str(&shape_format(&self.p, format));
+                    self.close(name);
+                }
+                Some(None) => self.empty(name, None),
+                None => {}
+            }
+        }
+        if let Some(bars) = &plot.up_down_bars {
+            self.s.push_str(&up_down_bars(&self.p, bars));
         }
         self.s.push_str(&plot.markup);
         for id in &plot.axis_ids {
             self.empty("axId", Some(&id.to_string()));
         }
         self.close(element);
+    }
+
+    fn series(&mut self, series: &Series, xy: bool) {
+        self.open("ser");
+        self.empty("idx", Some(&series.index.to_string()));
+        self.empty("order", Some(&series.order.to_string()));
+        match &series.name {
+            Some(text @ ChartText::Reference { .. }) => {
+                self.open("tx");
+                self.reference(text);
+                self.close("tx");
+            }
+            Some(ChartText::Text { text, .. }) => {
+                self.open("tx");
+                self.text_element("v", text);
+                self.close("tx");
+            }
+            None => {}
+        }
+        if let Some(format) = &series.format {
+            self.s.push_str(&shape_format(&self.p, format));
+        }
+        self.s.push_str(&series.markup.after_format);
+        if let Some(marker) = &series.marker {
+            self.s.push_str(&series_marker(&self.p, marker));
+        }
+        for point in &series.data_points {
+            self.s.push_str(&data_point(&self.p, point));
+        }
+        if let Some(labels) = &series.labels {
+            self.s.push_str(&data_labels(&self.p, labels));
+        }
+        self.s.push_str(&series.markup.before_data);
+        let (cat, val) = if xy { ("xVal", "yVal") } else { ("cat", "val") };
+        if let Some(data) = &series.categories {
+            self.data(cat, data);
+        }
+        if let Some(data) = &series.values {
+            self.data(val, data);
+        }
+        if let Some(data) = &series.bubble_sizes {
+            self.data("bubbleSize", data);
+        }
+        self.s.push_str(&series.markup.after_data);
+        self.close("ser");
     }
 
     fn data(&mut self, name: &str, data: &DataSource) {
@@ -914,6 +937,7 @@ const POINT: &[&[&str]] = &[
     &["pictureOptions"],
     &["extLst"],
 ];
+const UP_DOWN: &[&[&str]] = &[&["gapWidth"], &["upBars"], &["downBars"], &["extLst"]];
 const LABELS: &[&[&str]] = &[
     &["dLbl"],
     &["delete"],
@@ -1117,6 +1141,30 @@ fn data_point(p: &str, point: &DataPoint) -> String {
         Some(node) if read_point(&node) == *point => node.outer.to_owned(),
         Some(node) => rebuild(&node, POINT, &[(0, idx), (5, format)], |_| false, None),
         None => format!("<{p}dPt>{idx}{format}</{p}dPt>"),
+    }
+}
+
+fn up_down_bars(p: &str, bars: &UpDownBars) -> String {
+    let gap = bars
+        .gap_width
+        .map_or_else(String::new, |g| format!(r#"<{p}gapWidth val="{g}"/>"#));
+    // Excel writes both bars even with nothing to say about them.
+    let bar = |name: &str, format: Option<&ShapeFormat>| match format {
+        Some(f) => format!("<{p}{name}>{}</{p}{name}>", shape_format(p, f)),
+        None => format!("<{p}{name}/>"),
+    };
+    let up = bar("upBars", bars.up.as_ref());
+    let down = bar("downBars", bars.down.as_ref());
+    match bars.source.as_deref().and_then(element) {
+        Some(node) if read_up_down_bars(&node) == *bars => node.outer.to_owned(),
+        Some(node) => rebuild(
+            &node,
+            UP_DOWN,
+            &[(0, gap), (1, up), (2, down)],
+            |_| false,
+            None,
+        ),
+        None => format!("<{p}upDownBars>{gap}{up}{down}</{p}upDownBars>"),
     }
 }
 
