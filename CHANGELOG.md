@@ -11,6 +11,8 @@
 - `Plot` gains `drop_lines`, `high_low_lines` and `up_down_bars`, so a
   `Plot { .. }` literal needs them (or `Plot::new`); `Plot::markup` no longer
   holds `c:dropLines`, `c:hiLowLines` and `c:upDownBars`.
+- `SeriesMarker` gains `format` and `DataLabels` gains `points`: literals of
+  either need them (or `..Default::default()`).
 
 ### Added
 
@@ -35,6 +37,12 @@
   `high_low_lines` and `drop_lines` (`ChartLines`, with their `ShapeFormat`)
   and `up_down_bars` (`UpDownBars`: `gap_width`, and the fill and outline of
   the `up` and `down` bars), written back as read while unchanged.
+- Charts: a marker's own fill and outline (`SeriesMarker::format`, the
+  `c:spPr` inside `c:marker`) and labels of single points
+  (`DataLabels::points`: `DataLabel` with the point index, `deleted`,
+  `position` and the five `show_*` flags) are modelled. A point label keeps
+  its text, layout and extensions from `source`, and a cell it shows moves
+  with inserted rows like the rest of the chart.
 
 ### Fixed
 

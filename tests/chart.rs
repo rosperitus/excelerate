@@ -14,9 +14,9 @@ use excelerate::edit::insert_rows;
 use excelerate::model::Spreadsheet;
 use excelerate::model::chart::{
     Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartColor, ChartEx, ChartLines, ChartText,
-    ColorBase, ColorTransform, DataLabels, DataSource, Dimension, DimensionRole, ExSeries, Fill,
-    Grouping, LabelPosition, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind,
-    Series, SeriesLayout, ShapeFormat, Title, UpDownBars,
+    ColorBase, ColorTransform, DataLabel, DataLabels, DataSource, Dimension, DimensionRole,
+    ExSeries, Fill, Grouping, LabelPosition, LegendPosition, LineFormat, Marker, MarkerSymbol,
+    Plot, PlotKind, Series, SeriesLayout, ShapeFormat, Title, UpDownBars,
 };
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
@@ -889,4 +889,140 @@ fn stock_lines_and_bars_are_read_and_rewritten() {
     let plot = &back.sheet(0).unwrap().charts[0].plots[0];
     assert_eq!(plot.high_low_lines, Some(ChartLines::default()));
     assert_eq!(plot.up_down_bars.as_ref().unwrap().up, None);
+}
+
+#[test]
+fn a_marker_keeps_its_own_fill_and_outline() {
+    let path = "xl/charts/chart102.xml";
+    let mut book = open("chart1.xlsx");
+    let chart = chart_at_mut(&mut book, path);
+    let marker = chart
+        .plots
+        .iter_mut()
+        .flat_map(|p| &mut p.series)
+        .filter_map(|s| s.marker.as_mut())
+        .find(|m| m.format.is_some())
+        .unwrap();
+    let format = marker.format.as_mut().unwrap();
+    assert_eq!(format.fill, Some(Fill::Solid(ChartColor::scheme("bg1"))));
+    let line = format.line.as_mut().unwrap();
+    assert_eq!(line.fill, Some(Fill::Solid(ChartColor::rgb(0x74_4BF3))));
+    line.fill = Some(Fill::Solid(ChartColor::rgb(0x00_FF00)));
+    format.fill = Some(Fill::None);
+
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    assert!(
+        text.contains(r#"<c:marker><c:symbol val="circle"/><c:size val="6"/><c:spPr><a:noFill"#),
+        "{text}"
+    );
+    assert!(text.contains(
+        r#"<a:srgbClr val="00FF00"/></a:solidFill></a:ln><a:effectLst/></c:spPr></c:marker>"#
+    ));
+    let marker = chart_at(&back, path)
+        .plots
+        .iter()
+        .flat_map(|p| &p.series)
+        .filter_map(|s| s.marker.as_ref())
+        .find(|m| {
+            m.format
+                .as_ref()
+                .is_some_and(|f| f.fill == Some(Fill::None))
+        })
+        .unwrap();
+    assert_eq!(marker.symbol, Some(MarkerSymbol::Circle));
+}
+
+/// Two labels of their own on a series: one showing a cell, with an
+/// extension, and one hidden.
+const POINT_LABELS: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" "#,
+    r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+    r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+    r#"<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:barChart>"#,
+    r#"<c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/>"#,
+    r#"<c:dLbls><c:dLbl><c:idx val="1"/><c:tx><c:strRef><c:f>Лист1!$A$1</c:f><c:strCache>"#,
+    r#"<c:ptCount val="1"/><c:pt idx="0"><c:v>Peak</c:v></c:pt></c:strCache></c:strRef></c:tx>"#,
+    r#"<c:dLblPos val="outEnd"/><c:showLegendKey val="0"/><c:showVal val="1"/>"#,
+    r#"<c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="0"/>"#,
+    r#"<c:showBubbleSize val="0"/><c:extLst><c:ext uri="{Y}"/></c:extLst></c:dLbl>"#,
+    r#"<c:dLbl><c:idx val="2"/><c:delete val="1"/></c:dLbl>"#,
+    r#"<c:showLegendKey val="0"/><c:showVal val="0"/><c:showCatName val="0"/>"#,
+    r#"<c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>"#,
+    r#"<c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f></c:numRef></c:val></c:ser>"#,
+    r#"<c:gapWidth val="219"/><c:axId val="1"/><c:axId val="2"/></c:barChart>"#,
+    r#"<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/>"#,
+    r#"<c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling>"#,
+    r#"<c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>"#,
+    r#"<c:crossAx val="1"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/></c:chart></c:chartSpace>"#,
+);
+
+#[test]
+fn labels_of_single_points_are_read_and_rewritten() {
+    let (mut book, path) = with_chart_part(POINT_LABELS);
+    let labels = book.sheet(0).unwrap().charts[0].plots[0].series[0]
+        .labels
+        .clone()
+        .unwrap();
+    assert!(!labels.show_value);
+    let [peak, hidden] = labels.points.as_slice() else {
+        panic!("two point labels, got {:?}", labels.points);
+    };
+    assert_eq!(
+        (peak.index, peak.show_value, peak.position, peak.deleted),
+        (1, true, Some(LabelPosition::OutsideEnd), false)
+    );
+    assert_eq!((hidden.index, hidden.deleted), (2, true));
+
+    // The peak also shows its category, the hidden one comes back as a plain
+    // value, and a third is added.
+    let labels = book.sheet_mut(0).unwrap().charts[0].plots[0].series[0]
+        .labels
+        .as_mut()
+        .unwrap();
+    labels.points[0].show_category_name = true;
+    labels.points[1].deleted = false;
+    labels.points[1].show_value = true;
+    labels.points.push(DataLabel {
+        index: 0,
+        show_series_name: true,
+        ..DataLabel::default()
+    });
+    // Rows inserted above move the cell the label shows, inside the label.
+    insert_rows(&mut book, 0, Row::from_one_based(1).unwrap(), 2).unwrap();
+    let back = cycle(&book);
+    let text = text_of(&back, &path);
+    let points = &back.sheet(0).unwrap().charts[0].plots[0].series[0]
+        .labels
+        .as_ref()
+        .unwrap()
+        .points;
+    let said: Vec<_> = points
+        .iter()
+        .map(|l| {
+            (
+                l.index,
+                l.deleted,
+                l.show_value,
+                l.show_category_name,
+                l.show_series_name,
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (1, false, true, true, false),
+            (2, false, true, false, false),
+            (0, false, false, false, true)
+        ]
+    );
+    // The cell and the extension stay with the label.
+    assert!(text.contains("<c:f>Лист1!$A$3</c:f><c:strCache>"), "{text}");
+    assert!(text.contains(r#"<c:showCatName val="1"/><c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/><c:extLst><c:ext uri="{Y}"/></c:extLst></c:dLbl>"#), "{text}");
+    assert!(
+        text.contains(r#"<c:dLbl><c:idx val="2"/><c:showLegendKey val="0"/><c:showVal val="1"/>"#),
+        "{text}"
+    );
 }

@@ -10,8 +10,8 @@
 use crate::coordinate::{Col, Row};
 use crate::model::chart::{
     Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartColor,
-    ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabels, DataPoint, DataSource,
-    Dimension, DimensionRole, EditAs, ExSeries, Fill, Grouping, LabelPosition, Legend,
+    ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint,
+    DataSource, Dimension, DimensionRole, EditAs, ExSeries, Fill, Grouping, LabelPosition, Legend,
     LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, RadarStyle, ScatterStyle,
     Series, SeriesLayout, SeriesMarker, ShapeFormat, Title, UpDownBars,
 };
@@ -656,6 +656,10 @@ pub(crate) fn read_marker(node: &Node<'_>) -> SeriesMarker {
     SeriesMarker {
         symbol: val("symbol").and_then(MarkerSymbol::parse),
         size: val("size").and_then(|v| v.parse().ok()),
+        format: kids
+            .iter()
+            .find(|n| n.name == "spPr")
+            .map(read_shape_format),
         source: Some(node.outer.to_owned()),
     }
 }
@@ -711,6 +715,11 @@ pub(crate) fn read_labels(node: &Node<'_>) -> DataLabels {
     let find = |name: &str| kids.iter().find(|n| n.name == name);
     let flag = |name: &str| find(name).is_some_and(Node::flag);
     DataLabels {
+        points: kids
+            .iter()
+            .filter(|n| n.name == "dLbl")
+            .map(read_label)
+            .collect(),
         deleted: flag("delete"),
         position: find("dLblPos")
             .and_then(Node::val)
@@ -721,6 +730,35 @@ pub(crate) fn read_labels(node: &Node<'_>) -> DataLabels {
         show_series_name: flag("showSerName"),
         show_percent: flag("showPercent"),
         source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads `<c:dLbl>`: the same switches as `<c:dLbls>`, for one point.
+pub(crate) fn read_label(node: &Node<'_>) -> DataLabel {
+    let DataLabels {
+        points: _,
+        deleted,
+        position,
+        show_legend_key,
+        show_value,
+        show_category_name,
+        show_series_name,
+        show_percent,
+        source,
+    } = read_labels(node);
+    DataLabel {
+        index: node
+            .child("idx")
+            .and_then(|n| n.val().and_then(|v| v.parse().ok()))
+            .unwrap_or(0),
+        deleted,
+        position,
+        show_legend_key,
+        show_value,
+        show_category_name,
+        show_series_name,
+        show_percent,
+        source,
     }
 }
 

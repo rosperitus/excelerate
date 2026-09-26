@@ -164,10 +164,11 @@ impl Chart {
         }
         for plot in &mut self.plots {
             out.push(&mut plot.markup);
-            // A label can show a cell (`c:dLbl/c:tx/c:strRef`).
-            out.extend(plot.labels.as_mut().and_then(|l| l.source.as_mut()));
+            // A label can show a cell (`c:dLbl/c:tx/c:strRef`), and the
+            // point's label keeps its own copy of the element.
+            let mut labels: Vec<&mut DataLabels> = plot.labels.iter_mut().collect();
             for series in &mut plot.series {
-                out.extend(series.labels.as_mut().and_then(|l| l.source.as_mut()));
+                labels.extend(series.labels.as_mut());
                 let SeriesMarkup {
                     after_format,
                     before_data,
@@ -184,6 +185,10 @@ impl Chart {
                         out.extend(formula.as_mut());
                     }
                 }
+            }
+            for labels in labels {
+                out.extend(labels.source.as_mut());
+                out.extend(labels.points.iter_mut().filter_map(|l| l.source.as_mut()));
             }
         }
         out
@@ -906,15 +911,15 @@ fn map_channels(rgb: u32, f: impl Fn(f64) -> f64) -> u32 {
 }
 
 /// The markers of a series (`c:marker`).
-///
-/// The marker's own fill and outline are not modelled; they stay in
-/// `source`.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SeriesMarker {
     /// The shape; `None` for the chart's default.
     pub symbol: Option<MarkerSymbol>,
     /// The size in points, 2 to 72.
     pub size: Option<u8>,
+    /// The marker's own fill and outline (`c:spPr`); `None` leaves them to
+    /// the series.
+    pub format: Option<ShapeFormat>,
     /// The element as read; `None` for one made in code.
     pub source: Option<String>,
 }
@@ -1003,17 +1008,48 @@ pub struct DataPoint {
 
 /// Data labels of a series or a plot (`c:dLbls`).
 ///
-/// Labels of single points (`c:dLbl`), number format, font and fill are not
-/// modelled and stay in `source`.
+/// Number format, font and fill are not modelled and stay in `source`.
 #[derive(Debug, Clone, PartialEq, Default)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent switches, one element each in the file"
 )]
 pub struct DataLabels {
+    /// Labels of single points that differ from the rest (`c:dLbl`).
+    pub points: Vec<DataLabel>,
     /// Hidden altogether (`c:delete`).
     pub deleted: bool,
     /// Where each label sits relative to its point; `None` for the default.
+    pub position: Option<LabelPosition>,
+    /// Shows the legend key beside the label.
+    pub show_legend_key: bool,
+    /// Shows the value.
+    pub show_value: bool,
+    /// Shows the category.
+    pub show_category_name: bool,
+    /// Shows the series name.
+    pub show_series_name: bool,
+    /// Shows the share of the whole, on a pie.
+    pub show_percent: bool,
+    /// The element as read; `None` for one made in code.
+    pub source: Option<String>,
+}
+
+/// The label of one point, set apart from the rest (`c:dLbl`).
+///
+/// Its own text, layout, number format, font and fill are not modelled and
+/// stay in `source`.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent switches, one element each in the file"
+)]
+pub struct DataLabel {
+    /// The point's index in the series.
+    pub index: u32,
+    /// This point has no label (`c:delete`).
+    pub deleted: bool,
+    /// Where the label sits relative to its point; `None` for the default.
     pub position: Option<LabelPosition>,
     /// Shows the legend key beside the label.
     pub show_legend_key: bool,

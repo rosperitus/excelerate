@@ -18,13 +18,13 @@ use crate::error::{Error, Result};
 use crate::model::chart::{Anchor, ChartText, DataSource, Marker, Plot, PlotKind, Series, Title};
 use crate::model::chart::{BarDirection, Chart, ChartAxis};
 use crate::model::chart::{
-    ChartColor, ColorBase, DataLabels, DataPoint, Fill, LineFormat, SeriesMarker, ShapeFormat,
-    UpDownBars,
+    ChartColor, ColorBase, DataLabel, DataLabels, DataPoint, Fill, LabelPosition, LineFormat,
+    SeriesMarker, ShapeFormat, UpDownBars,
 };
 use crate::model::{Attachment, OpaquePart, Spreadsheet, Worksheet};
 use crate::reader::chart::{FILLS, Node, children, read_chart, rich_text, scan_drawing};
 use crate::reader::chart::{
-    read_fill, read_labels, read_line, read_marker, read_point, read_shape_format,
+    read_fill, read_label, read_labels, read_line, read_marker, read_point, read_shape_format,
     read_up_down_bars, tag_attr,
 };
 use core::ops::Range;
@@ -938,6 +938,24 @@ const POINT: &[&[&str]] = &[
     &["extLst"],
 ];
 const UP_DOWN: &[&[&str]] = &[&["gapWidth"], &["upBars"], &["downBars"], &["extLst"]];
+const LABEL: &[&[&str]] = &[
+    &["idx"],
+    &["delete"],
+    &["layout"],
+    &["tx"],
+    &["numFmt"],
+    &["spPr"],
+    &["txPr"],
+    &["dLblPos"],
+    &["showLegendKey"],
+    &["showVal"],
+    &["showCatName"],
+    &["showSerName"],
+    &["showPercent"],
+    &["showBubbleSize"],
+    &["separator"],
+    &["extLst"],
+];
 const LABELS: &[&[&str]] = &[
     &["dLbl"],
     &["delete"],
@@ -1124,10 +1142,20 @@ fn series_marker(p: &str, marker: &SeriesMarker) -> String {
     let size = marker
         .size
         .map_or_else(String::new, |s| format!(r#"<{p}size val="{s}"/>"#));
+    let format = marker
+        .format
+        .as_ref()
+        .map_or_else(String::new, |f| shape_format(p, f));
     match marker.source.as_deref().and_then(element) {
         Some(node) if read_marker(&node) == *marker => node.outer.to_owned(),
-        Some(node) => rebuild(&node, MARKER, &[(0, symbol), (1, size)], |_| false, None),
-        None => format!("<{p}marker>{symbol}{size}</{p}marker>"),
+        Some(node) => rebuild(
+            &node,
+            MARKER,
+            &[(0, symbol), (1, size), (2, format)],
+            |_| false,
+            None,
+        ),
+        None => format!("<{p}marker>{symbol}{size}{format}</{p}marker>"),
     }
 }
 
@@ -1175,41 +1203,108 @@ fn data_labels(p: &str, labels: &DataLabels) -> String {
     {
         return node.outer.to_owned();
     }
+    let mut owned = label_switches(
+        p,
+        LABELS,
+        labels.deleted,
+        labels.position,
+        [
+            labels.show_legend_key,
+            labels.show_value,
+            labels.show_category_name,
+            labels.show_series_name,
+            labels.show_percent,
+        ],
+    );
+    owned.push((0, labels.points.iter().map(|l| data_label(p, l)).collect()));
+    label_element(p, "dLbls", LABELS, read, owned, labels.deleted)
+}
+
+fn data_label(p: &str, label: &DataLabel) -> String {
+    let read = label.source.as_deref().and_then(element);
+    if let Some(node) = &read
+        && read_label(node) == *label
+    {
+        return node.outer.to_owned();
+    }
+    let mut owned = label_switches(
+        p,
+        LABEL,
+        label.deleted,
+        label.position,
+        [
+            label.show_legend_key,
+            label.show_value,
+            label.show_category_name,
+            label.show_series_name,
+            label.show_percent,
+        ],
+    );
+    owned.push((0, format!(r#"<{p}idx val="{}"/>"#, label.index)));
+    label_element(p, "dLbl", LABEL, read, owned, label.deleted)
+}
+
+/// What a label element says through the model, as slots of `order`: the
+/// position and the five `show*` switches, or only `delete` - the schema makes
+/// hidden labels a choice against the rest.
+fn label_switches(
+    p: &str,
+    order: &[&[&str]],
+    deleted: bool,
+    position: Option<LabelPosition>,
+    shown: [bool; 5],
+) -> Vec<(usize, String)> {
+    let slot = |name: &str| order.iter().position(|n| n.contains(&name)).unwrap_or(0);
     let flag = |name: &str, on: bool| format!(r#"<{p}{name} val="{}"/>"#, u8::from(on));
-    // Hidden labels have nothing but the `delete`: the schema makes it a
-    // choice between the two.
-    let owned: Vec<(usize, String)> = if labels.deleted {
-        vec![(1, flag("delete", true))]
-    } else {
-        vec![
-            (1, String::new()),
-            (
-                5,
-                labels.position.map_or_else(String::new, |pos| {
-                    format!(r#"<{p}dLblPos val="{}"/>"#, pos.as_str())
-                }),
-            ),
-            (6, flag("showLegendKey", labels.show_legend_key)),
-            (7, flag("showVal", labels.show_value)),
-            (8, flag("showCatName", labels.show_category_name)),
-            (9, flag("showSerName", labels.show_series_name)),
-            (10, flag("showPercent", labels.show_percent)),
-        ]
-    };
-    let deleted = labels.deleted;
+    if deleted {
+        return vec![(slot("delete"), flag("delete", true))];
+    }
+    let mut out = vec![
+        (slot("delete"), String::new()),
+        (
+            slot("dLblPos"),
+            position.map_or_else(String::new, |pos| {
+                format!(r#"<{p}dLblPos val="{}"/>"#, pos.as_str())
+            }),
+        ),
+    ];
+    let names = [
+        "showLegendKey",
+        "showVal",
+        "showCatName",
+        "showSerName",
+        "showPercent",
+    ];
+    out.extend(
+        names
+            .iter()
+            .zip(shown)
+            .map(|(n, on)| (slot(n), flag(n, on))),
+    );
+    out
+}
+
+/// A label element rebuilt from what was read, or made from `owned` alone.
+/// Hidden labels drop everything between `delete` and the extensions.
+fn label_element(
+    p: &str,
+    name: &str,
+    order: &[&[&str]],
+    read: Option<Node<'_>>,
+    mut owned: Vec<(usize, String)>,
+    deleted: bool,
+) -> String {
     if let Some(node) = read {
+        let last = order.len() - 1;
         return rebuild(
             &node,
-            LABELS,
+            order,
             &owned,
-            |slot| deleted && (2..=14).contains(&slot),
+            |slot| deleted && slot > 1 && slot < last,
             None,
         );
     }
-    let mut out = format!("<{p}dLbls>");
-    for (_, text) in owned {
-        out.push_str(&text);
-    }
-    let _ = write!(out, "</{p}dLbls>");
-    out
+    owned.sort_by_key(|(slot, _)| *slot);
+    let body: String = owned.into_iter().map(|(_, text)| text).collect();
+    format!("<{p}{name}>{body}</{p}{name}>")
 }
