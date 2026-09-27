@@ -38,6 +38,33 @@ export interface SheetViewInfo {
   rightToLeft: boolean;
   topLeftCell: string | null;
 }
+/** One of the user's own document properties. */
+export interface CustomProperty {
+  name: string;
+  type: "text" | "integer" | "number" | "boolean" | "date";
+  value: string | number | boolean;
+}
+/** Title, author, dates and the user's fields, as `documentProperties` returns them. Dates are ISO 8601. */
+export interface DocumentProperties {
+  title: string | null;
+  subject: string | null;
+  creator: string | null;
+  keywords: string | null;
+  description: string | null;
+  lastModifiedBy: string | null;
+  category: string | null;
+  contentStatus: string | null;
+  language: string | null;
+  identifier: string | null;
+  revision: string | null;
+  version: string | null;
+  created: string | null;
+  modified: string | null;
+  lastPrinted: string | null;
+  company: string | null;
+  manager: string | null;
+  custom: CustomProperty[];
+}
 /** A name that stands for a formula, as `definedNames` returns it. */
 export interface WorkbookName {
   name: string;
@@ -182,6 +209,15 @@ const WRITE_TYPES: &'static str = r#"
  * what is left out keeps the value the cell had, so `{ font: { bold: true } }`
  * makes a cell bold without touching its number format.
  */
+/**
+ * What `setDocumentProperties` takes: a named field is set, `null` clears it,
+ * a missing one stays. `custom` replaces the whole list; `type` is optional.
+ */
+export type DocumentPropertiesPatch = Partial<
+  Record<Exclude<keyof DocumentProperties, "custom">, string | null>
+> & {
+  custom?: { name: string; value: string | number | boolean; type?: CustomProperty["type"] }[];
+};
 export interface CellStylePatch {
   numberFormat?: string;
   font?: Partial<{

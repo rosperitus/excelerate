@@ -80,7 +80,7 @@ pub fn write_ods_to<W: Write + Seek>(book: &Spreadsheet, sink: W) -> Result<()> 
     part("META-INF/manifest.xml", MANIFEST)?;
     part("content.xml", &content(book))?;
     part("styles.xml", STYLES)?;
-    part("meta.xml", META)?;
+    part("meta.xml", &meta(&book.properties))?;
 
     zip.finish().map_err(|e| Error::Ods(e.to_string()))?;
     Ok(())
@@ -109,16 +109,55 @@ const STYLES: &str = concat!(
     r"</office:document-styles>",
 );
 
-/// Who wrote the file.
-const META: &str = concat!(
-    r#"<?xml version="1.0" encoding="UTF-8"?>"#,
-    r#"<office:document-meta"#,
-    r#" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0""#,
-    r#" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0""#,
-    r#" office:version="1.3">"#,
-    r"<office:meta><meta:generator>excelerate</meta:generator></office:meta>",
-    r"</office:document-meta>",
-);
+/// Who wrote the file, and the workbook's properties in ODF's terms: the
+/// author is `meta:initial-creator`, the last editor `dc:creator`. Category,
+/// status, identifier, version, company and manager have no ODF element and
+/// are not written.
+fn meta(props: &crate::model::DocumentProperties) -> String {
+    use crate::model::PropertyValue;
+    let mut s = String::from(concat!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>"#,
+        r#"<office:document-meta"#,
+        r#" xmlns:office="urn:oasis:names:tc:opendocument:xmlns:office:1.0""#,
+        r#" xmlns:meta="urn:oasis:names:tc:opendocument:xmlns:meta:1.0""#,
+        r#" xmlns:dc="http://purl.org/dc/elements/1.1/""#,
+        r#" office:version="1.3">"#,
+        r"<office:meta><meta:generator>excelerate</meta:generator>",
+    ));
+    for (element, value) in [
+        ("dc:title", &props.title),
+        ("dc:subject", &props.subject),
+        ("dc:description", &props.description),
+        ("meta:keyword", &props.keywords),
+        ("meta:initial-creator", &props.creator),
+        ("dc:creator", &props.last_modified_by),
+        ("meta:creation-date", &props.created),
+        ("dc:date", &props.modified),
+        ("meta:print-date", &props.last_printed),
+        ("dc:language", &props.language),
+        ("meta:editing-cycles", &props.revision),
+    ] {
+        if let Some(value) = value {
+            let _ = write!(s, "<{element}>{}</{element}>", escape(value));
+        }
+    }
+    for property in &props.custom {
+        let (kind, text) = match &property.value {
+            PropertyValue::Text(t) => ("string", escape(t)),
+            PropertyValue::Integer(n) => ("float", n.to_string()),
+            PropertyValue::Number(n) => ("float", n.to_string()),
+            PropertyValue::Bool(b) => ("boolean", b.to_string()),
+            PropertyValue::Date(d) => ("date", escape(d)),
+        };
+        let _ = write!(
+            s,
+            r#"<meta:user-defined meta:name="{}" meta:value-type="{kind}">{text}</meta:user-defined>"#,
+            escape(&property.name)
+        );
+    }
+    s.push_str("</office:meta></office:document-meta>");
+    s
+}
 
 /// Builds `content.xml`: the automatic styles, then the sheets.
 fn content(book: &Spreadsheet) -> String {

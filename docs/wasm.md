@@ -105,6 +105,7 @@ on Node 22.6+, no build step and no separate install.
 | `freezePanes(sheet, rows, columns)` | pin the header row and the first columns; `(sheet, 0, 0)` unfreezes |
 | `setZoom(sheet, percent?)` / `setShowGridLines(sheet, show, headers?)` | how a reader opens it |
 | `definedNames()` / `setDefinedName(name, formula, sheet?)` / `removeDefinedName` | the names a formula can use |
+| `documentProperties()` / `setDocumentProperties(patch)` | title, author, dates, company and the user's own fields; the patch sets what it names, `null` clears, `custom` replaces the list |
 | `dataValidations(sheet)` / `conditionalFormats(sheet)` / `autoFilter(sheet)` | the rules over a sheet |
 | `pivotTables(sheet)` / `arrayFormulas(sheet)` / `externalBooks()` | pivot reports, array areas, the workbooks this one reads |
 | `protectSheet(sheet, password?)` / `unprotectSheet` / `sheetProtection(sheet)` / `verifySheetPassword` | the lock Excel offers under "Protect Sheet" - it stops editing, it does not encrypt |

@@ -63,6 +63,7 @@ Each block below runs as a test (`cargo test --doc`), against the files in
 8. [Notes, links, a drop-down and a password](#notes-links-a-drop-down-and-a-password)
 9. [Your own function, with a progress callback](#your-own-function-with-a-progress-callback)
 10. [See how a cell is styled](#see-how-a-cell-is-styled)
+11. [Title, author and your own fields](#title-author-and-your-own-fields)
 
 ### Read a workbook and pull values out
 
@@ -432,6 +433,37 @@ println!("fill {:?}, borders {:?}", style.fill, style.borders);
 
 [docs/styles.md](docs/styles.md) covers colours, themes, number formats and
 rich text inside a cell.
+
+### Title, author and your own fields
+
+What Excel shows under File > Info travels with the workbook in xlsx, xls and
+ODS, along with the fields a user adds under Custom.
+
+```rust
+use excelerate::model::{PropertyValue, Spreadsheet, Worksheet};
+use excelerate::{reader, writer};
+
+let mut book = Spreadsheet::empty();
+book.add_sheet(Worksheet::new("Sheet1")?)?;
+
+// 1. The standard fields are plain options. Dates are ISO 8601 text.
+book.properties.title = Some("Q3 sales".into());
+book.properties.creator = Some("Ann".into());
+book.properties.company = Some("Acme".into());
+book.properties.created = Some("2026-09-27T10:00:00Z".into());
+
+// 2. Your own fields keep their type: text, whole number, number, yes/no, date.
+book.properties.set_custom("Department", "Sales");
+book.properties.set_custom("Pages", 12_i64);
+
+// 3. They come back from xls just as from xlsx.
+let mut bytes = Vec::new();
+writer::write_xls_to(&book, &mut bytes)?;
+let again = reader::read_bytes(&bytes, None)?;
+assert_eq!(again.properties.title.as_deref(), Some("Q3 sales"));
+assert_eq!(again.properties.custom("pages"), Some(&PropertyValue::Integer(12)));
+# Ok::<(), excelerate::Error>(())
+```
 
 ## From JavaScript
 

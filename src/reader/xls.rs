@@ -131,7 +131,18 @@ pub fn read_xls_in(path: impl AsRef<std::path::Path>, page: u16) -> Result<Sprea
 pub fn read_xls_from(bytes: &[u8]) -> Result<Spreadsheet> {
     let ole = super::ole::Ole::new(bytes).map_err(Error::Xls)?;
     let stream = workbook_stream(&ole)?;
-    Reader::new(&stream).read()
+    let mut book = Reader::new(&stream).read()?;
+    book.properties = properties(&ole);
+    Ok(book)
+}
+
+/// Title, author, dates and the user's fields, from the two property set
+/// streams beside the workbook.
+fn properties(ole: &super::ole::Ole<'_>) -> crate::model::DocumentProperties {
+    super::properties::read_ole_properties(
+        ole.stream("\u{5}SummaryInformation").as_deref(),
+        ole.stream("\u{5}DocumentSummaryInformation").as_deref(),
+    )
 }
 
 /// The same as [`read_xls_from`], in the code page you name. See
@@ -145,7 +156,9 @@ pub fn read_xls_from_in(bytes: &[u8], page: u16) -> Result<Spreadsheet> {
     let mut reader = Reader::new(&stream);
     reader.codepage = page;
     reader.forced_codepage = Some(page);
-    reader.read()
+    let mut book = reader.read()?;
+    book.properties = properties(&ole);
+    Ok(book)
 }
 
 /// The stream a workbook lives in, whatever this writer called it.
@@ -1706,7 +1719,7 @@ mod tests {
         // LABEL at A1: row, column, XF, a two-byte count, then the text.
         push(&mut globals, record::LABEL, &[0, 0, 0, 0, 0, 0, 1, 0, byte]);
         push(&mut globals, record::EOF, &[]);
-        crate::writer::ole::container("Workbook", &globals)
+        crate::writer::ole::streams(&[("Workbook", &globals)])
     }
 
     /// The same byte is a different letter in each page, and a caller who

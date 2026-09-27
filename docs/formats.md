@@ -132,6 +132,14 @@ let book = read_xls_in("export.xls", WINDOWS_1251)?;
 Writing is BIFF8 only. BIFF4 and older, and encrypted workbooks, are rejected
 rather than read halfway.
 
+Document properties sit in two streams beside the workbook,
+`\x05SummaryInformation` and `\x05DocumentSummaryInformation`, in the
+property set format (MS-OLEPS). Reading honours each set's code page: 1C
+exports write 1251, WPS and 1C also write 1200, where text is UTF-16. Writing
+uses 1200 for every string, so no character is lost to an ANSI page. A whole
+number past 32 bits is written as a double, since the version 0 sets Excel
+writes have no 64-bit integer.
+
 ## ods - OpenDocument
 
 Both directions: sheets, value types (float, percentage, currency, boolean,
@@ -147,6 +155,10 @@ Three things behave differently by nature of the format:
   from the value on read and re-encoded on write; an arbitrary custom format
   does not survive the loop.
 - Theme and indexed palette colours have no equivalent and are lost.
+- Document properties live in `meta.xml` under ODF's names (the author is
+  `meta:initial-creator`, the last editor `dc:creator`). Category, status,
+  identifier, version, company and manager have no ODF element and are not
+  written; keywords come back as one string joined with `, `.
 
 Formula syntax is translated both ways (`A1` <-> `[.A1]`, argument separators,
 `COM.MICROSOFT.` prefixes), so a formula written here still parses there.

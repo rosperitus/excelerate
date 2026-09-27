@@ -10,6 +10,7 @@ pub mod autofilter;
 pub mod chart;
 pub mod image;
 pub mod pivot;
+pub mod properties;
 pub mod protection;
 pub mod shape;
 pub mod table;
@@ -24,6 +25,7 @@ use std::sync::Arc;
 pub use autofilter::{
     AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator,
 };
+pub use properties::{CustomProperty, DocumentProperties, PropertyValue};
 pub use protection::{PasswordHash, ProtectedRange, SheetProtection, WorkbookProtection};
 
 /// Longest string a cell can hold (`DataType::MAX_STRING_LENGTH`).
@@ -2010,8 +2012,14 @@ pub struct Spreadsheet {
     pub protection: WorkbookProtection,
     /// Parts attached to the workbook, such as links to other workbooks.
     pub attachments: Vec<Attachment>,
-    /// Parts attached to the package itself: the document properties.
+    /// Parts attached to the package itself: the document properties and a
+    /// thumbnail, when the file has one.
     pub doc_props: Vec<Attachment>,
+    /// Title, author, dates and the user's own fields.
+    ///
+    /// Written back by comparison: a part whose content the model still
+    /// states travels as the bytes it came in.
+    pub properties: properties::DocumentProperties,
     /// Every part carried through unmodelled, in no particular order.
     pub parts: Vec<OpaquePart>,
     /// The cached values of the workbooks this one links to, in the order
@@ -2062,6 +2070,7 @@ impl Default for Spreadsheet {
             protection: WorkbookProtection::default(),
             attachments: Vec::new(),
             doc_props: Vec::new(),
+            properties: properties::DocumentProperties::default(),
             parts: Vec::new(),
             external: Vec::new(),
             theme: None,

@@ -15,6 +15,7 @@ Spreadsheet
 ├── defined_names               named ranges and Excel's own `_xlnm.*`
 ├── external: Vec<ExternalBook> cached values of linked workbooks
 ├── epoch                       1900 or the Mac 1904 base date
+├── properties                  title, author, dates, the user's own fields
 └── parts, attachments, theme   everything carried through untouched
 ```
 
@@ -396,11 +397,44 @@ location, makes the write fail. The fields' items are written from the
 cache's shared items, so a hidden or reordered item of a changed report is
 shown again in cache order.
 
+## Document properties
+
+`Spreadsheet::properties` is what Excel shows under File > Info: title,
+subject, author, keywords, comments, last editor, category, status, dates,
+company, manager, and the fields a user adds under Custom. Text fields are
+`Option<String>`, dates are ISO 8601 text as xlsx stores them, and nothing
+sets `modified` on its own: whether a rewrite is a modification is the
+caller's call.
+
+```rust
+use excelerate::model::{PropertyValue, Spreadsheet, Worksheet};
+
+let mut book = Spreadsheet::empty();
+book.add_sheet(Worksheet::new("Sheet1")?)?;
+let props = &mut book.properties;
+props.title = Some("Q3 sales".into());
+props.creator = Some("Ann".into());
+props.created = Some("2026-09-27T10:00:00Z".into());
+props.set_custom("Department", "Sales");     // text
+props.set_custom("Pages", 12_i64);           // a whole number
+props.set_custom("Checked", true);
+props.set_custom("Due", PropertyValue::Date("2026-12-31T00:00:00Z".into()));
+
+// Names compare without regard to case, in any script.
+assert_eq!(props.custom("department"), Some(&PropertyValue::Text("Sales".into())));
+# Ok::<(), excelerate::Error>(())
+```
+
+In xlsx they are written by comparison, like charts: a part the model still
+states goes back as its bytes. A changed `core.xml` or `custom.xml` is written
+from the model; `app.xml` also holds Excel's own list of sheets and the
+version that saved the file, so only `Company` and `Manager` change inside
+it. What each other format keeps is in [File formats](formats.md).
+
 ## Carried parts
 
 `OpaquePart` and `Attachment` are the escape hatch. Anything the crate does not
-model, such as shapes, comments and their VML, and document properties, is
-carried as raw bytes plus the relationship pointing at it, recursively. Chart
+model, such as shapes, comments and their VML, is carried as raw bytes plus the relationship pointing at it, recursively. Chart
 parts, drawings and media are carried as well, which is what lets an untouched
 chart or picture go back byte for byte.
 

@@ -207,8 +207,15 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
     );
     let root = read_relationships(&mut zip, "_rels/.rels").unwrap_or_default();
     book.doc_props = attachments(&root, "", &["officeDocument"]);
-    let roots: Vec<String> = book
-        .attachments
+    carry(&mut zip, &carried_roots(&book), &types, &mut book.parts);
+    read_properties(&mut book);
+    Ok(book)
+}
+
+/// The parts the workbook, the package and the sheets point at that travel
+/// unmodelled; `carry` follows their relationships from there.
+fn carried_roots(book: &Spreadsheet) -> Vec<String> {
+    book.attachments
         .iter()
         .chain(&book.doc_props)
         .map(|a| a.target.clone())
@@ -217,9 +224,56 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
                 .iter()
                 .flat_map(|s| s.attachments.iter().map(|a| a.target.clone())),
         )
-        .collect();
-    carry(&mut zip, &roots, &types, &mut book.parts);
-    Ok(book)
+        .collect()
+}
+
+/// The document properties of a package read straight from the zip, for a
+/// reader that carries no parts: xlsb keeps them in the same XML parts as
+/// xlsx.
+pub(crate) fn package_properties<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+) -> crate::model::DocumentProperties {
+    use super::properties::{APP_REL, CORE_REL, CUSTOM_REL, read_app, read_core, read_custom};
+    let root = read_relationships(zip, "_rels/.rels").unwrap_or_default();
+    let mut text = |kind: &str| {
+        let rel = root.values().find(|r| r.kind == kind && !r.external)?;
+        read_part(zip, &resolve("", &rel.target)).ok()
+    };
+    let (core, app, custom) = (text(CORE_REL), text(APP_REL), text(CUSTOM_REL));
+    let mut props = crate::model::DocumentProperties::default();
+    if let Some(xml) = core {
+        read_core(&xml, &mut props);
+    }
+    if let Some(xml) = app {
+        read_app(&xml, &mut props);
+    }
+    if let Some(xml) = custom {
+        props.custom = read_custom(&xml);
+    }
+    props
+}
+
+/// Fills [`Spreadsheet::properties`] from the parts the package points at.
+/// The parts stay in `parts`: the writer keeps their bytes while the model
+/// still says what they say.
+fn read_properties(book: &mut Spreadsheet) {
+    use super::properties::{APP_REL, CORE_REL, CUSTOM_REL, read_app, read_core, read_custom};
+    let text = |kind: &str| {
+        let target = &book.doc_props.iter().find(|a| a.kind == kind)?.target;
+        let part = book.parts.iter().find(|p| &p.path == target)?;
+        core::str::from_utf8(&part.data).ok().map(str::to_owned)
+    };
+    let (core, app, custom) = (text(CORE_REL), text(APP_REL), text(CUSTOM_REL));
+    let props = &mut book.properties;
+    if let Some(xml) = core {
+        read_core(&xml, props);
+    }
+    if let Some(xml) = app {
+        read_app(&xml, props);
+    }
+    if let Some(xml) = custom {
+        props.custom = read_custom(&xml);
+    }
 }
 
 /// One entry of a `.rels` part.

@@ -54,6 +54,18 @@
 
 ### Added
 
+- Document properties: `Spreadsheet::properties` (`DocumentProperties`) holds
+  title, subject, author, keywords, comments, last editor, category, status,
+  language, identifier, revision, version, the three dates, company, manager
+  and the user's own fields (`CustomProperty`, `PropertyValue`: text, integer,
+  number, boolean, date), with `set_custom` and `custom` by name. Read and
+  written in xlsx (`docProps/core.xml`, `app.xml`, `custom.xml`, written by
+  comparison so an untouched part keeps its bytes), xls (the two MS-OLEPS
+  property set streams) and ODS (`meta.xml`); read from xlsb. In JS,
+  `documentProperties()` and `setDocumentProperties(patch)`.
+- The xls writer puts several streams in the compound file, not one:
+  `writer::ole::streams` replaces the internal `container`.
+
 - `Spreadsheet::template`: the book is a template. The xlsx writer gives the
   main part the template content type (`spreadsheetml.template.main+xml`, or
   `ms-excel.template.macroEnabled.main+xml` with a VBA project) - Excel will

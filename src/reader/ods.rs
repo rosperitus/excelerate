@@ -71,7 +71,13 @@ pub fn read_ods_from<R: Read + Seek>(source: R) -> Result<Spreadsheet> {
     }
 
     let content = read_part(&mut zip, "content.xml").map_err(Error::Ods)?;
-    read_content(&content)
+    let mut book = read_content(&content)?;
+    // A package without meta.xml is still a spreadsheet; it just says
+    // nothing about itself.
+    if let Ok(meta) = read_part(&mut zip, "meta.xml") {
+        book.properties = super::properties::read_odf_meta(&meta);
+    }
+    Ok(book)
 }
 
 /// Reads `content.xml`, which holds the sheets and everything on them.

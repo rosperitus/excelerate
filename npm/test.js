@@ -699,3 +699,45 @@ test("sorting, filling a series and styles by the block", () => {
   assert.strictEqual(book.cellStyle(0, "C1").font.italic, true);
   assert.strictEqual(book.cellStyle(0, "D1").font.italic, false);
 });
+
+test("document properties", () => {
+  const book = new Book();
+  assert.strictEqual(book.documentProperties().title, null);
+  book.setDocumentProperties({
+    title: "Отчёт",
+    creator: "Анна",
+    company: "ООО «Ромашка»",
+    created: "2026-09-27T10:00:00Z",
+    custom: [
+      { name: "Отдел", value: "Продажи" },
+      { name: "Страниц", value: 12 },
+      { name: "Курс", value: 92.5 },
+      { name: "Проверено", value: true },
+      { name: "Срок", value: "2026-12-31T00:00:00Z", type: "date" },
+    ],
+  });
+  // A field the patch leaves out stays; null clears one.
+  book.setDocumentProperties({ creator: null, subject: "Продажи" });
+
+  for (const format of ["toXlsx", "toXls", "toOds"]) {
+    const props = Book.read(book[format]()).documentProperties();
+    assert.strictEqual(props.title, "Отчёт", format);
+    assert.strictEqual(props.subject, "Продажи", format);
+    assert.strictEqual(props.creator, null, format);
+    assert.deepStrictEqual(
+      props.custom.map((p) => [p.name, p.type, p.value]),
+      [
+        ["Отдел", "text", "Продажи"],
+        ["Страниц", "integer", 12],
+        ["Курс", "number", 92.5],
+        ["Проверено", "boolean", true],
+        ["Срок", "date", "2026-12-31T00:00:00Z"],
+      ],
+      format,
+    );
+  }
+  // ODS has no place for a company.
+  assert.strictEqual(Book.read(book.toXlsx()).documentProperties().company, "ООО «Ромашка»");
+  assert.strictEqual(Book.read(book.toOds()).documentProperties().company, null);
+  assert.throws(() => book.setDocumentProperties({ title: 5 }), /string or null/);
+});

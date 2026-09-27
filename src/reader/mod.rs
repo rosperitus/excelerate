@@ -8,6 +8,7 @@ pub mod html;
 pub(crate) mod image;
 pub mod ods;
 pub(crate) mod ole;
+pub(crate) mod properties;
 pub(crate) mod shape;
 pub mod slk;
 pub mod xls;

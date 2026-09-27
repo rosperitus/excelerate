@@ -67,7 +67,16 @@ pub fn write_xls(book: &Spreadsheet, path: impl AsRef<std::path::Path>) -> Resul
 /// As [`write_xls`].
 pub fn write_xls_to<W: Write>(book: &Spreadsheet, mut sink: W) -> Result<()> {
     let bytes = workbook_stream(book)?;
-    let container = super::ole::container("Workbook", &bytes);
+    // The workbook, then the title, author and the user's fields beside it.
+    let properties = super::properties::ole_streams(&book.properties);
+    let named: Vec<(&str, &[u8])> = std::iter::once(("Workbook", bytes.as_slice()))
+        .chain(
+            properties
+                .iter()
+                .map(|(name, data)| (*name, data.as_slice())),
+        )
+        .collect();
+    let container = super::ole::streams(&named);
     sink.write_all(&container)
         .map_err(|e| Error::Xls(e.to_string()))?;
     sink.flush().map_err(|e| Error::Xls(e.to_string()))

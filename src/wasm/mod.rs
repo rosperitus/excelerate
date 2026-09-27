@@ -22,6 +22,7 @@ mod formulas;
 mod objects;
 #[cfg(feature = "write")]
 mod output;
+mod properties;
 mod sheet;
 mod style;
 mod types;

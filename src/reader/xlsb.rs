@@ -150,6 +150,7 @@ pub fn read_xlsb_from_limited<R: Read + Seek>(source: R, max_expanded: u64) -> R
         .iter()
         .filter_map(|name| name.resolve(&context))
         .collect();
+    book.properties = super::xlsx::package_properties(&mut zip);
     Ok(book)
 }
 
