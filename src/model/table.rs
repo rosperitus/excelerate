@@ -26,12 +26,16 @@ pub struct Table {
     pub header_row_count: Option<u32>,
     /// How many rows are the totals, when the file says. Absent means none.
     pub totals_row_count: Option<u32>,
-    /// The filter dropdowns, which sit on the header row and follow it.
-    pub auto_filter: Option<Range>,
+    /// The filter dropdowns, which sit on the header row and follow it,
+    /// with the buttons a table hides and whatever it filters by.
+    pub auto_filter: Option<crate::model::AutoFilter>,
     /// The columns, in the order the header lists them.
     pub columns: Vec<TableColumn>,
     /// Banding and which edges are emphasised.
     pub style: Option<TableStyle>,
+    /// The part's own `<extLst>` as it stands in the file, such as the alt
+    /// text Excel keeps in `x14:table`. Nothing here looks inside it.
+    pub extensions: Option<String>,
 }
 
 /// One column of a table.

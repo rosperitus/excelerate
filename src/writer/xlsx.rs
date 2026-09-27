@@ -1244,7 +1244,7 @@ fn table_xml(table: &crate::model::table::Table) -> String {
     }
     s.push('>');
     if let Some(filter) = &table.auto_filter {
-        let _ = write!(s, r#"<autoFilter ref="{filter}"/>"#);
+        s.push_str(&auto_filter_xml(filter));
     }
     let _ = write!(s, r#"<tableColumns count="{}">"#, table.columns.len());
     for column in &table.columns {
@@ -1288,6 +1288,9 @@ fn table_xml(table: &crate::model::table::Table) -> String {
             rows = u8::from(style.show_row_stripes),
             columns = u8::from(style.show_column_stripes),
         );
+    }
+    if let Some(extensions) = &table.extensions {
+        s.push_str(extensions);
     }
     s.push_str("</table>");
     s
@@ -1536,7 +1539,7 @@ fn cf_rule_xml(rule: &crate::model::CfRule) -> String {
     if !rule.above_average {
         s.push_str(r#" aboveAverage="0""#);
     }
-    if rule.formulas.is_empty() && rule.scale.is_none() {
+    if rule.formulas.is_empty() && rule.scale.is_none() && rule.extensions.is_none() {
         s.push_str("/>");
         return s;
     }
@@ -1546,6 +1549,9 @@ fn cf_rule_xml(rule: &crate::model::CfRule) -> String {
     }
     if let Some(scale) = &rule.scale {
         s.push_str(&cf_scale_xml(scale));
+    }
+    if let Some(extensions) = &rule.extensions {
+        s.push_str(extensions);
     }
     s.push_str("</cfRule>");
     s
@@ -2409,12 +2415,15 @@ mod tests {
             range: crate::coordinate::Range::parse("A1:C5").expect("a written range"),
             header_row_count: None,
             totals_row_count: None,
-            auto_filter: crate::coordinate::Range::parse("A1:C5").ok(),
+            auto_filter: crate::coordinate::Range::parse("A1:C5")
+                .ok()
+                .map(crate::model::AutoFilter::new),
             columns: vec![crate::model::table::TableColumn {
                 id: 1,
                 name: "Region".into(),
                 ..crate::model::table::TableColumn::default()
             }],
+            extensions: None,
             style: Some(crate::model::table::TableStyle {
                 name: Some("TableStyleMedium2".into()),
                 show_row_stripes: true,

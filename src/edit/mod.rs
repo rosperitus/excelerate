@@ -446,7 +446,10 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
             return false;
         };
         t.range = range;
-        t.auto_filter = t.auto_filter.and_then(|f| shift.range(f));
+        t.auto_filter = t.auto_filter.take().and_then(|mut f| {
+            f.range = shift.range(f.range)?;
+            Some(f)
+        });
         true
     });
     move_drawn_objects(sheet, shift);

@@ -382,9 +382,10 @@ impl Book {
             range: area,
             header_row_count: Some(u32::from(header)),
             totals_row_count: None,
-            auto_filter: header.then_some(area),
+            auto_filter: header.then(|| crate::model::AutoFilter::new(area)),
             columns,
             style: Some(TableStyle::default()),
+            extensions: None,
         });
         Ok(())
     }

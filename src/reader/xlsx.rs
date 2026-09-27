@@ -834,11 +834,16 @@ fn read_table<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Resul
         auto_filter: None,
         columns: Vec::new(),
         style: None,
+        extensions: trailing_extensions(&xml),
     };
     let mut seen = false;
+    let mut filter_col = None;
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e) | Event::Empty(ref e)) => match e.local_name().as_ref() {
+                // Last in the schema; its `x14:table` shares the local name
+                // and would overwrite the table with empty attributes.
+                "extLst" => break,
                 "table" => {
                     seen = true;
                     out.id = attr(e, "id").and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -856,9 +861,6 @@ fn read_table<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Resul
                     }
                     out.header_row_count = attr(e, "headerRowCount").and_then(|v| v.parse().ok());
                     out.totals_row_count = attr(e, "totalsRowCount").and_then(|v| v.parse().ok());
-                }
-                "autoFilter" => {
-                    out.auto_filter = attr(e, "ref").and_then(|r| Range::parse(&r).ok());
                 }
                 "tableColumn" => out.columns.push(TableColumn {
                     id: attr(e, "id").and_then(|v| v.parse().ok()).unwrap_or(0),
@@ -886,8 +888,13 @@ fn read_table<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Resul
                             .is_some_and(|v| is_true(&v)),
                     });
                 }
-                _ => {}
+                name => {
+                    read_filter_element(&mut out.auto_filter, &mut filter_col, name, e);
+                }
             },
+            Ok(Event::End(ref e)) if e.local_name().as_ref() == "filterColumn" => {
+                filter_col = None;
+            }
             Ok(Event::Eof) | Err(_) => break,
             Ok(_) => {}
         }
@@ -1853,7 +1860,13 @@ fn read_sheet<R: Read + Seek>(
     ));
     let mut buf = Vec::new();
     let mut depth = 0u32;
-    let mut extension_start: Option<u64> = None;
+    // Where the `<extLst>` being copied out began, how deep it sits and
+    // whether it is a rule's rather than the sheet's.
+    let mut extension_start: Option<(u64, u32, bool)> = None;
+    // Whether a `<cfRule>` of the sheet is open: its `<extLst>` is kept on
+    // the rule. The `x14:cfRule` inside the sheet's own extensions shares
+    // the local name, and is never looked at: nothing starts while copying.
+    let mut in_rule = false;
     loop {
         buf.clear();
         let before = reader.buffer_position();
@@ -1864,20 +1877,20 @@ fn read_sheet<R: Read + Seek>(
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let empty = matches!(event, Event::Empty(_));
-                if depth == 1 && e.local_name().as_ref() == "extLst" {
+                let name = e.local_name();
+                if name.as_ref() == "cfRule" && extension_start.is_none() {
+                    in_rule = !empty;
+                }
+                if name.as_ref() == "extLst" && extension_start.is_none() && (depth == 1 || in_rule)
+                {
                     if empty {
-                        state.sheet.extensions = Some(
-                            String::from_utf8_lossy(
-                                &reader
-                                    .get_ref()
-                                    .get_ref()
-                                    .since(before, reader.buffer_position()),
-                            )
-                            .trim_start()
-                            .to_owned(),
-                        );
+                        let bytes = reader
+                            .get_ref()
+                            .get_ref()
+                            .since(before, reader.buffer_position());
+                        state.keep_extensions(in_rule, &bytes);
                     } else {
-                        extension_start = Some(before);
+                        extension_start = Some((before, depth, in_rule));
                     }
                 }
                 state.start(e, empty);
@@ -1890,16 +1903,18 @@ fn read_sheet<R: Read + Seek>(
             Event::End(ref e) => {
                 depth = depth.saturating_sub(1);
                 state.end(e.local_name().as_ref());
-                if depth == 1
-                    && e.local_name().as_ref() == "extLst"
-                    && let Some(start) = extension_start.take()
+                if extension_start.is_none() && e.local_name().as_ref() == "cfRule" {
+                    in_rule = false;
+                }
+                if let Some((start, at, rule)) = extension_start
+                    && at == depth
                 {
+                    extension_start = None;
                     let bytes = reader
                         .get_ref()
                         .get_ref()
                         .since(start, reader.buffer_position());
-                    state.sheet.extensions =
-                        Some(String::from_utf8_lossy(&bytes).trim_start().to_owned());
+                    state.keep_extensions(rule, &bytes);
                 }
             }
             Event::Eof => break,
@@ -2308,59 +2323,21 @@ impl SheetReader<'_> {
         true
     }
 
+    /// An `<extLst>` copied out whole: the rule's being read, or the sheet's.
+    fn keep_extensions(&mut self, rule: bool, bytes: &[u8]) {
+        let text = Some(String::from_utf8_lossy(bytes).trim_start().to_owned());
+        if !rule {
+            self.sheet.extensions = text;
+        } else if let Some(rule) = last_rule(&mut self.sheet) {
+            rule.extensions = text;
+        }
+    }
+
     /// The autofilter, its columns and each kind of criterion they carry.
     fn start_filter(&mut self, name: &str, e: &quick_xml::events::BytesStart<'_>) -> bool {
-        match name {
-            // A table has an `<autoFilter>` of its own, but it lives in its own
-            // part; the one inside a sheet is always the sheet's.
-            "autoFilter" => {
-                self.sheet.auto_filter = attr(e, "ref")
-                    .and_then(|v| Range::parse(&v).ok())
-                    .map(AutoFilter::new);
-            }
-            "filterColumn" => {
-                self.filter_col = attr(e, "colId").and_then(|v| v.parse().ok());
-                if let Some((filter, col_id)) = self.sheet.auto_filter.as_mut().zip(self.filter_col)
-                {
-                    let column = filter.column_at(col_id);
-                    column.hidden_button = attr(e, "hiddenButton").is_some_and(|v| is_true(&v));
-                }
-            }
-            "filters" | "customFilters" | "dynamicFilter" | "top10" => {
-                if let Some(column) = filter_column(&mut self.sheet, self.filter_col) {
-                    column.filter = ColumnFilter::empty(name);
-                    if let Some(filter) = column.filter.as_mut() {
-                        read_filter_attrs(filter, e);
-                    }
-                }
-            }
-            "filter" => {
-                if let Some(ColumnFilter::Values { values, .. }) =
-                    filter_column(&mut self.sheet, self.filter_col).and_then(|c| c.filter.as_mut())
-                {
-                    values.push(attr(e, "val").unwrap_or_default());
-                }
-            }
-            "dateGroupItem" => {
-                if let Some(ColumnFilter::Values { date_groups, .. }) =
-                    filter_column(&mut self.sheet, self.filter_col).and_then(|c| c.filter.as_mut())
-                {
-                    date_groups.push(read_date_group(e));
-                }
-            }
-            "customFilter" => {
-                if let Some(ColumnFilter::Custom { rules, .. }) =
-                    filter_column(&mut self.sheet, self.filter_col).and_then(|c| c.filter.as_mut())
-                {
-                    rules.push(CustomFilter {
-                        operator: FilterOperator::parse(&attr(e, "operator").unwrap_or_default()),
-                        value: attr(e, "val").unwrap_or_default(),
-                    });
-                }
-            }
-            _ => return false,
-        }
-        true
+        // A table has an `<autoFilter>` of its own, but it lives in its own
+        // part; the one inside a sheet is always the sheet's.
+        read_filter_element(&mut self.sheet.auto_filter, &mut self.filter_col, name, e)
     }
 
     /// A closing element: everything here is a flag the opening element raised,
@@ -2517,6 +2494,7 @@ fn read_cf_rule(e: &quick_xml::events::BytesStart<'_>) -> CfRule {
         std_dev: attr(e, "stdDev").and_then(|v| v.parse().ok()),
         formulas: Vec::new(),
         scale: None,
+        extensions: None,
     }
 }
 
@@ -2882,13 +2860,71 @@ fn read_protected_range(e: &quick_xml::events::BytesStart<'_>) -> ProtectedRange
     }
 }
 
-/// The column of the sheet's filter the criteria now being read belong to.
+/// One element of an `<autoFilter>`, the sheet's or a table's: `col` is the
+/// `<filterColumn>` open at the moment.
+fn read_filter_element(
+    auto_filter: &mut Option<AutoFilter>,
+    col: &mut Option<u32>,
+    name: &str,
+    e: &quick_xml::events::BytesStart<'_>,
+) -> bool {
+    match name {
+        "autoFilter" => {
+            *auto_filter = attr(e, "ref")
+                .and_then(|v| Range::parse(&v).ok())
+                .map(AutoFilter::new);
+        }
+        "filterColumn" => {
+            *col = attr(e, "colId").and_then(|v| v.parse().ok());
+            if let Some((filter, col_id)) = auto_filter.as_mut().zip(*col) {
+                let column = filter.column_at(col_id);
+                column.hidden_button = attr(e, "hiddenButton").is_some_and(|v| is_true(&v));
+            }
+        }
+        "filters" | "customFilters" | "dynamicFilter" | "top10" => {
+            if let Some(column) = filter_column(auto_filter, *col) {
+                column.filter = ColumnFilter::empty(name);
+                if let Some(filter) = column.filter.as_mut() {
+                    read_filter_attrs(filter, e);
+                }
+            }
+        }
+        "filter" => {
+            if let Some(ColumnFilter::Values { values, .. }) =
+                filter_column(auto_filter, *col).and_then(|c| c.filter.as_mut())
+            {
+                values.push(attr(e, "val").unwrap_or_default());
+            }
+        }
+        "dateGroupItem" => {
+            if let Some(ColumnFilter::Values { date_groups, .. }) =
+                filter_column(auto_filter, *col).and_then(|c| c.filter.as_mut())
+            {
+                date_groups.push(read_date_group(e));
+            }
+        }
+        "customFilter" => {
+            if let Some(ColumnFilter::Custom { rules, .. }) =
+                filter_column(auto_filter, *col).and_then(|c| c.filter.as_mut())
+            {
+                rules.push(CustomFilter {
+                    operator: FilterOperator::parse(&attr(e, "operator").unwrap_or_default()),
+                    value: attr(e, "val").unwrap_or_default(),
+                });
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// The column of the filter the criteria now being read belong to.
 fn filter_column(
-    sheet: &mut Worksheet,
+    auto_filter: &mut Option<AutoFilter>,
     col_id: Option<u32>,
 ) -> Option<&mut crate::model::FilterColumn> {
     let col_id = col_id?;
-    Some(sheet.auto_filter.as_mut()?.column_at(col_id))
+    Some(auto_filter.as_mut()?.column_at(col_id))
 }
 
 /// Reads the attributes a filter element carries itself, as opposed to the

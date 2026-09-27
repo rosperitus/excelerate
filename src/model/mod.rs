@@ -1373,6 +1373,11 @@ pub struct CfRule {
     pub formulas: Vec<String>,
     /// The graphical part, for a colour scale, a data bar or an icon set.
     pub scale: Option<CfScale>,
+    /// The rule's own `<extLst>` as it stands in the file. A data bar keeps
+    /// its `x14:id` here, which ties it to the `x14:cfRule` in the sheet's
+    /// extensions that holds its negative colours and axis; without it Excel
+    /// draws the bar the 2007 way.
+    pub extensions: Option<String>,
 }
 
 /// A block of cells and the rules that paint it.

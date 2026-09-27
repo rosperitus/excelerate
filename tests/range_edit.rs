@@ -557,6 +557,7 @@ fn a_table_sorts_by_its_column_names() {
         totals_row_count: None,
         auto_filter: None,
         style: None,
+        extensions: None,
     });
     sort_table(&mut book, "stock", &[SortKey::header("Qty").descending()]).unwrap();
     let sheet = book.sheet(0).unwrap();

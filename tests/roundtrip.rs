@@ -1556,3 +1556,62 @@ fn an_array_formula_keeps_its_area_in_every_format() {
     };
     assert_eq!(formula, "TRANSPOSE(A1:A3)");
 }
+
+/// A data bar written by Excel 2010 and later keeps its negative colours and
+/// axis in the sheet's `<extLst>`, tied to the rule by an `x14:id` in the
+/// rule's own `<extLst>`. Losing the id leaves the bar drawn the 2007 way.
+/// The sheet's extensions hold an `x14:cfRule` too, with the same local name
+/// as the rule, and it must not be taken for one.
+#[test]
+fn a_data_bar_keeps_the_id_that_ties_it_to_its_extension() {
+    use std::io::{Read, Write};
+
+    const ID: &str = "{52C91D7A-ADD1-47EE-A175-500D6F9ACD3B}";
+    let x14 = r#"xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main""#;
+    let rule = format!(
+        r#"<conditionalFormatting sqref="A1:A3"><cfRule type="dataBar" priority="1"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar><extLst><ext uri="{{B025F937-C7B1-47D3-B67F-A62EFF666E3E}}" {x14}><x14:id>{ID}</x14:id></ext></extLst></cfRule></conditionalFormatting>"#
+    );
+    let sheet_ext = format!(
+        r#"<extLst><ext uri="{{78C0D931-6437-407d-A8EE-F0AAD7539E65}}" {x14}><x14:conditionalFormattings><x14:conditionalFormatting xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"><x14:cfRule type="dataBar" id="{ID}"><x14:dataBar minLength="0" maxLength="100"><x14:cfvo type="autoMin"/><x14:cfvo type="autoMax"/></x14:dataBar></x14:cfRule><xm:sqref>A1:A3</xm:sqref></x14:conditionalFormatting></x14:conditionalFormattings></ext></extLst>"#
+    );
+
+    let mut book = Spreadsheet::new();
+    book.sheet_mut(0).unwrap().entry(at("A1")).value = CellValue::Number(1.0);
+    let mut plain = Vec::new();
+    write_xlsx_to(&book, Cursor::new(&mut plain)).unwrap();
+    let mut source = zip::ZipArchive::new(Cursor::new(plain)).unwrap();
+    let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for i in 0..source.len() {
+        let mut part = source.by_index(i).unwrap();
+        let name = part.name().to_owned();
+        let mut data = String::new();
+        part.read_to_string(&mut data).unwrap();
+        if name == "xl/worksheets/sheet1.xml" {
+            data = data.replace("</worksheet>", &format!("{rule}{sheet_ext}</worksheet>"));
+        }
+        out.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        out.write_all(data.as_bytes()).unwrap();
+    }
+    let bytes = out.finish().unwrap().into_inner();
+
+    let book = read_xlsx_from(Cursor::new(bytes)).unwrap();
+    for book in [cycle(&book), book] {
+        let sheet = &book.sheets()[0];
+        assert_eq!(sheet.conditional_formats.len(), 1);
+        let rules = &sheet.conditional_formats[0].rules;
+        assert_eq!(rules.len(), 1);
+        assert!(
+            rules[0]
+                .extensions
+                .as_deref()
+                .is_some_and(|x| x.contains(ID))
+        );
+        assert!(
+            sheet
+                .extensions
+                .as_deref()
+                .is_some_and(|x| x.contains("x14:conditionalFormattings"))
+        );
+    }
+}

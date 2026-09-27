@@ -19,6 +19,22 @@
 - `Fill` gains `Gradient` and `Pattern`: an exhaustive `match` needs arms
   for them, and a gradient or pattern that read as `Fill::Other` now reads as
   one of them.
+- `Table::auto_filter` is an `AutoFilter` instead of a bare `Range`: a
+  table's filter now keeps its hidden buttons (`hiddenButton`, which Excel's
+  templates set on every column) and its criteria, both of which a rewrite
+  used to drop. `Table` gains `extensions` and `CfRule` gains `extensions`:
+  literals need them.
+
+### Fixed
+
+- A table part with an `<extLst>` (Excel keeps a table's alt text there as
+  `<x14:table>`) read as a table with id 0 and no name: the extension shares
+  the root's local name and overwrote it. Written back, such a table had
+  `name=""`.
+- The `<extLst>` of a table and of a conditional formatting rule is carried
+  whole. A data bar keeps its `x14:id` there, which ties it to its negative
+  colours and axis in the sheet's extensions; without it Excel drew the bar
+  the 2007 way.
 
 ### Added
 
