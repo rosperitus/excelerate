@@ -198,6 +198,8 @@ impl Book {
                 Some(ColumnFilter::Custom { .. }) => "custom",
                 Some(ColumnFilter::Dynamic { .. }) => "dynamic",
                 Some(ColumnFilter::Top10 { .. }) => "top10",
+                Some(ColumnFilter::Color { .. }) => "color",
+                Some(ColumnFilter::Icon { .. }) => "icon",
                 None => "none",
             };
             object(&[
@@ -275,6 +277,7 @@ impl Book {
                 text: text.to_owned(),
                 font: None,
             }],
+            ..crate::model::Comment::default()
         };
         self.sheet_mut(sheet)?.comments.insert(at, comment);
         Ok(())
@@ -383,6 +386,7 @@ impl Book {
             header_row_count: Some(u32::from(header)),
             totals_row_count: None,
             auto_filter: header.then(|| crate::model::AutoFilter::new(area)),
+            sort_state: None,
             columns,
             style: Some(TableStyle::default()),
             extensions: None,

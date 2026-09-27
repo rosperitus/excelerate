@@ -388,6 +388,22 @@ pub(crate) fn scan_formula(
             qualifier = None;
             continue;
         }
+        // A reference the callback left alone is still a reference: it is
+        // stepped over whole, the second half of `A1:B2` included. Read on its
+        // own, that half would come without the qualifier of the first, and
+        // `Data!B3:B10` would move with an edit to whatever sheet holds it.
+        if !joined && let Some((len, _)) = parse_ref_at(&chars[i..]) {
+            let mut end = i + len;
+            if chars.get(end) == Some(&':')
+                && let Some((second, _)) = parse_ref_at(&chars[end + 1..])
+            {
+                end += 1 + second;
+            }
+            out.extend(&chars[i..end]);
+            i = end;
+            qualifier = None;
+            continue;
+        }
         // A bare name: a function or a defined name.
         if !joined && (c.is_alphabetic() || c == '_') {
             let start = i;

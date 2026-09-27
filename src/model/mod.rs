@@ -13,6 +13,7 @@ pub mod pivot;
 pub mod properties;
 pub mod protection;
 pub mod shape;
+pub mod sparkline;
 pub mod table;
 
 use crate::coordinate::{CellRef, Col, Range, Row};
@@ -23,7 +24,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use autofilter::{
-    AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator,
+    AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator, SortCondition,
+    SortState,
 };
 pub use properties::{CustomProperty, DocumentProperties, PropertyValue};
 pub use protection::{PasswordHash, ProtectedRange, SheetProtection, WorkbookProtection};
@@ -280,10 +282,10 @@ pub struct TextRun {
 /// A note attached to a cell.
 ///
 /// The text is rich, as a comment usually starts with the author's name in
-/// bold. Where the note sits and how big its box is are not here: that lives
-/// in the sheet's VML drawing, which travels through unparsed - moving a
-/// comment is a drawing edit, and drawings are their own phase.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+/// bold. The box it is drawn in lives in the sheet's VML drawing, which
+/// travels as bytes; whether the box shows and how big it is are read out of
+/// it, and the writer changes just those in the bytes.
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Comment {
     /// Who wrote it. Excel keeps the authors in a table and the comment points
     /// at one; here each comment carries its own, and writing rebuilds the
@@ -291,6 +293,11 @@ pub struct Comment {
     pub author: String,
     /// The text, in runs.
     pub text: Vec<TextRun>,
+    /// Shown all the time, rather than when the pointer is over the cell.
+    pub visible: bool,
+    /// Width and height of the box in points; `None` for Excel's default,
+    /// 108 by 59.25, which is also how a box of that size reads.
+    pub size: Option<(f64, f64)>,
 }
 
 impl Comment {
@@ -575,6 +582,20 @@ pub struct SheetView {
     pub show_zeros: bool,
     /// Whether columns run right to left.
     pub right_to_left: bool,
+    /// Whether cells show their formulas instead of their values (Ctrl and the backquote key).
+    pub show_formulas: bool,
+    /// Whether the outline bars and buttons of grouped rows and columns are
+    /// drawn.
+    pub show_outline_symbols: bool,
+    /// Whether the ruler is drawn in page layout view.
+    pub show_ruler: bool,
+    /// Whether page layout view shows the margins between pages.
+    pub show_white_space: bool,
+    /// Whether the window of the sheet is locked in place.
+    pub window_protection: bool,
+    /// Grid line colour as an index into the palette, when the sheet does not
+    /// use the default one: `colorId` with `defaultGridColor="0"`.
+    pub grid_color: Option<u32>,
     /// Index of the workbook window this view belongs to.
     pub workbook_view_id: u32,
     /// Frozen or split panes, if any.
@@ -599,6 +620,12 @@ impl Default for SheetView {
             show_row_col_headers: true,
             show_zeros: true,
             right_to_left: false,
+            show_formulas: false,
+            show_outline_symbols: true,
+            show_ruler: true,
+            show_white_space: true,
+            window_protection: false,
+            grid_color: None,
             workbook_view_id: 0,
             pane: None,
             selections: Vec::new(),
@@ -1582,6 +1609,9 @@ pub struct Worksheet {
     pub protected_ranges: Vec<ProtectedRange>,
     /// The filter over a range of the sheet, when it has one.
     pub auto_filter: Option<AutoFilter>,
+    /// The last sort of a range made outside a filter (Data > Sort), when
+    /// Excel recorded one.
+    pub sort_state: Option<SortState>,
     /// Notes attached to cells, in address order.
     pub comments: BTreeMap<CellRef, Comment>,
     /// The pivot tables the sheet holds, read but not written: see
@@ -1601,6 +1631,9 @@ pub struct Worksheet {
     /// The shapes on the sheet - boxes, arrows, callouts, text boxes - read
     /// and written both: see [`crate::model::shape`].
     pub shapes: Vec<shape::Shape>,
+    /// The sparkline groups, read out of [`Self::extensions`]: see
+    /// [`crate::model::sparkline`].
+    pub sparklines: Vec<sparkline::SparklineGroup>,
     /// The sheet's `<extLst>`, carried as it was written.
     ///
     /// Everything newer than the 2006 schema hangs off this element:
@@ -2008,6 +2041,13 @@ pub struct Spreadsheet {
     /// The attributes of `<calcPr>`: calculation mode, iteration limits, and
     /// the id of the engine that last computed the workbook.
     pub calculation_properties: Vec<(String, String)>,
+    /// The rest of the first `<workbookView>`, as the file wrote it: the first
+    /// tab shown in the tab bar (`firstSheet`), the tab bar's share of the
+    /// window (`tabRatio`), whether tabs and scroll bars show.
+    ///
+    /// `activeTab` is [`Spreadsheet::set_active`], and the window's position
+    /// and size are left out: they are the geometry of someone else's screen.
+    pub workbook_view: Vec<(String, String)>,
     /// What changing the workbook's shape refuses.
     pub protection: WorkbookProtection,
     /// Parts attached to the workbook, such as links to other workbooks.
@@ -2067,6 +2107,7 @@ impl Default for Spreadsheet {
             defined_names: Vec::new(),
             workbook_properties: Vec::new(),
             calculation_properties: Vec::new(),
+            workbook_view: Vec::new(),
             protection: WorkbookProtection::default(),
             attachments: Vec::new(),
             doc_props: Vec::new(),

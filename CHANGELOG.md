@@ -4,6 +4,11 @@
 
 ### Changed
 
+- `AutoFilter` gains `sort_state`, `Table` gains `sort_state`, `Worksheet`
+  gains `sort_state` and `sparklines`, `Comment` gains `visible` and `size`
+  and no longer derives `Eq`: literals need the new fields (or
+  `..Default::default()` where there is one).
+
 - `SeriesMarkup::before_data` no longer holds `c:spPr`, `c:marker`, `c:dPt`
   and `c:dLbls` (now fields of `Series`), and `invertIfNegative`,
   `pictureOptions` and `explosion` moved to the new
@@ -36,6 +41,14 @@
 
 ### Fixed
 
+- A grid edit on one sheet moved the second half of a range on another:
+  removing a row of `Shown` turned `Data!B3:B10` into `Data!B3:B9`, because
+  `B10` was read without the qualifier of `B3`.
+- A carried `<extLst>`, `<tableStyles>` or `<colors>` that used a prefix
+  declared only on the part's root (`xr2:uid` on a sparkline group, `xr9:uid`
+  on a table style, as Excel 365 writes them) was written with the prefix
+  undeclared. It now declares what it borrowed.
+
 - Writing xls hung forever on a workbook whose theme had ` val="` in text
   outside a tag: the theme scan resumed before its own match. It also read
   the theme once per colour of every style; now once. Found by the fuzzer.
@@ -53,6 +66,20 @@
   the 2007 way.
 
 ### Added
+
+- Sparklines are modelled: `Worksheet::sparklines` (`model::sparkline`) reads
+  the groups out of the sheet's `<extLst>`, the writer puts back only their
+  `<ext>` when they changed, and grid and sheet edits move them.
+- `SortState` on a sheet, an auto filter and a table (`<sortState>`), and the
+  `Color` and `Icon` kinds of `ColumnFilter` (`<colorFilter>`,
+  `<iconFilter>`). All three were dropped by a rewrite; COIN's sheet 7 had one.
+- `SheetView` gains `show_formulas`, `show_outline_symbols`, `show_ruler`,
+  `show_white_space`, `window_protection` and `grid_color`, read and written in
+  xlsx and, where the format has them, xls and xlsb.
+- `Comment::visible` and `Comment::size`, read from the VML frame and written
+  back into it, anchor included.
+- `Spreadsheet::workbook_view`: `firstSheet`, `tabRatio` and the other
+  attributes of `<workbookView>` that a rewrite used to drop.
 
 - Document properties: `Spreadsheet::properties` (`DocumentProperties`) holds
   title, subject, author, keywords, comments, last editor, category, status,

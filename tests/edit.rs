@@ -226,6 +226,7 @@ fn a_drawing_moves_with_the_rows_under_it() {
                 text: "заметка".into(),
                 font: None,
             }],
+            ..Comment::default()
         },
     );
     sheet.attachments.push(Attachment {
@@ -292,4 +293,80 @@ fn inserted_lines_take_the_formatting_they_are_told_to() {
     assert_eq!(book.sheet(0).unwrap().get(at("A1")).unwrap().style, bold);
     insert_columns_with(&mut book, 0, col("A"), 1, CopyOrigin::Blank).unwrap();
     assert!(book.sheet(0).unwrap().get(at("A1")).is_none());
+}
+
+#[test]
+fn a_recorded_sort_follows_its_rows() {
+    use excelerate::model::{AutoFilter, SortCondition, SortState};
+    let range = |s: &str| Range::parse(s).unwrap();
+    let sort = |r: &str, key: &str| {
+        let mut sort = SortState::new(range(r));
+        sort.conditions.push(SortCondition::new(range(key)));
+        sort
+    };
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    let mut filter = AutoFilter::new(range("A1:B5"));
+    filter.sort_state = Some(sort("A2:B5", "B2:B5"));
+    sheet.auto_filter = Some(filter);
+    sheet.sort_state = Some(sort("D2:E5", "D2:D5"));
+    book.add_sheet(sheet).unwrap();
+
+    insert_rows(&mut book, 0, row(1), 2).unwrap();
+    let sheet = &book.sheets()[0];
+    let inner = sheet
+        .auto_filter
+        .as_ref()
+        .unwrap()
+        .sort_state
+        .as_ref()
+        .unwrap();
+    assert_eq!(inner.range, range("A4:B7"));
+    assert_eq!(inner.conditions[0].range, range("B4:B7"));
+    assert_eq!(sheet.sort_state.as_ref().unwrap().range, range("D4:E7"));
+
+    // Removing the sorted rows removes the record of sorting them.
+    remove_rows(&mut book, 0, row(4), 4).unwrap();
+    assert_eq!(book.sheets()[0].sort_state, None);
+}
+
+#[test]
+fn a_sparkline_follows_its_cell_and_its_data() {
+    use excelerate::edit::rename_sheet;
+    use excelerate::model::sparkline::{Sparkline, SparklineGroup, SparklineKind};
+    let mut book = Spreadsheet::empty();
+    book.add_sheet(Worksheet::new("Data").unwrap()).unwrap();
+    let mut shown = Worksheet::new("Shown").unwrap();
+    let mut group = SparklineGroup::new(SparklineKind::Line);
+    for (data, cell) in [("Data!B2:B9", "A2"), ("Data!C2:C9", "A5")] {
+        group.sparklines.push(Sparkline {
+            data: Some(data.into()),
+            location: at(cell),
+        });
+    }
+    shown.sparklines.push(group);
+    book.add_sheet(shown).unwrap();
+
+    // Rows on the data sheet move what the sparklines read, not where they
+    // sit; rows on their own sheet move where they sit.
+    insert_rows(&mut book, 0, row(1), 1).unwrap();
+    remove_rows(&mut book, 1, row(5), 1).unwrap();
+    rename_sheet(&mut book, 0, "Source").unwrap();
+    let lines = &book.sheets()[1].sparklines[0].sparklines;
+    assert_eq!(lines.len(), 1, "the one drawn in a removed row goes");
+    assert_eq!(lines[0].data.as_deref(), Some("Source!B3:B10"));
+    assert_eq!(lines[0].location, at("A2"));
+}
+
+#[test]
+fn a_range_on_another_sheet_ignores_an_edit_to_this_one() {
+    let mut book = Spreadsheet::empty();
+    book.add_sheet(Worksheet::new("Data").unwrap()).unwrap();
+    let mut sheet = Worksheet::new("Shown").unwrap();
+    // The second half of the range used to lose the qualifier of the first
+    // and move with the rows of the sheet the formula sits on.
+    sheet.set(at("Z1"), formula("Data!B3:B10+SUM(B3:B10)"));
+    book.add_sheet(sheet).unwrap();
+    remove_rows(&mut book, 1, row(5), 1).unwrap();
+    assert_eq!(text(&book, 1, "Z1"), "Data!B3:B10+SUM(B3:B9)");
 }

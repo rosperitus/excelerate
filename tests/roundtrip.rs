@@ -1185,6 +1185,7 @@ fn notes_on_cells_survive_the_cycle() {
                     font: None,
                 },
             ],
+            ..Comment::default()
         },
     );
     // A note on a cell that holds nothing is still a note.
@@ -1196,6 +1197,7 @@ fn notes_on_cells_survive_the_cycle() {
                 text: "без автора".into(),
                 font: None,
             }],
+            ..Comment::default()
         },
     );
     book.add_sheet(sheet).unwrap();
@@ -1243,6 +1245,7 @@ fn the_workbook_and_style_extension_lists_travel_too() {
 /// None of it is modelled, so it has to travel whole or be lost.
 #[test]
 fn the_sheet_extension_list_travels_whole() {
+    use excelerate::model::sparkline::{Sparkline, SparklineGroup, SparklineKind};
     let sparklines = concat!(
         r#"<extLst><ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}" "#,
         r#"xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">"#,
@@ -1256,6 +1259,16 @@ fn the_sheet_extension_list_travels_whole() {
     let mut sheet = Worksheet::new("Лист1").unwrap();
     sheet.set(at("B1"), 1.0);
     sheet.extensions = Some(sparklines.to_owned());
+    // The model says what the extension says, as the reader leaves it; the
+    // writer keeps the bytes only while the two agree.
+    let mut group = SparklineGroup::new(SparklineKind::Column);
+    group.attributes.clear();
+    group.colors.clear();
+    group.sparklines.push(Sparkline {
+        data: Some("Лист1!B1:E1".into()),
+        location: at("F1"),
+    });
+    sheet.sparklines.push(group);
     book.add_sheet(sheet).unwrap();
 
     let back = cycle(&book);
@@ -1445,6 +1458,7 @@ fn comment_boxes_follow_the_comments() {
             text: text.into(),
             font: None,
         }],
+        ..Comment::default()
     };
     let cycle = |book: &Spreadsheet| {
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -1614,4 +1628,107 @@ fn a_data_bar_keeps_the_id_that_ties_it_to_its_extension() {
                 .is_some_and(|x| x.contains("x14:conditionalFormattings"))
         );
     }
+}
+
+#[test]
+fn sorts_colour_and_icon_filters_and_view_switches_survive() {
+    use excelerate::model::{AutoFilter, ColumnFilter, SortCondition, SortState};
+    let range = |s: &str| Range::parse(s).unwrap();
+    let mut sheet = Worksheet::new("S").unwrap();
+    sheet.set(at("A1"), CellValue::text("h"));
+    let mut filter = AutoFilter::new(range("A1:C9"));
+    filter.column_at(0).filter = Some(ColumnFilter::Color {
+        dxf: Some(0),
+        cell_color: false,
+    });
+    filter.column_at(2).filter = Some(ColumnFilter::Icon {
+        icon_set: "3Arrows".into(),
+        icon_id: Some(2),
+    });
+    let mut sort = SortState::new(range("A2:C9"));
+    let mut key = SortCondition::new(range("B2:B9"));
+    key.descending = true;
+    key.custom_list = Some("Mon,Tue".into());
+    sort.conditions.push(key);
+    filter.sort_state = Some(sort);
+    sheet.auto_filter = Some(filter);
+    // Across columns, beside the filter rather than inside it: COIN has one.
+    let mut across = SortState::new(range("E1:H4"));
+    across.column_sort = true;
+    across.conditions.push(SortCondition::new(range("E1:H1")));
+    sheet.sort_state = Some(across);
+    sheet.view.show_formulas = true;
+    sheet.view.show_outline_symbols = false;
+    sheet.view.show_white_space = false;
+    sheet.view.grid_color = Some(10);
+    let mut book = Spreadsheet::empty();
+    book.add_sheet(sheet).unwrap();
+
+    let after = cycle(&book);
+    let (before, after) = (&book.sheets()[0], &after.sheets()[0]);
+    assert_eq!(before.auto_filter, after.auto_filter);
+    assert_eq!(before.sort_state, after.sort_state);
+    assert_eq!(before.view, after.view);
+}
+
+#[test]
+fn sparklines_survive_beside_the_extensions_they_share_a_list_with() {
+    use excelerate::model::sparkline::{Sparkline, SparklineGroup, SparklineKind};
+    let mut sheet = Worksheet::new("S").unwrap();
+    sheet.set(at("A1"), CellValue::Number(1.0));
+    // An extension that is not ours, which must come back untouched.
+    let other = r#"<ext uri="{78C0D931-6437-407d-A8EE-F0AAD7539E65}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:id>{1}</x14:id></ext>"#;
+    sheet.extensions = Some(format!("<extLst>{other}</extLst>"));
+    let mut group = SparklineGroup::new(SparklineKind::WinLoss);
+    group.negative = true;
+    group.sparklines.push(Sparkline {
+        data: Some("S!A1:D1".into()),
+        location: at("E1"),
+    });
+    sheet.sparklines.push(group);
+    let mut book = Spreadsheet::empty();
+    book.add_sheet(sheet).unwrap();
+
+    let once = cycle(&book);
+    assert_eq!(once.sheets()[0].sparklines, book.sheets()[0].sparklines);
+    assert!(
+        once.sheets()[0]
+            .extensions
+            .as_deref()
+            .unwrap()
+            .contains(other)
+    );
+
+    // Removing them leaves the other extension alone.
+    let mut none = once;
+    none.sheet_mut(0).unwrap().sparklines.clear();
+    let twice = cycle(&none);
+    assert!(twice.sheets()[0].sparklines.is_empty());
+    assert_eq!(
+        twice.sheets()[0].extensions.as_deref(),
+        Some(format!("<extLst>{other}</extLst>").as_str())
+    );
+}
+
+#[test]
+fn the_tab_bar_keeps_its_settings_but_not_a_first_tab_past_the_active_one() {
+    let mut book = Spreadsheet::empty();
+    for name in ["A", "B", "C"] {
+        book.add_sheet(Worksheet::new(name).unwrap()).unwrap();
+    }
+    book.set_active(1).unwrap();
+    book.workbook_view = vec![
+        ("firstSheet".into(), "2".into()),
+        ("tabRatio".into(), "750".into()),
+        ("showSheetTabs".into(), "0".into()),
+    ];
+    let back = cycle(&book);
+    assert_eq!(
+        back.workbook_view,
+        [
+            ("firstSheet".to_owned(), "1".to_owned()),
+            ("tabRatio".to_owned(), "750".to_owned()),
+            ("showSheetTabs".to_owned(), "0".to_owned()),
+        ]
+    );
 }

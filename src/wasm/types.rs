@@ -90,7 +90,7 @@ export interface SheetConditionalFormat {
 /** The autofilter over a range, as `autoFilter` returns it. */
 export interface SheetAutoFilter {
   range: string;
-  columns: { colId: number; kind: "values" | "custom" | "dynamic" | "top10" | "none" }[];
+  columns: { colId: number; kind: "values" | "custom" | "dynamic" | "top10" | "color" | "icon" | "none" }[];
 }
 /** A pivot report on the sheet, as `pivotTables` returns it. */
 export interface SheetPivotTable {

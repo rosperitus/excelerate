@@ -567,9 +567,12 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
 /// record Excel opens the sheet with no gridlines and no headings, which is
 /// not what the model said.
 fn window(out: &mut Vec<u8>, view: &SheetView) {
-    // Default gridline colour, outline symbols, selected, in page view off.
-    let mut flags = 0x06A0u16;
+    // Selected, in page view off.
+    let mut flags = 0x0600u16;
     for (on, bit) in [
+        (view.show_formulas, 0x0001),
+        (view.grid_color.is_none(), 0x0020),
+        (view.show_outline_symbols, 0x0080),
         (view.show_grid_lines, 0x0002),
         (view.show_row_col_headers, 0x0004),
         (view.show_zeros, 0x0010),
@@ -590,7 +593,14 @@ fn window(out: &mut Vec<u8>, view: &SheetView) {
     let mut data = flags.to_le_bytes().to_vec();
     data.extend_from_slice(&top.to_le_bytes());
     data.extend_from_slice(&left.to_le_bytes());
-    data.extend_from_slice(&0x0000_0040u32.to_le_bytes());
+    // `icvHdr`, the grid colour: 64 is the system window-text colour the
+    // default flag stands for.
+    let icv = view
+        .grid_color
+        .and_then(|c| u16::try_from(c).ok())
+        .unwrap_or(0x40);
+    data.extend_from_slice(&icv.to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());

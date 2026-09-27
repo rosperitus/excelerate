@@ -107,6 +107,7 @@ fn main() {
             at("A2"),
             at(&format!("C{}", total - 1)),
         ))),
+        sort_state: None,
         columns: ["Товар", "Штук", "Сумма"]
             .into_iter()
             .enumerate()
@@ -128,6 +129,7 @@ fn main() {
                 text: "Суммы считает формула, не человек.".to_owned(),
                 font: None,
             }],
+            ..Comment::default()
         },
     );
 

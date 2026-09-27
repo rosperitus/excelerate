@@ -48,6 +48,7 @@ sheet.comments.insert(
             text: "Проверить курс на дату отгрузки".to_owned(),
             font: None,   // `Some(DiffFont { .. })` to change part of the font
         }],
+        ..Comment::default()
     },
 );
 # book.add_sheet(sheet)?;
@@ -57,9 +58,14 @@ sheet.comments.insert(
 The frame a note is drawn in is a shape in the sheet's VML part, which travels
 as bytes. Before writing, `writer::comment::prepare` compares that part with
 the model: a deleted note has its shape cut out, a new one gets a shape with
-Excel's defaults, and a sheet with no VML at all gets a new part. A note moved
-through the model loses its frame size and whether the frame was pinned open; a
-note moved by a grid edit keeps both.
+Excel's defaults, and a sheet with no VML at all gets a new part. Two things
+about the frame are on the note itself: `visible` (pinned open rather than
+shown on hover) and `size` in points (`None` is Excel's 108 by 59.25). A frame
+that says otherwise is changed in place: its style, `<x:Visible/>`, and the far
+corner of its anchor, which is what Excel places it by and which is worked out
+from the widths of the columns and heights of the rows it covers. A note moved
+through the model starts over at the default place; a note moved by a grid
+edit keeps its frame.
 
 ## Tables
 
@@ -140,7 +146,44 @@ if let Some(filter) = &sheet.auto_filter {
 A rule is one of four shapes rather than a single tagged list, because
 `<filters>` and `<top10>` share no attributes: `Values` (literals, blanks, a
 date group), `Custom` (one or two comparisons joined by and/or), `Dynamic`
-(`today`, `aboveAverage` - a criterion Excel works out afresh) and `Top10`.
+(`today`, `aboveAverage` - a criterion Excel works out afresh), `Top10`,
+`Color` (the fill or font colour, as an index into the differential styles)
+and `Icon` (an icon of a conditional format's set).
+
+`SortState` records the last sort Excel applied: the range, whether it ran
+across columns, and the keys, each by value, colour or icon, ascending or not,
+optionally by a custom list. It sits in three places - `AutoFilter::sort_state`
+for a sort from the filter's drop-downs, `Worksheet::sort_state` for one from
+Data > Sort, `Table::sort_state` for a table's - and follows its cells through
+a grid edit. It is a record, not an instruction: the cells are already in that
+order.
+
+## Sparklines
+
+`Worksheet::sparklines` holds the sheet's sparkline groups: the kind (line,
+column, win/loss), which points are marked, the date axis, and the sparklines
+themselves, each a formula for what it reads and the cell it is drawn in.
+Colours and axis settings stay as the file wrote them. They live in the sheet's
+`<extLst>`, and the writer replaces just their `<ext>` there, and only when the
+groups changed; the extensions beside them travel byte for byte. A grid edit
+moves the cell a sparkline sits in and rewrites what it reads on any sheet, and
+so does renaming or removing a sheet.
+
+```rust
+use excelerate::CellRef;
+use excelerate::model::sparkline::{Sparkline, SparklineGroup, SparklineKind};
+# use excelerate::model::Worksheet;
+# let mut sheet = Worksheet::new("Sheet1")?;
+
+let mut group = SparklineGroup::new(SparklineKind::Column);
+group.high = true;
+group.sparklines.push(Sparkline {
+    data: Some("Sheet1!B2:M2".to_owned()),
+    location: CellRef::parse("N2")?,
+});
+sheet.sparklines.push(group);
+# Ok::<(), excelerate::Error>(())
+```
 
 ## Data validation
 
@@ -209,7 +252,11 @@ are not here: they are defined names on the workbook, `_xlnm.Print_Area` and
 ## The saved view
 
 `SheetView` holds zoom, the view mode, the top left cell, the selection and the
-frozen panes; `Spreadsheet::active_sheet` holds which tab opens. Without these a
+frozen panes, plus the switches: formulas shown instead of values, outline
+symbols, ruler, white space between pages, a locked window and a grid colour
+other than the default. `Spreadsheet::active_sheet` holds which tab opens, and
+`Spreadsheet::workbook_view` the rest of the tab bar - the first tab shown, its
+share of the window, whether tabs and scroll bars show. Without these a
 rewritten file opens in a different state from the one it was saved in, which is
 what they are read for.
 

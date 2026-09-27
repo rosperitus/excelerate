@@ -331,6 +331,8 @@ let (a1, b2) = (CellRef::parse("A1")?, CellRef::parse("B2")?);
 sheet.comments.insert(b2, Comment {
     author: "Sales".to_owned(),
     text: vec![TextRun { text: "Check the rate on the day of shipping".to_owned(), font: None }],
+    visible: true, // shown all the time, not only on hover
+    size: None,    // Excel's default box
 });
 
 // 2. A link on A1.

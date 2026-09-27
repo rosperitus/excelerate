@@ -11,6 +11,7 @@ pub(crate) mod ole;
 pub(crate) mod properties;
 pub(crate) mod shape;
 pub mod slk;
+pub(crate) mod vml;
 pub mod xls;
 mod xls_formula;
 pub mod xlsb;

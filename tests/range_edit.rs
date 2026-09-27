@@ -556,6 +556,7 @@ fn a_table_sorts_by_its_column_names() {
         header_row_count: None,
         totals_row_count: None,
         auto_filter: None,
+        sort_state: None,
         style: None,
         extensions: None,
     });

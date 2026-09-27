@@ -895,6 +895,11 @@ fn sheet_view(view: &mut SheetView, body: &[u8]) {
     view.show_zeros = flags & 0x0010 != 0;
     view.right_to_left = flags & 0x0020 != 0;
     view.tab_selected = flags & 0x0040 != 0;
+    view.window_protection = flags & 0x0001 != 0;
+    view.show_formulas = flags & 0x0002 != 0;
+    view.show_ruler = flags & 0x0080 != 0;
+    view.show_outline_symbols = flags & 0x0100 != 0;
+    view.show_white_space = flags & 0x0400 == 0;
     if let (Some(row), Some(col)) = (u32_at(body, 6), u32_at(body, 10))
         && (row, col) != (0, 0)
     {

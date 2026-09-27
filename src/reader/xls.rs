@@ -522,6 +522,12 @@ impl<'a> Reader<'a> {
                     view.show_row_col_headers = window & 0x0004 != 0;
                     view.show_zeros = window & 0x0010 != 0;
                     view.right_to_left = window & 0x0040 != 0;
+                    view.show_formulas = window & 0x0001 != 0;
+                    view.show_outline_symbols = window & 0x0080 != 0;
+                    // `icvHdr` counts only when the default colour is off.
+                    if window & 0x0020 == 0 {
+                        view.grid_color = Some(u32::from(u16_at(record.data, 6)));
+                    }
                     let (top, left) = (u16_at(record.data, 2), u16_at(record.data, 4));
                     if (top, left) != (0, 0) {
                         view.top_left_cell = cell_ref(left, top).ok();

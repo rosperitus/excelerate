@@ -29,6 +29,8 @@ pub struct Table {
     /// The filter dropdowns, which sit on the header row and follow it,
     /// with the buttons a table hides and whatever it filters by.
     pub auto_filter: Option<crate::model::AutoFilter>,
+    /// The last sort applied to the table from outside its filter.
+    pub sort_state: Option<crate::model::SortState>,
     /// The columns, in the order the header lists them.
     pub columns: Vec<TableColumn>,
     /// Banding and which edges are emphasised.
