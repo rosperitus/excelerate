@@ -1692,3 +1692,25 @@ fn subtotal_passes_over_nested_subtotals() {
     // Plain SUM knows nothing of the rule.
     assert_eq!(eval("SUM(B2:B6)"), Value::Number(26.0));
 }
+
+/// Microsoft's pages for both: `GCD` refuses an argument of 2^53 or more and
+/// `LCM` a result that reaches it, since an f64 stops holding every whole
+/// number there. The fuzzer found `LCM` multiplying past `u64` instead.
+#[test]
+fn gcd_and_lcm_stop_where_f64_stops_being_exact() {
+    check(&[
+        ("GCD(24,36)", "12"),
+        ("GCD(5.9,10)", "5"),
+        ("GCD(-1,2)", "#NUM!"),
+        ("GCD(2^53,2)", "#NUM!"),
+        ("GCD(2^53-2,2)", "2"),
+        ("LCM(4,6)", "12"),
+        ("LCM(0,5)", "0"),
+        ("LCM(2^52,2)", "4503599627370496"),
+        ("LCM(2^52,3)", "#NUM!"),
+        (
+            "LCM(4444444444444444444444444444444444444444444,7)",
+            "#NUM!",
+        ),
+    ]);
+}
