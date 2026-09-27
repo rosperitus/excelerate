@@ -25,6 +25,15 @@
   used to drop. `Table` gains `extensions` and `CfRule` gains `extensions`:
   literals need them.
 
+- `Error`, `CellError`, `Format`, `Fill`, `ColumnFilter`, `PlotKind`, `Expr`,
+  `CfScale`, `ChartText`, `DataSource`, `ImageFormat`, `PasswordHash`,
+  `LinkTarget`, `Stage`, `Color` and `NumberFormat` are `#[non_exhaustive]`:
+  a `match` on one needs a `_` arm, once. They are the enums whose
+  vocabulary grows with the formats; this release alone added variants to
+  `Fill`, and each such addition broke every exhaustive `match` downstream.
+  Enums fixed by the OOXML schema, `CellValue` and the formula `Value` stay
+  exhaustive.
+
 ### Fixed
 
 - A table part with an `<extLst>` (Excel keeps a table's alt text there as

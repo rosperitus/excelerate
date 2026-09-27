@@ -12,6 +12,7 @@ use crate::error::{CellError, Error, Result};
 
 /// A parsed formula.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Expr {
     /// A number literal.
     Number(f64),

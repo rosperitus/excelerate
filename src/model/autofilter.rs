@@ -133,6 +133,7 @@ impl DateGroup {
 /// The four variants are the four child elements a `<filterColumn>` may have,
 /// and it has exactly one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColumnFilter {
     /// `<filters>`: keep the rows whose value is one of these. Always an OR.
     Values {

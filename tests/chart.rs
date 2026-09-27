@@ -410,7 +410,7 @@ fn a_plot_with_no_axes_is_refused() {
 fn said(chart: &ChartEx) -> (String, Anchor, Option<ChartText>, Vec<ExSeries>) {
     let plain = |text: &ChartText| match text {
         ChartText::Text { text, .. } => ChartText::text(text),
-        other @ ChartText::Reference { .. } => other.clone(),
+        other => other.clone(),
     };
     (
         chart.name.clone(),

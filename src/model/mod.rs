@@ -1027,6 +1027,7 @@ pub struct PageBreak {
 
 /// Where a hyperlink points.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LinkTarget {
     /// Somewhere in this workbook, as `'Sheet 2'!A1`.
     Inside(String),
@@ -1299,6 +1300,7 @@ impl Default for CfValue {
 
 /// The graphical part of a rule, for the three kinds that have one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CfScale {
     /// A gradient between two or three colours.
     Color {

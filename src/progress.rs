@@ -11,6 +11,7 @@ use crate::formula::CustomFunctions;
 
 /// Which part of the work is being reported.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Stage {
     /// Reading a workbook: `done` counts sheets.
     Reading,

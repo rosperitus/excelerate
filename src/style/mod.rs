@@ -37,6 +37,7 @@ impl StyleId {
 /// A colour.
 ///
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum Color {
     /// No explicit colour; the consumer picks (usually black text on no fill).
     #[default]
@@ -571,6 +572,7 @@ pub struct Protection {
 
 /// A number format.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[non_exhaustive]
 pub enum NumberFormat {
     /// `General`, built-in format 0.
     #[default]

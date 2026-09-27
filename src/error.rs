@@ -4,6 +4,7 @@ use crate::coordinate::{MAX_COL, MAX_ROW};
 
 /// An error from a workbook operation.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     /// A cell reference could not be parsed.
     #[error("invalid cell reference: {0:?}")]
@@ -88,6 +89,7 @@ pub type Result<T> = core::result::Result<T, Error>;
 /// An error code held *as a value* in a cell - not an operation failure.
 ///
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum CellError {
     /// `#NULL!` - range intersection is empty.
     Null,

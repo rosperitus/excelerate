@@ -5,6 +5,7 @@ use crate::model::Spreadsheet;
 
 /// A spreadsheet file format this crate can read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Format {
     /// xlsx, the OOXML package.
     Xlsx,

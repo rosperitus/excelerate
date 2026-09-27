@@ -331,6 +331,7 @@ impl EditAs {
 
 /// Text a chart shows: typed in, or read from a cell.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ChartText {
     /// Read from a cell, and the value it had when the file was saved.
     Reference {
@@ -465,6 +466,7 @@ pub struct UpDownBars {
 
 /// The chart types of the 2006 schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PlotKind {
     /// Columns or bars.
     Bar {
@@ -766,6 +768,7 @@ pub struct LineFormat {
 
 /// How an area is filled.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Fill {
     /// Not filled (`a:noFill`).
     None,
@@ -1204,6 +1207,7 @@ impl LabelPosition {
 
 /// Where a series gets its numbers or labels.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum DataSource {
     /// Numbers.
     Numbers {

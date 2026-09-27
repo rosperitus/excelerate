@@ -76,6 +76,7 @@ impl Image {
 
 /// An image file format Excel can show.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum ImageFormat {
     /// PNG.
     Png,
