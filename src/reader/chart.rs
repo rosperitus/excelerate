@@ -679,6 +679,7 @@ pub(crate) fn read_point(node: &Node<'_>) -> DataPoint {
             .iter()
             .find(|n| n.name == "spPr")
             .map(read_shape_format),
+        marker: kids.iter().find(|n| n.name == "marker").map(read_marker),
         source: Some(node.outer.to_owned()),
     }
 }

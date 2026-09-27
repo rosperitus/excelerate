@@ -1008,8 +1008,11 @@ pub struct DataPoint {
     pub index: u32,
     /// Its fill and outline.
     pub format: Option<ShapeFormat>,
+    /// Its own marker (`c:marker`), on a line, scatter or radar series;
+    /// `None` leaves it to the series.
+    pub marker: Option<SeriesMarker>,
     /// The element as read, which also holds what is not modelled: a pulled-out
-    /// slice, a marker, 3-D bubble; `None` for one made in code.
+    /// slice, 3-D bubble; `None` for one made in code.
     pub source: Option<String>,
 }
 

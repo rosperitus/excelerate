@@ -1170,10 +1170,20 @@ fn data_point(p: &str, point: &DataPoint) -> String {
         .format
         .as_ref()
         .map_or_else(String::new, |f| shape_format(p, f));
+    let marker = point
+        .marker
+        .as_ref()
+        .map_or_else(String::new, |m| series_marker(p, m));
     match point.source.as_deref().and_then(element) {
         Some(node) if read_point(&node) == *point => node.outer.to_owned(),
-        Some(node) => rebuild(&node, POINT, &[(0, idx), (5, format)], |_| false, None),
-        None => format!("<{p}dPt>{idx}{format}</{p}dPt>"),
+        Some(node) => rebuild(
+            &node,
+            POINT,
+            &[(0, idx), (2, marker), (5, format)],
+            |_| false,
+            None,
+        ),
+        None => format!("<{p}dPt>{idx}{marker}{format}</{p}dPt>"),
     }
 }
 

@@ -14,9 +14,10 @@ use excelerate::edit::insert_rows;
 use excelerate::model::Spreadsheet;
 use excelerate::model::chart::{
     Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartColor, ChartEx, ChartLines, ChartText,
-    ColorBase, ColorTransform, DataLabel, DataLabels, DataSource, Dimension, DimensionRole,
-    ExSeries, Fill, Grouping, LabelPosition, LegendPosition, LineFormat, Marker, MarkerSymbol,
-    Plot, PlotKind, Series, SeriesLayout, ShapeFormat, Title, UpDownBars,
+    ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint, DataSource, Dimension,
+    DimensionRole, ExSeries, Fill, Grouping, LabelPosition, LegendPosition, LineFormat, Marker,
+    MarkerSymbol, Plot, PlotKind, Series, SeriesLayout, SeriesMarker, ShapeFormat, Title,
+    UpDownBars,
 };
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
@@ -713,10 +714,10 @@ fn a_recoloured_slice_keeps_the_rest_of_its_formatting() {
         .as_mut()
         .unwrap()
         .width = Some(38100);
-    points.push(excelerate::model::chart::DataPoint {
+    points.push(DataPoint {
         index: 7,
         format: Some(ShapeFormat::solid(ChartColor::rgb(0x12_3456))),
-        source: None,
+        ..DataPoint::default()
     });
 
     let back = cycle(&book);
@@ -1055,6 +1056,74 @@ fn a_line_plot_switches_its_markers() {
         .find(|p| matches!(p.kind, PlotKind::Line { .. }))
         .unwrap();
     assert_eq!(plot.show_markers, Some(false));
+}
+
+/// A line whose second point is marked apart, as Excel writes a point
+/// formatted on its own: the marker before the point's line, and an extension.
+const POINT_MARKER: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" "#,
+    r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+    r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+    r#"<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:lineChart>"#,
+    r#"<c:grouping val="standard"/><c:ser><c:idx val="0"/><c:order val="0"/>"#,
+    r#"<c:marker><c:symbol val="none"/></c:marker>"#,
+    r#"<c:dPt><c:idx val="1"/><c:marker><c:symbol val="diamond"/><c:size val="9"/>"#,
+    r#"<c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr></c:marker>"#,
+    r#"<c:bubble3D val="0"/><c:spPr><a:ln w="28575"/></c:spPr>"#,
+    r#"<c:extLst><c:ext uri="{Z}"/></c:extLst></c:dPt>"#,
+    r#"<c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f></c:numRef></c:val><c:smooth val="0"/></c:ser>"#,
+    r#"<c:marker val="1"/><c:axId val="1"/><c:axId val="2"/></c:lineChart>"#,
+    r#"<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/>"#,
+    r#"<c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling>"#,
+    r#"<c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>"#,
+    r#"<c:crossAx val="1"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/></c:chart></c:chartSpace>"#,
+);
+
+#[test]
+fn a_point_keeps_a_marker_of_its_own() {
+    let (mut book, path) = with_chart_part(POINT_MARKER);
+    let points = &mut book.sheet_mut(0).unwrap().charts[0].plots[0].series[0].data_points;
+    let marker = points[0].marker.as_mut().unwrap();
+    assert_eq!(
+        (marker.symbol, marker.size),
+        (Some(MarkerSymbol::Diamond), Some(9))
+    );
+    assert_eq!(
+        marker.format.as_ref().unwrap().fill,
+        Some(Fill::Solid(ChartColor::rgb(0xFF_0000)))
+    );
+    // The diamond grows, and a third point gets a square of its own.
+    marker.size = Some(12);
+    points.push(DataPoint {
+        index: 2,
+        marker: Some(SeriesMarker {
+            symbol: Some(MarkerSymbol::Square),
+            ..SeriesMarker::default()
+        }),
+        ..DataPoint::default()
+    });
+    let edited = points.clone();
+
+    let back = cycle(&book);
+    let text = text_of(&back, &path);
+    assert!(
+        text.contains(concat!(
+            r#"<c:dPt><c:idx val="1"/><c:marker><c:symbol val="diamond"/><c:size val="12"/>"#,
+            r#"<c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr></c:marker>"#,
+            r#"<c:bubble3D val="0"/><c:spPr><a:ln w="28575"/></c:spPr>"#,
+            r#"<c:extLst><c:ext uri="{Z}"/></c:extLst></c:dPt>"#,
+            r#"<c:dPt><c:idx val="2"/><c:marker><c:symbol val="square"/></c:marker></c:dPt>"#
+        )),
+        "{text}"
+    );
+    let points = &back.sheet(0).unwrap().charts[0].plots[0].series[0].data_points;
+    let said = |p: &[DataPoint]| {
+        p.iter()
+            .map(|p| (p.index, p.marker.as_ref().map(|m| (m.symbol, m.size))))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(said(points), said(&edited));
 }
 
 /// Excel's own caches are what reading the cells again gives, so nothing

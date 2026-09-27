@@ -15,6 +15,7 @@
   either need them (or `..Default::default()`).
 - `Plot` gains `show_markers`; `Plot::markup` no longer holds the
   `c:marker` switch of `c:lineChart`.
+- `DataPoint` gains `marker`: a literal needs it (or `..Default::default()`).
 
 ### Added
 
@@ -48,6 +49,9 @@
 - Charts: the marker switch of a line plot (`c:lineChart/c:marker`) is
   `Plot::show_markers`. With it on, a series with no marker of its own draws
   automatic ones, as Excel's "line with markers" does.
+- Charts: the marker of a single point (`c:dPt/c:marker`) is
+  `DataPoint::marker`, a `SeriesMarker` like the series' own; a changed one is
+  written into the point, which keeps the rest of what it said.
 - `formula::chart::refresh_caches(book, changed)`: reads the caches of chart
   series names, categories, values, bubble sizes and titles again from their
   cells, for every chart (`None`) or only for references covering the cells
