@@ -36,6 +36,13 @@
 
 ### Fixed
 
+- Writing xls hung forever on a workbook whose theme had ` val="` in text
+  outside a tag: the theme scan resumed before its own match. It also read
+  the theme once per colour of every style; now once. Found by the fuzzer.
+- `LCM` multiplied past `u64` (a wrong answer in release, a panic with
+  overflow checks) and `GCD` took arguments an f64 no longer holds exactly.
+  Both answer `#NUM!` at 2^53, as Microsoft documents. Found by the fuzzer.
+
 - A table part with an `<extLst>` (Excel keeps a table's alt text there as
   `<x14:table>`) read as a table with id 0 and no name: the extension shares
   the root's local name and overwrote it. Written back, such a table had

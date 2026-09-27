@@ -1121,16 +1121,20 @@ fn pattern_code(pattern: Pattern) -> u8 {
 }
 
 /// The workbook's colours laid out in a palette, with the theme that resolves
-/// its theme colours.
+/// its theme colours, read once: every colour of every style asks it.
 struct Colors {
     builder: palette::Builder,
-    theme: Option<String>,
+    theme: Vec<u32>,
 }
 
 impl Colors {
     /// Collects every colour the style table uses, in style order.
     fn plan(book: &Spreadsheet) -> Self {
-        let theme = book.theme.clone();
+        let theme = book
+            .theme
+            .as_deref()
+            .map(palette::theme_colors)
+            .unwrap_or_default();
         let mut used = Vec::new();
         for style in book.styles.all() {
             let borders = &style.borders;
@@ -1152,7 +1156,7 @@ impl Colors {
             used.extend(
                 colors
                     .into_iter()
-                    .filter_map(|c| palette::rgb_of(c, theme.as_deref())),
+                    .filter_map(|c| palette::rgb_in(c, &theme)),
             );
         }
         Self {
@@ -1163,8 +1167,7 @@ impl Colors {
 
     /// The palette index for a colour, or `automatic` for one with no value.
     fn index(&self, color: &Color, automatic: u16) -> u16 {
-        palette::rgb_of(color, self.theme.as_deref())
-            .map_or(automatic, |rgb| self.builder.index_of(rgb))
+        palette::rgb_in(color, &self.theme).map_or(automatic, |rgb| self.builder.index_of(rgb))
     }
 }
 

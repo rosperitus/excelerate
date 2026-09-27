@@ -47,6 +47,13 @@ pub fn resolve(palette: &[u32; 56], index: u16) -> Color {
 /// in Office's default theme otherwise, then tinted.
 #[must_use]
 pub fn rgb_of(color: &Color, theme: Option<&str>) -> Option<u32> {
+    rgb_in(color, &theme.map(theme_colors).unwrap_or_default())
+}
+
+/// The same with the theme's colours already read by [`theme_colors`]: a
+/// caller resolving many colours reads the theme part once, not per colour.
+/// An empty list stands for Office's default theme.
+pub(crate) fn rgb_in(color: &Color, theme: &[u32]) -> Option<u32> {
     match color {
         Color::Auto => None,
         Color::Argb(argb) => Some(argb & 0x00FF_FFFF),
@@ -59,8 +66,9 @@ pub fn rgb_of(color: &Color, theme: Option<&str>) -> Option<u32> {
         },
         Color::Theme { id, tint } => {
             let base = theme
-                .and_then(|xml| theme_colors(xml).get(*id as usize).copied())
-                .or_else(|| OFFICE_THEME.get(*id as usize).copied())?;
+                .get(*id as usize)
+                .or_else(|| OFFICE_THEME.get(*id as usize))
+                .copied()?;
             Some(tinted(base, f64::from(*tint) / 1_000_000.0))
         }
     }
@@ -79,7 +87,7 @@ const OFFICE_THEME: [u32; 12] = [
 /// theme index names them the other way round - a quirk every reader of the
 /// format has to know. System colours (`<a:sysClr>`) are taken at the value
 /// the saving machine recorded in `lastClr`.
-fn theme_colors(xml: &str) -> Vec<u32> {
+pub(crate) fn theme_colors(xml: &str) -> Vec<u32> {
     let Some(scheme) = xml
         .find("clrScheme")
         .and_then(|start| xml.get(start..))
@@ -102,7 +110,11 @@ fn theme_colors(xml: &str) -> Vec<u32> {
         if let Some(rgb) = value.and_then(|v| u32::from_str_radix(v, 16).ok()) {
             colors.push(rgb);
         }
-        rest = tag.find('>').map_or("", |end| &tag[end..]);
+        // Past the tag, and never short of the attribute just found: text
+        // such as `<a:x> val="` has its `>` before the match, and resuming
+        // there would find the same match forever.
+        let next = tag.find('>').map_or(rest.len(), |end| tag_start + end);
+        rest = rest.get(next.max(at + 1)..).unwrap_or("");
     }
     if colors.len() >= 4 {
         colors.swap(0, 1);
@@ -273,6 +285,14 @@ mod tests {
         assert_eq!(palette.index_of(0x33_3333), 63);
         assert_eq!(palette.index_of(0x12_3456), 62);
         assert!(palette.custom().is_some());
+    }
+
+    /// Found by the fuzzer: an attribute-looking run in text, outside any
+    /// tag, used to send the scan back to the same match forever.
+    #[test]
+    fn a_theme_with_val_in_its_text_is_read_to_the_end() {
+        let theme = r#"<a:clrScheme><a:dk1> val="x"<a:srgbClr val="112233"/></a:dk1><a:lt1><a:srgbClr val="445566"/></a:lt1></a:clrScheme>"#;
+        assert_eq!(theme_colors(theme), vec![0x11_2233, 0x44_5566]);
     }
 
     #[test]
