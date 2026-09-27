@@ -410,8 +410,14 @@ pub struct Plot {
     /// Bars from the first series to the last at each category
     /// (`c:upDownBars`): the candles of a stock chart with an opening price.
     pub up_down_bars: Option<UpDownBars>,
-    /// What follows - gap width, overlap, hole size, markers, smoothing -
-    /// carried as written.
+    /// Whether the series of a line plot show markers (`c:marker` of
+    /// `c:lineChart`; no other plot has it). With it on, a series with no
+    /// `c:marker` of its own gets automatic ones - Excel's "line with
+    /// markers"; its plain "line" also writes it on, and turns each series'
+    /// markers off with `symbol none`. `None` when the file does not say.
+    pub show_markers: Option<bool>,
+    /// What follows - gap width, overlap, hole size, smoothing - carried as
+    /// written.
     pub markup: String,
 }
 
@@ -428,6 +434,7 @@ impl Plot {
             drop_lines: None,
             high_low_lines: None,
             up_down_bars: None,
+            show_markers: None,
             markup: String::new(),
         }
     }

@@ -1027,6 +1027,36 @@ fn labels_of_single_points_are_read_and_rewritten() {
     );
 }
 
+/// Excel's plain line chart: markers switched on for the plot, and each series
+/// turning its own off with `symbol none`.
+#[test]
+fn a_line_plot_switches_its_markers() {
+    let path = "xl/charts/chart102.xml";
+    let mut book = open("chart1.xlsx");
+    let chart = chart_at_mut(&mut book, path);
+    let plot = chart
+        .plots
+        .iter_mut()
+        .find(|p| matches!(p.kind, PlotKind::Line { .. }))
+        .unwrap();
+    assert_eq!(plot.show_markers, Some(true));
+    assert!(!plot.markup.contains("marker"), "{}", plot.markup);
+    plot.show_markers = Some(false);
+
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    assert!(
+        text.contains(r#"</c:dLbls><c:marker val="0"/><c:smooth val="0"/><c:axId"#),
+        "{text}"
+    );
+    let plot = chart_at(&back, path)
+        .plots
+        .iter()
+        .find(|p| matches!(p.kind, PlotKind::Line { .. }))
+        .unwrap();
+    assert_eq!(plot.show_markers, Some(false));
+}
+
 /// Excel's own caches are what reading the cells again gives, so nothing
 /// changes until a cell does - and then only the series reading it.
 #[test]

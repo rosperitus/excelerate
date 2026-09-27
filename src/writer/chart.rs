@@ -713,6 +713,11 @@ impl Out {
         if let Some(bars) = &plot.up_down_bars {
             self.s.push_str(&up_down_bars(&self.p, bars));
         }
+        if let Some(on) = plot.show_markers
+            && matches!(plot.kind, PlotKind::Line { three_d: false, .. })
+        {
+            self.empty("marker", Some(if on { "1" } else { "0" }));
+        }
         self.s.push_str(&plot.markup);
         for id in &plot.axis_ids {
             self.empty("axId", Some(&id.to_string()));

@@ -539,6 +539,7 @@ fn read_plot(node: &Node<'_>) -> Option<Plot> {
             "dropLines" => out.drop_lines = Some(read_lines(&child)),
             "hiLowLines" => out.high_low_lines = Some(read_lines(&child)),
             "upDownBars" => out.up_down_bars = Some(read_up_down_bars(&child)),
+            "marker" if node.name == "lineChart" => out.show_markers = Some(child.flag()),
             "axId" => {
                 if let Some(id) = child.val().and_then(|v| v.parse().ok()) {
                     out.axis_ids.push(id);

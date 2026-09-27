@@ -13,6 +13,8 @@
   holds `c:dropLines`, `c:hiLowLines` and `c:upDownBars`.
 - `SeriesMarker` gains `format` and `DataLabels` gains `points`: literals of
   either need them (or `..Default::default()`).
+- `Plot` gains `show_markers`; `Plot::markup` no longer holds the
+  `c:marker` switch of `c:lineChart`.
 
 ### Added
 
@@ -43,6 +45,9 @@
   `position` and the five `show_*` flags) are modelled. A point label keeps
   its text, layout and extensions from `source`, and a cell it shows moves
   with inserted rows like the rest of the chart.
+- Charts: the marker switch of a line plot (`c:lineChart/c:marker`) is
+  `Plot::show_markers`. With it on, a series with no marker of its own draws
+  automatic ones, as Excel's "line with markers" does.
 - `formula::chart::refresh_caches(book, changed)`: reads the caches of chart
   series names, categories, values, bubble sizes and titles again from their
   cells, for every chart (`None`) or only for references covering the cells
