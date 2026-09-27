@@ -115,7 +115,12 @@ pub fn weekday(epoch: Epoch, args: &[Arg]) -> Value {
         _ => return Value::Error(CellError::Value),
     };
     let (Ok(serial), Ok(kind)) = (serial, kind) else {
-        return Value::Error(serial.err().or(kind.err()).unwrap_or(CellError::Value));
+        return Value::Error(
+            serial
+                .err()
+                .or_else(|| kind.err())
+                .unwrap_or(CellError::Value),
+        );
     };
     let (Some(sunday_based), Some(kind)) = (weekday_index(serial, epoch), whole(kind)) else {
         return Value::Error(CellError::Num);
@@ -143,7 +148,12 @@ pub fn weeknum(epoch: Epoch, args: &[Arg]) -> Value {
         _ => return Value::Error(CellError::Value),
     };
     let (Ok(serial), Ok(kind)) = (serial, kind) else {
-        return Value::Error(serial.err().or(kind.err()).unwrap_or(CellError::Value));
+        return Value::Error(
+            serial
+                .err()
+                .or_else(|| kind.err())
+                .unwrap_or(CellError::Value),
+        );
     };
     let Some(kind) = whole(kind) else {
         return Value::Error(CellError::Num);
@@ -210,7 +220,12 @@ fn shift_months(epoch: Epoch, args: &[Arg], to_end: bool) -> Value {
     };
     let (serial, months) = (s.serial(epoch), m.number());
     let (Ok(serial), Ok(months)) = (serial, months) else {
-        return Value::Error(serial.err().or(months.err()).unwrap_or(CellError::Value));
+        return Value::Error(
+            serial
+                .err()
+                .or_else(|| months.err())
+                .unwrap_or(CellError::Value),
+        );
     };
     let (Ok(dt), Some(months)) = (from_serial(serial, epoch), whole(months)) else {
         return Value::Error(CellError::Num);
@@ -257,8 +272,8 @@ pub fn days360(epoch: Epoch, args: &[Arg]) -> Value {
         return Value::Error(
             start
                 .err()
-                .or(end.err())
-                .or(european.err())
+                .or_else(|| end.err())
+                .or_else(|| european.err())
                 .unwrap_or(CellError::Value),
         );
     };
@@ -300,8 +315,8 @@ pub fn datedif(epoch: Epoch, args: &[Arg]) -> Value {
             return Value::Error(
                 start
                     .err()
-                    .or(end.err())
-                    .or(unit.err())
+                    .or_else(|| end.err())
+                    .or_else(|| unit.err())
                     .unwrap_or(CellError::Value),
             );
         }
@@ -435,7 +450,12 @@ pub fn networkdays(epoch: Epoch, args: &[Arg]) -> Value {
         _ => return Value::Error(CellError::Value),
     };
     let (Ok(start), Ok(end)) = (start, end) else {
-        return Value::Error(start.err().or(end.err()).unwrap_or(CellError::Value));
+        return Value::Error(
+            start
+                .err()
+                .or_else(|| end.err())
+                .unwrap_or(CellError::Value),
+        );
     };
     net(epoch, start, end, Weekend::SATURDAY_SUNDAY, rest)
 }
@@ -451,7 +471,12 @@ pub fn networkdays_intl(epoch: Epoch, args: &[Arg]) -> Value {
         _ => return Value::Error(CellError::Value),
     };
     let (Ok(start), Ok(end)) = (start, end) else {
-        return Value::Error(start.err().or(end.err()).unwrap_or(CellError::Value));
+        return Value::Error(
+            start
+                .err()
+                .or_else(|| end.err())
+                .unwrap_or(CellError::Value),
+        );
     };
     let weekend = match weekend {
         Ok(w) => w,
@@ -502,7 +527,12 @@ pub fn workday(epoch: Epoch, args: &[Arg]) -> Value {
         _ => return Value::Error(CellError::Value),
     };
     let (Ok(start), Ok(count)) = (start, count) else {
-        return Value::Error(start.err().or(count.err()).unwrap_or(CellError::Value));
+        return Value::Error(
+            start
+                .err()
+                .or_else(|| count.err())
+                .unwrap_or(CellError::Value),
+        );
     };
     work(epoch, start, count, Weekend::SATURDAY_SUNDAY, rest)
 }
@@ -518,7 +548,12 @@ pub fn workday_intl(epoch: Epoch, args: &[Arg]) -> Value {
         _ => return Value::Error(CellError::Value),
     };
     let (Ok(start), Ok(count)) = (start, count) else {
-        return Value::Error(start.err().or(count.err()).unwrap_or(CellError::Value));
+        return Value::Error(
+            start
+                .err()
+                .or_else(|| count.err())
+                .unwrap_or(CellError::Value),
+        );
     };
     let weekend = match weekend {
         Ok(w) => w,
@@ -564,8 +599,8 @@ pub fn yearfrac(epoch: Epoch, args: &[Arg]) -> Value {
         return Value::Error(
             start
                 .err()
-                .or(end.err())
-                .or(basis.err())
+                .or_else(|| end.err())
+                .or_else(|| basis.err())
                 .unwrap_or(CellError::Value),
         );
     };

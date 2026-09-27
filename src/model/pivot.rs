@@ -110,7 +110,7 @@ impl Subtotal {
 }
 
 /// One field of the report, in the order the cache lists them.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PivotField {
     /// Where it sits, if it is in the report at all.
     pub axis: PivotAxis,
@@ -124,7 +124,7 @@ pub struct PivotField {
 
 /// A field in the values area: which cache field it reads and how it
 /// summarises it.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DataField {
     /// The caption shown in the report; Excel writes "Sum of Sales" here when
     /// the user has not renamed it.
@@ -145,7 +145,7 @@ pub struct DataField {
     clippy::struct_excessive_bools,
     reason = "one field per attribute of `<pivotTableStyleInfo>`"
 )]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PivotStyleInfo {
     /// Name of the built-in style, as `PivotStyleLight16`.
     pub name: Option<String>,
@@ -228,7 +228,7 @@ impl PivotOrigin {
 }
 
 /// Where a cache took its data from.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CacheSource {
     /// The sheet the range is on, when the source is a range of cells.
     pub sheet: Option<String>,
@@ -240,7 +240,7 @@ pub struct CacheSource {
 }
 
 /// One column of the source data, as the cache describes it.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CacheField {
     /// The heading it took its name from.
     pub name: String,
@@ -268,7 +268,7 @@ pub struct PivotCache {
     /// workbook is written again.
     pub definition_part: String,
     /// The cache as it was read, to compare with; `None` for one made in code.
-    pub origin: Option<Box<PivotCache>>,
+    pub origin: Option<Box<Self>>,
 }
 
 impl PivotCache {

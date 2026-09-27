@@ -20,18 +20,18 @@ impl Book {
     #[wasm_bindgen(js_name = cellStyle, unchecked_return_type = "CellStyle")]
     pub fn cell_style(&self, sheet: usize, address: &str) -> Result<JsValue, JsError> {
         let at = CellRef::parse(address).map_err(js)?;
-        Ok(style_to_js(
-            self.style_at(sheet, at)?.unwrap_or(&Style::default()),
-        ))
+        Ok(self
+            .style_at(sheet, at)?
+            .map_or_else(|| style_to_js(&Style::default()), style_to_js))
     }
 
     /// The same by 1-based row and column.
     #[wasm_bindgen(js_name = cellStyleAt, unchecked_return_type = "CellStyle")]
     pub fn cell_style_at(&self, sheet: usize, row: u32, column: u32) -> Result<JsValue, JsError> {
         let at = at_index(row, column)?;
-        Ok(style_to_js(
-            self.style_at(sheet, at)?.unwrap_or(&Style::default()),
-        ))
+        Ok(self
+            .style_at(sheet, at)?
+            .map_or_else(|| style_to_js(&Style::default()), style_to_js))
     }
 
     /// The styles of a rectangle in one call: each distinct style once, and a

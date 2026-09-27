@@ -109,14 +109,19 @@ fn is_meridiem(word: &str) -> bool {
 /// `13:10:60` is eleven minutes past one and `25:00:00` is one in the morning.
 fn parse_time(text: &str) -> Option<f64> {
     let lower = text.to_ascii_lowercase();
-    let (body, meridiem) =
-        if let Some(body) = lower.strip_suffix("pm").or(lower.strip_suffix("p.m")) {
-            (body, Some(true))
-        } else if let Some(body) = lower.strip_suffix("am").or(lower.strip_suffix("a.m")) {
-            (body, Some(false))
-        } else {
-            (lower.as_str(), None)
-        };
+    let (body, meridiem) = if let Some(body) = lower
+        .strip_suffix("pm")
+        .or_else(|| lower.strip_suffix("p.m"))
+    {
+        (body, Some(true))
+    } else if let Some(body) = lower
+        .strip_suffix("am")
+        .or_else(|| lower.strip_suffix("a.m"))
+    {
+        (body, Some(false))
+    } else {
+        (lower.as_str(), None)
+    };
 
     // Hours and minutes are whole; only the seconds may carry a fraction.
     let mut parts = body.trim().split(':');

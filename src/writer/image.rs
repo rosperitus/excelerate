@@ -154,6 +154,10 @@ fn rewrite_drawing(book: &mut Spreadsheet, path: &str, images: &[Image], takes_n
         return;
     };
     let rels = relationships(book, path);
+    #[expect(
+        clippy::needless_collect,
+        reason = "the answers read `book`, which `Edits` then borrows mutably"
+    )]
     let modelled: Vec<bool> = scan_pictures(&xml)
         .iter()
         .flat_map(|o| &o.pictures)

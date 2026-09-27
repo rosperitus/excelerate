@@ -72,11 +72,11 @@ impl<'a> Node<'a> {
     }
 
     /// The element's own children.
-    pub fn children(&self) -> Vec<Node<'a>> {
+    pub fn children(&self) -> Vec<Self> {
         children(self.inner)
     }
 
-    pub fn child(&self, name: &str) -> Option<Node<'a>> {
+    pub fn child(&self, name: &str) -> Option<Self> {
         self.children().into_iter().find(|n| n.name == name)
     }
 
@@ -160,7 +160,7 @@ fn position(reader: &Reader<&[u8]>) -> usize {
 }
 
 fn node(xml: &str, tag: Range<usize>, span: Range<usize>, inner: Range<usize>) -> Node<'_> {
-    let qname = &xml[span.start..span.end];
+    let qname = &xml[span.clone()];
     // The tag name runs from after `<` to the first space, `/` or `>`.
     let full = qname[1..]
         .split([' ', '/', '>', '\t', '\n', '\r'])
@@ -820,7 +820,7 @@ fn read_data(node: &Node<'_>) -> Option<DataSource> {
             let cache = if source.name == "numRef" {
                 source.child("numCache")
             } else {
-                Some(Node { ..source })
+                Some(source)
             };
             let (format_code, count, points) = cache.map(|c| numbers(&c)).unwrap_or_default();
             DataSource::Numbers {
@@ -834,7 +834,7 @@ fn read_data(node: &Node<'_>) -> Option<DataSource> {
             let cache = if source.name == "strRef" {
                 source.child("strCache")
             } else {
-                Some(Node { ..source })
+                Some(source)
             };
             let (count, points) = cache.map(|c| strings(&c)).unwrap_or_default();
             DataSource::Strings {

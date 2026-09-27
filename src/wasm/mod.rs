@@ -145,7 +145,7 @@ impl Book {
     pub fn read_csv(
         bytes: &[u8],
         #[wasm_bindgen(unchecked_param_type = "CsvOptions")] options: &JsValue,
-    ) -> Result<Book, JsError> {
+    ) -> Result<Self, JsError> {
         let mut parsed = crate::reader::csv::CsvOptions::default();
         if let Some(value) = field(options, "delimiter") {
             parsed.delimiter = Some(one_char(&value)?);
@@ -247,7 +247,11 @@ impl Book {
     /// so it stays valid without being rebuilt.
     #[cfg_attr(
         not(feature = "formulas"),
-        expect(clippy::unused_self, reason = "there is no index without the engine")
+        expect(
+            clippy::unused_self,
+            clippy::needless_pass_by_ref_mut,
+            reason = "there is no index without the engine"
+        )
     )]
     fn note(&mut self, sheet: usize, cells: &[CellRef]) {
         #[cfg(feature = "formulas")]

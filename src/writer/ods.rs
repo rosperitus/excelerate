@@ -792,7 +792,7 @@ mod tests {
             style: BorderStyle::Named("thick"),
             color: Color::Argb(0xFFFF_0000),
         };
-        let id = book.styles.intern(style.clone());
+        let id = book.styles.intern(style);
 
         let mut ws = Worksheet::new("S").expect("valid name");
         ws.set(at("A1"), "x");

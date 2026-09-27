@@ -330,7 +330,7 @@ impl EditAs {
 }
 
 /// Text a chart shows: typed in, or read from a cell.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChartText {
     /// Read from a cell, and the value it had when the file was saved.
     Reference {
@@ -378,7 +378,7 @@ impl ChartText {
 }
 
 /// A title over the chart or beside an axis.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Title {
     /// What it says; `None` when Excel makes the text up - a series name over
     /// the chart, nothing beside an axis.
@@ -441,7 +441,7 @@ impl Plot {
 }
 
 /// Lines a plot draws besides its series (`c:dropLines`, `c:hiLowLines`).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ChartLines {
     /// Their colour and width; `None` leaves them to the chart style.
     pub format: Option<ShapeFormat>,
@@ -449,7 +449,7 @@ pub struct ChartLines {
 
 /// The bars between the first and the last series of a stock or line plot
 /// (`c:upDownBars`).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct UpDownBars {
     /// The space between bars, as a percentage of a bar's width (0 to 500);
     /// `None` for the default, 150.
@@ -734,7 +734,7 @@ pub struct SeriesMarkup {
 /// picture fills, effects, dashes and colour transforms the model does not name
 /// survive. It is written back as is while the fields still say what it says;
 /// a changed field is written from the model into it, the rest kept.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ShapeFormat {
     /// The fill; `None` when the element does not state one.
     pub fill: Option<Fill>,
@@ -756,7 +756,7 @@ impl ShapeFormat {
 }
 
 /// An outline.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LineFormat {
     /// The colour of the stroke; `Some(Fill::None)` hides the line.
     pub fill: Option<Fill>,
@@ -765,7 +765,7 @@ pub struct LineFormat {
 }
 
 /// How an area is filled.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fill {
     /// Not filled (`a:noFill`).
     None,
@@ -803,7 +803,7 @@ pub enum Fill {
 }
 
 /// A colour of a gradient and where it sits (`a:gs`).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GradientStop {
     /// How far along, in thousandths of a percent: `0` to `100000`.
     pub position: u32,
@@ -846,7 +846,7 @@ impl GradientPath {
 }
 
 /// A `DrawingML` colour: a value or a theme colour, and what is done to it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChartColor {
     /// The colour before the transforms.
     pub base: ColorBase,
@@ -987,7 +987,7 @@ fn map_channels(rgb: u32, f: impl Fn(f64) -> f64) -> u32 {
 }
 
 /// The markers of a series (`c:marker`).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SeriesMarker {
     /// The shape; `None` for the chart's default.
     pub symbol: Option<MarkerSymbol>,
@@ -1071,7 +1071,7 @@ impl MarkerSymbol {
 }
 
 /// One point of a series formatted apart from the rest (`c:dPt`).
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct DataPoint {
     /// The point's index in the series.
     pub index: u32,
@@ -1088,7 +1088,7 @@ pub struct DataPoint {
 /// Data labels of a series or a plot (`c:dLbls`).
 ///
 /// Number format, font and fill are not modelled and stay in `source`.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent switches, one element each in the file"
@@ -1118,7 +1118,7 @@ pub struct DataLabels {
 ///
 /// Its own text, layout, number format, font and fill are not modelled and
 /// stay in `source`.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[expect(
     clippy::struct_excessive_bools,
     reason = "independent switches, one element each in the file"
@@ -1580,7 +1580,7 @@ impl ChartExOrigin {
 }
 
 /// One series of a [`ChartEx`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExSeries {
     /// How the series is drawn, which is what makes the chart a waterfall or a
     /// funnel.
@@ -1651,7 +1651,7 @@ impl SeriesLayout {
 }
 
 /// One dimension of the data a [`ChartEx`] series reads.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Dimension {
     /// What the dimension is for.
     pub role: DimensionRole,

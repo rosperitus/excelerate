@@ -41,7 +41,7 @@ pub enum Value {
     /// rows must not copy the whole of `Data` forty thousand times. Use
     /// [`Value::array`] to make one and [`Arc::unwrap_or_clone`] to take the
     /// rows out.
-    Array(Arc<Vec<Vec<Value>>>),
+    Array(Arc<Vec<Vec<Self>>>),
     /// A function, which `LAMBDA` makes and `MAP` and its kin call.
     ///
     /// A cell cannot hold one: it is a value only while a formula is running,

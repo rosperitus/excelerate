@@ -68,7 +68,7 @@ pub enum CellValue {
         formula: String,
         /// Cached result. It is stored in the file, which is what lets a
         /// workbook be read without recalculating it.
-        cached: Option<Box<CellValue>>,
+        cached: Option<Box<Self>>,
     },
 }
 
@@ -281,7 +281,7 @@ pub struct TextRun {
 /// bold. Where the note sits and how big its box is are not here: that lives
 /// in the sheet's VML drawing, which travels through unparsed - moving a
 /// comment is a drawing edit, and drawings are their own phase.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Comment {
     /// Who wrote it. Excel keeps the authors in a table and the comment points
     /// at one; here each comment carries its own, and writing rebuilds the
@@ -788,7 +788,7 @@ pub struct DataValidation {
 }
 
 /// Properties of the sheet as a whole.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SheetProperties {
     /// Colour of the sheet's tab.
     pub tab_color: Option<Color>,
@@ -889,7 +889,7 @@ impl Orientation {
     clippy::struct_excessive_bools,
     reason = "the independent switches of one <pageSetup> element"
 )]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PageSetup {
     /// Paper size code; 1 is US Letter, 9 is A4.
     pub paper_size: Option<u32>,
@@ -950,7 +950,7 @@ pub struct PrintOptions {
     clippy::struct_excessive_bools,
     reason = "the independent switches of one <headerFooter> element"
 )]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeaderFooter {
     /// Whether even pages get their own header and footer.
     pub different_odd_even: bool,
@@ -1035,7 +1035,7 @@ pub enum LinkTarget {
 }
 
 /// A hyperlink over a cell or a block of them.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hyperlink {
     /// The cells that carry the link.
     pub range: Range,
@@ -1052,7 +1052,7 @@ pub struct Hyperlink {
 /// Excel also keeps its own settings here under reserved names:
 /// `_xlnm.Print_Area` is the print area, `_xlnm.Print_Titles` the rows and
 /// columns repeated on every page.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefinedName {
     /// The name as written.
     pub name: String,
@@ -1340,7 +1340,7 @@ pub enum CfScale {
     clippy::struct_excessive_bools,
     reason = "the independent flags of one <cfRule> element"
 )]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CfRule {
     /// What the rule tests.
     pub kind: CfRuleType,
@@ -1381,7 +1381,7 @@ pub struct CfRule {
 }
 
 /// A block of cells and the rules that paint it.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConditionalFormat {
     /// The cells the rules cover.
     pub sqref: Vec<Range>,
@@ -2283,11 +2283,8 @@ mod tests {
         assert!(sheet.remove(at("B5")).is_none());
         assert_eq!(sheet.len(), 4);
         assert_eq!(sheet.dimension(), Some(Range::parse("A1:C2").unwrap()));
-        let row: Vec<crate::Col> = sheet
-            .row_cells(Row::new(1).unwrap())
-            .map(|(c, _)| c)
-            .collect();
-        assert_eq!(row.len(), 3);
+
+        assert_eq!(sheet.row_cells(Row::new(1).unwrap()).count(), 3);
     }
 
     use super::{CellValue, MAX_STRING_LENGTH, Spreadsheet, Worksheet};

@@ -41,7 +41,7 @@ fn latin_codes(code: &str) -> std::borrow::Cow<'_, str> {
         return std::borrow::Cow::Borrowed(code);
     }
     let mut out = String::with_capacity(code.len());
-    let mut chars = code.chars().peekable();
+    let mut chars = code.chars();
     while let Some(c) = chars.next() {
         match c {
             '"' => {
@@ -251,7 +251,7 @@ fn render_text(section: &str, text: &str) -> String {
         return text.to_owned();
     }
     let mut out = String::new();
-    let mut chars = section.chars().peekable();
+    let mut chars = section.chars();
     while let Some(c) = chars.next() {
         match c {
             '@' => out.push_str(text),
@@ -381,7 +381,7 @@ fn render_number(section: &str, value: f64, epoch: Epoch) -> String {
     // Whether the previous character belonged to the run of placeholders that
     // the number was rendered from.
     let mut in_run = false;
-    let mut chars = section.chars().peekable();
+    let mut chars = section.chars();
     while let Some(c) = chars.next() {
         let run_char = matches!(c, '0' | '#' | '?' | '.' | ',');
         match c {
@@ -531,7 +531,6 @@ fn render_fraction(section: &str, value: f64) -> Option<String> {
             }
             if blank {
                 out.push_str(&" ".repeat(den_end - num_start));
-                i = den_end;
             } else {
                 out.push_str(&fill(&format!("{n:.0}"), numerator, true));
                 out.push('/');
@@ -541,8 +540,8 @@ fn render_fraction(section: &str, value: f64) -> Option<String> {
                 } else {
                     out.push_str(&fill(&den, denominator, false));
                 }
-                i = den_end;
             }
+            i = den_end;
         } else {
             i = push_literal(&mut out, &chars, i);
         }

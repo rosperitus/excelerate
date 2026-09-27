@@ -944,7 +944,7 @@ impl<'a> Engine<'a> {
     /// The cache holds only the cells the links asked for, so a gap in it is
     /// blank rather than an error: that is what Excel shows too until the link
     /// is refreshed. A book or sheet that is not there at all is `#REF!`.
-    fn external(&mut self, book: usize, sheet: &str, range: Range) -> Value {
+    fn external(&self, book: usize, sheet: &str, range: Range) -> Value {
         let Some(cells) = self
             .book
             .external
@@ -1650,6 +1650,10 @@ impl Dependencies {
         let parts: Vec<Vec<(Node, Expr)>> = if threads > 1 {
             let size = cells.len().div_ceil(threads);
             std::thread::scope(|scope| {
+                #[expect(
+                    clippy::needless_collect,
+                    reason = "every thread must be spawned before the first join"
+                )]
                 let handles: Vec<_> = cells
                     .chunks(size)
                     .map(|chunk| scope.spawn(move || parse_chunk(chunk)))
@@ -2046,6 +2050,10 @@ fn parse_all(texts: &[&str], options: &Options<'_>) -> Vec<Expr> {
     }
     let size = texts.len().div_ceil(threads);
     std::thread::scope(|scope| {
+        #[expect(
+            clippy::needless_collect,
+            reason = "every thread must be spawned before the first join"
+        )]
         let handles: Vec<_> = texts
             .chunks(size)
             .map(|chunk| scope.spawn(move || chunk.iter().map(one).collect::<Vec<_>>()))

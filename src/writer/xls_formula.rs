@@ -364,6 +364,9 @@ impl Compiler<'_> {
         if let Some(entry) = sheet_entry {
             self.push(&entry.to_le_bytes());
         }
+        // Each branch spells out its record's layout, `row col` against
+        // `row row col col`; hoisting the shared first field would hide it.
+        #[expect(clippy::branches_sharing_code, reason = "the layout reads whole")]
         if single {
             self.push(&row(row1)?.to_le_bytes());
             self.push(&col(col1, anchors.start_col, anchors.start_row)?.to_le_bytes());

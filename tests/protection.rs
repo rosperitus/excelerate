@@ -21,7 +21,7 @@ fn passwords_another_program_set_verify() {
     assert!(legacy.verify("password"));
     assert_eq!(PasswordHash::legacy("password"), legacy);
 
-    let workbook = book.protection.workbook_password.clone().unwrap();
+    let workbook = book.protection.workbook_password.unwrap();
     assert!(workbook.verify("book"));
     assert!(!workbook.verify("books"));
 }
