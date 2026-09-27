@@ -60,6 +60,45 @@ pub fn refresh_caches(book: &mut Spreadsheet, changed: Option<&[(usize, CellRef)
     count
 }
 
+/// The cells a chart source reads, as numbers with the format of its first
+/// cell - for labels Excel cached as text (`c:strRef`), which a program
+/// drawing the chart may want to format itself: dates or numbers as its own
+/// locale writes them. `sheet` is the chart's own sheet.
+///
+/// The points are numbered as the cache numbers them (hidden rows and columns
+/// left out under `c:plotVisOnly`); a cell holding text is a gap, so a program
+/// can take the number where there is one and the cached label elsewhere.
+/// `None` for data typed into the chart, multi-level categories and
+/// references that do not point into the book. The format is not part of a
+/// text cache in the file, which is why this reads the cells rather than the
+/// model.
+#[must_use]
+pub fn source_numbers(
+    book: &Spreadsheet,
+    sheet: usize,
+    chart: &Chart,
+    source: &DataSource,
+) -> Option<DataSource> {
+    if matches!(source, DataSource::Levels { .. }) {
+        return None;
+    }
+    let reader = Reader {
+        book,
+        sheet,
+        changed: None,
+        visible_only: visible_only(chart),
+    };
+    let formula = source.formula()?;
+    let areas = reader.areas(formula)?;
+    let (count, points) = reader.numbers(&areas);
+    Some(DataSource::Numbers {
+        formula: Some(formula.to_owned()),
+        format_code: Some(reader.first_format(&areas).to_owned()),
+        count: Some(count),
+        points,
+    })
+}
+
 fn refresh_chart(
     book: &Spreadsheet,
     sheet: usize,
@@ -181,13 +220,7 @@ impl Reader<'_> {
                 points,
                 ..
             } => {
-                let mut fresh = Vec::new();
-                let size = for_cells(self.book, &areas, self.visible_only, |sheet, at, index| {
-                    let cell = self.book.sheet(sheet).and_then(|s| s.get(at));
-                    if let Some(n) = cell.and_then(|c| c.value.as_number()) {
-                        fresh.push((index, n));
-                    }
-                });
+                let (size, fresh) = self.numbers(&areas);
                 let changed = replace(count, Some(size)) | replace(points, fresh);
                 // The format a file gave is kept: Excel does not always write
                 // the first cell's, and a cache that did not change must not
@@ -209,6 +242,18 @@ impl Reader<'_> {
             }
             DataSource::Levels { .. } => false,
         }
+    }
+
+    /// The point count of `areas`, and their numbers by point index.
+    fn numbers(&self, areas: &Areas) -> (u32, Vec<(u32, f64)>) {
+        let mut out = Vec::new();
+        let size = for_cells(self.book, areas, self.visible_only, |sheet, at, index| {
+            let cell = self.book.sheet(sheet).and_then(|s| s.get(at));
+            if let Some(n) = cell.and_then(|c| c.value.as_number()) {
+                out.push((index, n));
+            }
+        });
+        (size, out)
     }
 
     /// The number format of the first cell a reference reads.
@@ -511,5 +556,64 @@ mod tests {
         book.sheet_mut(0).unwrap().set(at("A1"), 5.0);
         assert_eq!(refresh_caches(&mut book, Some(&[(0, at("B9"))])), 0);
         assert_eq!(refresh_caches(&mut book, Some(&[(0, at("A1"))])), 1);
+    }
+
+    #[test]
+    fn labels_read_as_numbers_come_with_their_format() {
+        use crate::model::chart::{Plot, PlotKind, Series};
+        use crate::style::{NumberFormat, Style};
+        let mut book = book();
+        let at = |s: &str| CellRef::parse(s).unwrap();
+        let month = book.styles.intern(Style {
+            number_format: NumberFormat::Custom("mmm yy".into()),
+            ..Style::default()
+        });
+        let sheet = book.sheet_mut(0).unwrap();
+        sheet.set_styled(at("D1"), 45_292.0, month);
+        sheet.set_styled(at("D2"), "later", month);
+        sheet.set_styled(at("D3"), 45_352.0, month);
+        sheet.set_styled(at("D4"), 45_383.0, month);
+        sheet.set_row_hidden(Row::new(1).unwrap(), true);
+        let mut plot = Plot::new(PlotKind::Line {
+            grouping: crate::model::chart::Grouping::Standard,
+            three_d: false,
+        });
+        plot.series.push(Series {
+            categories: Some(DataSource::strings("'My Data'!$D$1:$D$4")),
+            ..Series::default()
+        });
+        let mut chart = Chart {
+            plots: vec![plot],
+            ..Chart::default()
+        };
+        let categories = chart.plots[0].series[0].categories.clone().unwrap();
+        // Hidden rows drop out as they do from the cache.
+        assert_eq!(
+            source_numbers(&book, 1, &chart, &categories),
+            Some(DataSource::Numbers {
+                formula: Some("'My Data'!$D$1:$D$4".into()),
+                format_code: Some("mmm yy".into()),
+                count: Some(3),
+                points: vec![(0, 45_292.0), (1, 45_352.0), (2, 45_383.0)],
+            })
+        );
+        // A chart that plots hidden cells numbers them all, and the text
+        // among them is a gap.
+        chart.markup.after_legend = r#"<c:plotVisOnly val="0"/>"#.into();
+        let Some(DataSource::Numbers { points, count, .. }) =
+            source_numbers(&book, 1, &chart, &categories)
+        else {
+            panic!("numbers");
+        };
+        assert_eq!(
+            (count, points),
+            (Some(4), vec![(0, 45_292.0), (2, 45_352.0), (3, 45_383.0)])
+        );
+        let typed = DataSource::Strings {
+            formula: None,
+            count: Some(1),
+            points: vec![(0, "Q1".into())],
+        };
+        assert_eq!(source_numbers(&book, 1, &chart, &typed), None);
     }
 }

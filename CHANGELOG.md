@@ -52,6 +52,12 @@
 - Charts: the marker of a single point (`c:dPt/c:marker`) is
   `DataPoint::marker`, a `SeriesMarker` like the series' own; a changed one is
   written into the point, which keeps the rest of what it said.
+- `formula::chart::source_numbers(book, sheet, chart, source)`: the cells a
+  chart source reads as `DataSource::Numbers`, with the format code of its
+  first cell and points numbered as the cache numbers them (text cells are
+  gaps). A text cache (`c:strCache`) has no format code in the file, so a
+  program drawing dates or numbers of text categories in its own locale reads
+  them here.
 - `formula::chart::refresh_caches(book, changed)`: reads the caches of chart
   series names, categories, values, bubble sizes and titles again from their
   cells, for every chart (`None`) or only for references covering the cells

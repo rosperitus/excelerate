@@ -180,6 +180,10 @@ them, hidden cells skipped when the chart plots visible cells only - either
 for every chart or only for the references that cover the cells an edit
 touched. A cache that comes out the same is left alone, so the chart still
 goes back byte for byte.
+`formula::chart::source_numbers` reads a source's cells as numbers with the
+format code of its first cell, for categories Excel cached as text: the file
+keeps no format for those, and a program formatting dates in its own locale
+needs one.
 
 The writer compares each chart with the copy taken when it was read. An
 unchanged chart goes back as its original bytes. A changed one is rendered from
