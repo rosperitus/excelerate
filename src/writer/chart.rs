@@ -18,8 +18,8 @@ use crate::error::{Error, Result};
 use crate::model::chart::{Anchor, ChartText, DataSource, Marker, Plot, PlotKind, Series, Title};
 use crate::model::chart::{BarDirection, Chart, ChartAxis};
 use crate::model::chart::{
-    ChartColor, ColorBase, DataLabel, DataLabels, DataPoint, Fill, LabelPosition, LineFormat,
-    SeriesMarker, ShapeFormat, UpDownBars,
+    ChartColor, ColorBase, DataLabel, DataLabels, DataPoint, Fill, GradientPath, GradientStop,
+    LabelPosition, LineFormat, SeriesMarker, ShapeFormat, UpDownBars,
 };
 use crate::model::{Attachment, OpaquePart, Spreadsheet, Worksheet};
 use crate::reader::chart::{FILLS, Node, children, read_chart, rich_text, scan_drawing};
@@ -1077,18 +1077,106 @@ fn fill_xml(fill: &Fill) -> String {
             r#"<a:solidFill xmlns:a="{MAIN_NS}">{}</a:solidFill>"#,
             color_xml(color)
         ),
-        // Nothing to say it with: a gradient is only ever kept as read.
+        Fill::Gradient { stops, angle, path } => format!(
+            r#"<a:gradFill xmlns:a="{MAIN_NS}">{}{}</a:gradFill>"#,
+            stops_xml(stops, ""),
+            shade_xml(*angle, *path, None, "")
+        ),
+        Fill::Pattern {
+            preset,
+            foreground,
+            background,
+        } => {
+            let prst = preset
+                .as_ref()
+                .map_or_else(String::new, |p| format!(r#" prst="{}""#, escape(p)));
+            let color = |name: &str, c: &Option<ChartColor>| {
+                c.as_ref().map_or_else(String::new, |c| {
+                    format!("<a:{name}>{}</a:{name}>", color_xml(c))
+                })
+            };
+            format!(
+                r#"<a:pattFill xmlns:a="{MAIN_NS}"{prst}>{}{}</a:pattFill>"#,
+                color("fgClr", foreground),
+                color("bgClr", background)
+            )
+        }
+        // Nothing to say it with: a picture is only ever kept as read.
         Fill::Other => String::new(),
     }
 }
 
+/// Children of `a:gradFill`, in schema order.
+const GRADIENT: &[&[&str]] = &[&["gsLst"], &["lin", "path"], &["tileRect"]];
+
+/// `a:gsLst`; `ns` is a namespace declaration for its start tag, or nothing.
+/// No stops, no list: the schema wants at least two in one, and a gradient
+/// without it takes its colours from the style.
+fn stops_xml(stops: &[GradientStop], ns: &str) -> String {
+    if stops.is_empty() {
+        return String::new();
+    }
+    let mut out = format!("<a:gsLst{ns}>");
+    for stop in stops {
+        let _ = write!(
+            out,
+            r#"<a:gs pos="{}">{}</a:gs>"#,
+            stop.position,
+            color_xml(&stop.color)
+        );
+    }
+    out.push_str("</a:gsLst>");
+    out
+}
+
+/// `a:lin` or `a:path`: `read` if it still says the same, else one from the
+/// model. A new radial gradient spreads from the centre, as Excel's presets do.
+fn shade_xml(
+    angle: Option<u32>,
+    path: Option<GradientPath>,
+    read: Option<&Node<'_>>,
+    ns: &str,
+) -> String {
+    let same = read.is_some_and(|n| match n.name {
+        "lin" => path.is_none() && n.attr("ang").and_then(|v| v.parse().ok()) == angle,
+        "path" => path.is_some() && n.attr("path").and_then(GradientPath::parse) == path,
+        _ => false,
+    });
+    match (read, path, angle) {
+        (Some(n), ..) if same => n.outer.to_owned(),
+        (_, Some(p), _) => format!(
+            r#"<a:path{ns} path="{}"><a:fillToRect l="50000" t="50000" r="50000" b="50000"/></a:path>"#,
+            p.as_str()
+        ),
+        (_, None, Some(a)) => format!(r#"<a:lin{ns} ang="{a}" scaled="0"/>"#),
+        _ => String::new(),
+    }
+}
+
 /// The fill among `kids` if the model still says it, else one from the model.
+/// A gradient that was read is rebuilt, so what the model does not name stays.
 fn fill_or_kept(model: Option<&Fill>, kids: &[Node<'_>]) -> String {
     let read = kids.iter().find(|n| FILLS.contains(&n.name));
     if read.map(read_fill).as_ref() == model {
-        read.map_or_else(String::new, |n| n.outer.to_owned())
-    } else {
-        model.map_or_else(String::new, fill_xml)
+        return read.map_or_else(String::new, |n| n.outer.to_owned());
+    }
+    match (model, read) {
+        (Some(Fill::Gradient { stops, angle, path }), Some(node)) if node.name == "gradFill" => {
+            let ns = format!(r#" xmlns:a="{MAIN_NS}""#);
+            let parts = node.children();
+            let shade = parts.iter().find(|n| matches!(n.name, "lin" | "path"));
+            rebuild(
+                node,
+                GRADIENT,
+                &[
+                    (0, stops_xml(stops, &ns)),
+                    (1, shade_xml(*angle, *path, shade, &ns)),
+                ],
+                |_| false,
+                None,
+            )
+        }
+        _ => model.map_or_else(String::new, fill_xml),
     }
 }
 

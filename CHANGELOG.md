@@ -16,6 +16,9 @@
 - `Plot` gains `show_markers`; `Plot::markup` no longer holds the
   `c:marker` switch of `c:lineChart`.
 - `DataPoint` gains `marker`: a literal needs it (or `..Default::default()`).
+- `Fill` gains `Gradient` and `Pattern`: an exhaustive `match` needs arms
+  for them, and a gradient or pattern that read as `Fill::Other` now reads as
+  one of them.
 
 ### Added
 
@@ -52,6 +55,12 @@
 - Charts: the marker of a single point (`c:dPt/c:marker`) is
   `DataPoint::marker`, a `SeriesMarker` like the series' own; a changed one is
   written into the point, which keeps the rest of what it said.
+- Charts: gradient and pattern fills are described.
+  `Fill::Gradient { stops, angle, path }` holds the stops (`GradientStop`:
+  position and `ChartColor`), the angle of a linear gradient and the shape of
+  a radial one (`GradientPath`); `Fill::Pattern` the preset name and the
+  foreground and background colours. A changed gradient that was read keeps
+  its flip, rotation, tile and focus. Picture fills stay `Fill::Other`.
 - `formula::chart::source_numbers(book, sheet, chart, source)`: the cells a
   chart source reads as `DataSource::Numbers`, with the format code of its
   first cell and points numbered as the cache numbers them (text cells are

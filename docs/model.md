@@ -166,10 +166,11 @@ assign.
 `Worksheet::charts` holds one `Chart` per chart frame in the sheet's drawing:
 its name, anchor, title, plots with their series, axes and legend. A series
 reads its cells through a formula (`DataSource::formula`) and keeps the values
-Excel cached next to it. Series fill and line (`ShapeFormat`), markers, data
-points, data labels, and a stock chart's high-low lines and up/down bars are
-fields of the model; each keeps the element it was read from, so gradients,
-effects and extensions the model does not name survive an edit. Fonts,
+Excel cached next to it. Series fill and line (`ShapeFormat`: none, solid,
+gradient or pattern), markers, data points, data labels, and a stock chart's
+high-low lines and up/down bars are fields of the model; each keeps the
+element it was read from, so pictures, effects and extensions the model does
+not name survive an edit. Fonts,
 trend lines and the rest stay in the `markup` fields as the XML they were
 written in.
 

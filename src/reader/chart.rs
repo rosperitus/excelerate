@@ -11,9 +11,10 @@ use crate::coordinate::{Col, Row};
 use crate::model::chart::{
     Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartColor,
     ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint,
-    DataSource, Dimension, DimensionRole, EditAs, ExSeries, Fill, Grouping, LabelPosition, Legend,
-    LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, RadarStyle, ScatterStyle,
-    Series, SeriesLayout, SeriesMarker, ShapeFormat, Title, UpDownBars,
+    DataSource, Dimension, DimensionRole, EditAs, ExSeries, Fill, GradientPath, GradientStop,
+    Grouping, LabelPosition, Legend, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot,
+    PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, SeriesMarker, ShapeFormat, Title,
+    UpDownBars,
 };
 use core::ops::Range;
 use quick_xml::Reader;
@@ -618,8 +619,55 @@ pub(crate) fn read_fill(node: &Node<'_>) -> Fill {
             .first()
             .and_then(read_color)
             .map_or(Fill::Other, Fill::Solid),
+        "gradFill" => read_gradient(node).unwrap_or(Fill::Other),
+        "pattFill" => {
+            let color = |name: &str| {
+                node.child(name)
+                    .map(|c| c.children().first().and_then(read_color))
+            };
+            let (foreground, background) = (color("fgClr"), color("bgClr"));
+            // A colour the model cannot read leaves the fill undescribed.
+            if matches!(foreground, Some(None)) || matches!(background, Some(None)) {
+                return Fill::Other;
+            }
+            Fill::Pattern {
+                preset: node.attr("prst").map(str::to_owned),
+                foreground: foreground.flatten(),
+                background: background.flatten(),
+            }
+        }
         _ => Fill::Other,
     }
+}
+
+/// Reads `<a:gradFill>`; `None` when a stop has a colour the model cannot
+/// read.
+fn read_gradient(node: &Node<'_>) -> Option<Fill> {
+    let kids = node.children();
+    let stops = kids
+        .iter()
+        .find(|n| n.name == "gsLst")
+        .map(Node::children)
+        .unwrap_or_default()
+        .iter()
+        .filter(|n| n.name == "gs")
+        .map(|gs| {
+            Some(GradientStop {
+                position: gs.attr("pos")?.parse().ok()?,
+                color: read_color(gs.children().first()?)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let find = |name: &str| kids.iter().find(|n| n.name == name);
+    Some(Fill::Gradient {
+        stops,
+        angle: find("lin")
+            .and_then(|n| n.attr("ang"))
+            .and_then(|v| v.parse().ok()),
+        path: find("path")
+            .and_then(|n| n.attr("path"))
+            .and_then(GradientPath::parse),
+    })
 }
 
 fn read_color(node: &Node<'_>) -> Option<ChartColor> {

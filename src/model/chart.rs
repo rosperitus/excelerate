@@ -731,7 +731,7 @@ pub struct SeriesMarkup {
 /// Fill and outline of a series, a point or a label (`c:spPr`).
 ///
 /// The fields are what a program asks; `source` is the element as read, so
-/// gradients, effects, dashes and colour transforms the model does not name
+/// picture fills, effects, dashes and colour transforms the model does not name
 /// survive. It is written back as is while the fields still say what it says;
 /// a changed field is written from the model into it, the rest kept.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -771,9 +771,78 @@ pub enum Fill {
     None,
     /// One colour (`a:solidFill`).
     Solid(ChartColor),
-    /// A gradient, pattern or picture, or a colour of a kind the model does not
-    /// read: kept in [`ShapeFormat::source`], not described here.
+    /// Colours blending into each other (`a:gradFill`). A changed gradient
+    /// that was read keeps what the model does not name: flip, rotation with
+    /// the shape, the tile and the focus of a radial one (`a:fillToRect`).
+    Gradient {
+        /// The colours and where they sit, in the order the file lists them.
+        stops: Vec<GradientStop>,
+        /// The direction of a linear gradient (`a:lin ang`), in 60 000ths of
+        /// a degree clockwise from left to right: `5400000` runs top to
+        /// bottom. `None` for a radial one or when the file does not say.
+        angle: Option<u32>,
+        /// The shape of a radial gradient (`a:path`); it wins over `angle`
+        /// when both are set, the file having room for only one.
+        path: Option<GradientPath>,
+    },
+    /// Two colours in a pattern (`a:pattFill`).
+    Pattern {
+        /// The pattern, as the file names it: `pct50`, `dkDnDiag`, `smGrid`
+        /// and fifty more (`ST_PresetPatternVal`).
+        // ponytail: a name rather than an enum of 54; make it one if a
+        // program has to tell them apart.
+        preset: Option<String>,
+        /// The colour of the pattern's lines and dots (`a:fgClr`).
+        foreground: Option<ChartColor>,
+        /// The colour behind them (`a:bgClr`).
+        background: Option<ChartColor>,
+    },
+    /// A picture, or a colour of a kind the model does not read: kept in
+    /// [`ShapeFormat::source`], not described here.
     Other,
+}
+
+/// A colour of a gradient and where it sits (`a:gs`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct GradientStop {
+    /// How far along, in thousandths of a percent: `0` to `100000`.
+    pub position: u32,
+    /// The colour there.
+    pub color: ChartColor,
+}
+
+/// The shape a radial gradient spreads in (`a:path`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GradientPath {
+    /// Following the shape's outline.
+    Shape,
+    /// A circle.
+    Circle,
+    /// A rectangle.
+    Rect,
+}
+
+impl GradientPath {
+    /// Reads the `path` value.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "shape" => Self::Shape,
+            "circle" => Self::Circle,
+            "rect" => Self::Rect,
+            _ => return None,
+        })
+    }
+
+    /// The value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Shape => "shape",
+            Self::Circle => "circle",
+            Self::Rect => "rect",
+        }
+    }
 }
 
 /// A `DrawingML` colour: a value or a theme colour, and what is done to it.

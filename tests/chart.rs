@@ -15,9 +15,9 @@ use excelerate::model::Spreadsheet;
 use excelerate::model::chart::{
     Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartColor, ChartEx, ChartLines, ChartText,
     ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint, DataSource, Dimension,
-    DimensionRole, ExSeries, Fill, Grouping, LabelPosition, LegendPosition, LineFormat, Marker,
-    MarkerSymbol, Plot, PlotKind, Series, SeriesLayout, SeriesMarker, ShapeFormat, Title,
-    UpDownBars,
+    DimensionRole, ExSeries, Fill, GradientPath, GradientStop, Grouping, LabelPosition,
+    LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, Series, SeriesLayout,
+    SeriesMarker, ShapeFormat, Title, UpDownBars,
 };
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
@@ -590,8 +590,24 @@ fn series_formatting_and_labels_are_read() {
             width: Some(19050)
         })
     );
-    // A gradient is not described, but it is known to be there.
-    assert_eq!(points[0].format.as_ref().unwrap().fill, Some(Fill::Other));
+    // A linear gradient, its stops in the order the file lists them.
+    assert_eq!(
+        points[0].format.as_ref().unwrap().fill,
+        Some(Fill::Gradient {
+            stops: vec![
+                GradientStop {
+                    position: 100_000,
+                    color: ChartColor::rgb(0x89_40D9)
+                },
+                GradientStop {
+                    position: 0,
+                    color: ChartColor::rgb(0xB7_2CEE)
+                },
+            ],
+            angle: Some(7_200_000),
+            path: None,
+        })
+    );
     assert!(pie.labels.is_some());
 
     // A dashed line with no markers.
@@ -1124,6 +1140,101 @@ fn a_point_keeps_a_marker_of_its_own() {
             .collect::<Vec<_>>()
     };
     assert_eq!(said(points), said(&edited));
+}
+
+#[test]
+fn gradients_and_patterns_are_read_and_rewritten() {
+    // A filled radar series with a radial gradient whose stops fade.
+    let path = "xl/charts/chart110.xml";
+    let mut book = open("chart1.xlsx");
+    let format = chart_at_mut(&mut book, path).plots[0].series[0]
+        .format
+        .as_mut()
+        .unwrap();
+    let Some(Fill::Gradient {
+        stops,
+        angle,
+        path: shape,
+    }) = &mut format.fill
+    else {
+        panic!("a gradient, got {:?}", format.fill);
+    };
+    assert_eq!((*angle, *shape), (None, Some(GradientPath::Circle)));
+    assert_eq!(stops[0].position, 37_000);
+    assert_eq!(
+        stops[1].color,
+        ChartColor {
+            base: ColorBase::Rgb(0x00_66FF),
+            transforms: vec![ColorTransform::Alpha(40_000)],
+        }
+    );
+    // Now linear, and the first stop red: the flip, rotation and tile stay.
+    stops[0].color = ChartColor::rgb(0xFF_0000);
+    *shape = None;
+    *angle = Some(2_700_000);
+    let edited = format.fill.clone();
+
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    assert!(
+        text.contains(concat!(
+            r#"<a:gradFill flip="none" rotWithShape="1"><a:gsLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">"#,
+            r#"<a:gs pos="37000"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="80000"><a:srgbClr val="0066FF">"#,
+            r#"<a:alpha val="40000"/></a:srgbClr></a:gs></a:gsLst><a:lin xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+            r#"ang="2700000" scaled="0"/><a:tileRect l="-100000" t="-100000"/></a:gradFill>"#
+        )),
+        "{text}"
+    );
+    let series = &chart_at(&back, path).plots[0].series[0];
+    assert_eq!(series.format.as_ref().unwrap().fill, edited);
+
+    // Made in code: a pattern on the series, a radial gradient on its line.
+    let pattern = Fill::Pattern {
+        preset: Some("dkDnDiag".into()),
+        foreground: Some(ChartColor::scheme("accent1")),
+        background: Some(ChartColor::rgb(0xFF_FFFF)),
+    };
+    let radial = Fill::Gradient {
+        stops: vec![
+            GradientStop {
+                position: 0,
+                color: ChartColor::rgb(0x00_0000),
+            },
+            GradientStop {
+                position: 100_000,
+                color: ChartColor::rgb(0xFF_FFFF),
+            },
+        ],
+        angle: None,
+        path: Some(GradientPath::Rect),
+    };
+    let series = &mut chart_at_mut(&mut book, path).plots[0].series[0];
+    series.format = Some(ShapeFormat {
+        fill: Some(pattern.clone()),
+        line: Some(LineFormat {
+            fill: Some(radial.clone()),
+            width: None,
+        }),
+        source: None,
+    });
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    assert!(
+        text.contains(concat!(
+            r#"<a:pattFill xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" prst="dkDnDiag">"#,
+            r#"<a:fgClr><a:schemeClr val="accent1"/></a:fgClr><a:bgClr><a:srgbClr val="FFFFFF"/></a:bgClr></a:pattFill>"#
+        )),
+        "{text}"
+    );
+    assert!(text.contains(
+        r#"<a:path path="rect"><a:fillToRect l="50000" t="50000" r="50000" b="50000"/></a:path>"#
+    ));
+    let format = chart_at(&back, path).plots[0].series[0]
+        .format
+        .clone()
+        .unwrap();
+    assert_eq!(format.fill, Some(pattern));
+    assert_eq!(format.line.unwrap().fill, Some(radial));
 }
 
 /// Excel's own caches are what reading the cells again gives, so nothing
