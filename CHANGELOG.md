@@ -14,11 +14,17 @@
   `xdr:spPr`, a changed turn the attributes of `a:xfrm`, a changed font the
   runs of the new text; an untouched shape still goes back byte for byte, and
   a new one is written with what it was given.
+- Charts carry the look of their chart area and plot area:
+  `Chart::format` (`c:chartSpace/c:spPr`) and `Chart::plot_format`
+  (`c:plotArea/c:spPr`), read out of the carried markup and rewritten the
+  way a series' `spPr` is.
 
 ### Changed
 
 - `Shape` gains `rotation`, `flip_h`, `flip_v`, `format` and `font`: a
   `Shape { .. }` literal needs them (or `Shape::new`).
+- `Chart` gains `format` and `plot_format`; `ChartMarkup::after_chart` and
+  `after_axes` no longer hold those `c:spPr` elements.
 
 ## 0.14.0
 

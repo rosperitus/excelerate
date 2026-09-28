@@ -543,7 +543,17 @@ pub(crate) fn render_chart(chart: &Chart) -> String {
     for axis in &chart.axes {
         w.axis(axis, fresh);
     }
-    w.s.push_str(&m.after_axes);
+    // The plot area's `spPr` sits after a data table and before the
+    // extension list, both of which the carried markup may hold.
+    let tail = m
+        .after_axes
+        .find(&format!("<{}extLst", w.p))
+        .unwrap_or(m.after_axes.len());
+    w.s.push_str(&m.after_axes[..tail]);
+    if let Some(format) = &chart.plot_format {
+        w.s.push_str(&shape_format(&w.p, format));
+    }
+    w.s.push_str(&m.after_axes[tail..]);
     w.close("plotArea");
     if let Some(legend) = &chart.legend {
         w.open("legend");
@@ -559,6 +569,10 @@ pub(crate) fn render_chart(chart: &Chart) -> String {
     }
     w.s.push_str(&m.after_legend);
     w.close("chart");
+    // `spPr` is the first child after `c:chart`.
+    if let Some(format) = &chart.format {
+        w.s.push_str(&shape_format(&w.p, format));
+    }
     w.s.push_str(&m.after_chart);
     w.close("chartSpace");
     w.s

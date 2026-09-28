@@ -364,6 +364,8 @@ pub(crate) fn read_chart(xml: &str) -> Option<(Chart, String, String)> {
         if child.name == "chart" {
             seen_chart = true;
             read_chart_body(&child, &mut out);
+        } else if seen_chart && child.name == "spPr" {
+            out.format = Some(read_shape_format(&child));
         } else if seen_chart {
             out.markup.after_chart.push_str(child.outer);
         } else {
@@ -403,6 +405,8 @@ fn read_plot_area(area: &Node<'_>, out: &mut Chart) {
     for child in area.children() {
         if child.name == "layout" {
             child.outer.clone_into(&mut out.markup.plot_area_layout);
+        } else if child.name == "spPr" {
+            out.plot_format = Some(read_shape_format(&child));
         } else if let Some(plot) = read_plot(&child) {
             out.plots.push(plot);
         } else if let Some(axis) = read_axis(&child) {

@@ -52,6 +52,11 @@ pub struct Chart {
     pub axes: Vec<ChartAxis>,
     /// The legend, when there is one.
     pub legend: Option<Legend>,
+    /// The fill and outline of the chart area (`c:chartSpace/c:spPr`);
+    /// `None` leaves the look to the application's default.
+    pub format: Option<ShapeFormat>,
+    /// The fill and outline of the plot area (`c:plotArea/c:spPr`).
+    pub plot_format: Option<ShapeFormat>,
     /// Everything the model does not name, where it stood.
     pub markup: ChartMarkup,
     /// The part this chart was read from; `None` for a chart made in code.
@@ -96,6 +101,8 @@ impl Chart {
             plots,
             axes,
             legend,
+            format,
+            plot_format,
             markup,
             origin: _,
         } = self;
@@ -104,6 +111,8 @@ impl Chart {
             && *plots == other.plots
             && *axes == other.axes
             && *legend == other.legend
+            && *format == other.format
+            && *plot_format == other.plot_format
             && *markup == other.markup
     }
 

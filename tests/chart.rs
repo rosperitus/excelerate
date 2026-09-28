@@ -1278,3 +1278,35 @@ fn chart_caches_are_read_again_from_the_cells() {
     };
     assert_eq!(points[3], (3, "Q4".to_owned()));
 }
+
+#[test]
+fn the_chart_and_plot_area_formatting_is_read_and_rewritten() {
+    let mut book = open("chart1.xlsx");
+    let path = "xl/charts/chart2.xml";
+    let chart = chart_at(&book, path);
+    let area = chart.format.as_ref().unwrap();
+    assert_eq!(area.fill, Some(Fill::None));
+    assert_eq!(area.line.as_ref().unwrap().width, Some(9525));
+    assert_eq!(chart.plot_format.as_ref().unwrap().fill, Some(Fill::None));
+    assert!(!chart.markup.after_chart.contains("spPr"));
+
+    let chart = chart_at_mut(&mut book, path);
+    chart.format.as_mut().unwrap().fill = Some(Fill::Solid(ChartColor::rgb(0xFF_EEDD)));
+    chart.plot_format = Some(ShapeFormat::solid(ChartColor::rgb(0x11_2233)));
+    let back = cycle(&book);
+    let chart = chart_at(&back, path);
+    let area = chart.format.as_ref().unwrap();
+    assert_eq!(area.fill, Some(Fill::Solid(ChartColor::rgb(0xFF_EEDD))));
+    // The outline the edit did not touch keeps its width.
+    assert_eq!(area.line.as_ref().unwrap().width, Some(9525));
+    assert_eq!(
+        chart.plot_format.as_ref().unwrap().fill,
+        Some(Fill::Solid(ChartColor::rgb(0x11_2233)))
+    );
+    // The chart space still has one `spPr`, and the plot area one too.
+    let text = text_of(&back, path);
+    let after = &text[text.find("</c:chart>").unwrap()..];
+    assert_eq!(after.matches("<c:spPr>").count(), 1);
+    let plot = &text[text.find("<c:plotArea>").unwrap()..text.find("</c:plotArea>").unwrap()];
+    assert!(plot.contains("112233"));
+}
