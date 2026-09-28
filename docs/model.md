@@ -21,18 +21,23 @@ Spreadsheet
 
 ## Addresses
 
-`CellRef` is a column plus a row, both 1-based and both validated:
+`CellRef` is a column plus a row, both kept from zero and both checked
+against the sheet's 16,384 columns and 1,048,576 rows:
 
 ```rust
-use excelerate::{CellRef, Col, Range, Row};
+use excelerate::{CellRef, Col, Range, Row, at};
 
-let a1 = CellRef::parse("A1")?;
-let same = CellRef::parse("$A$1")?;      // `$` is accepted and dropped
+let a1 = at!("A1");
+let same = at!("$A$1");      // `$` is accepted and dropped
 assert_eq!(a1, same);
 
 // `new` takes 0-based indexes; `from_one_based` takes the numbers a user sees.
 let b4 = CellRef::new(Col::from_one_based(2)?, Row::from_one_based(4)?);
 assert_eq!(b4.to_string(), "B4");
+// The same by row and column, in the order ROW() and COLUMN() give them.
+assert_eq!(CellRef::from_row_col(4, 2)?, b4);
+// Text known only at run time.
+assert_eq!(CellRef::parse("b4")?, b4);
 
 // Ranges normalise their corners, so a backwards one still means what you
 // meant: D9:B4 is B4:D9.
@@ -42,7 +47,8 @@ assert_eq!(range.to_string(), "B4:D9");
 ```
 
 `A0` is an error, not a shrug - row 0 does not exist, and letting it slide only
-moves the bug downstream.
+moves the bug downstream. Inside `at!` it is a compile error:
+`at!` runs the same parse as `CellRef::parse` in a `const` block.
 
 ## Cell values
 
@@ -69,14 +75,13 @@ Two things worth internalising:
 Setting values is `impl Into<CellValue>`, so the common cases are short:
 
 ```rust
-# use excelerate::CellRef;
+# use excelerate::at;
 # use excelerate::model::{CellValue, Worksheet};
 # let mut sheet = Worksheet::new("S")?;
-# let at = |a: &str| CellRef::parse(a).unwrap();
-sheet.set(at("A1"), 42.0);          // number
-sheet.set(at("A2"), "hello");       // text
-sheet.set(at("A3"), true);          // bool
-sheet.set(at("A4"), CellValue::formula("SUM(A1:A3)"));   // no result yet
+sheet.set(at!("A1"), 42);           // number: i32, u32, i64 and f64 all go in
+sheet.set(at!("A2"), "hello");      // text
+sheet.set(at!("A3"), true);         // bool
+sheet.set(at!("A4"), CellValue::formula("SUM(A1:A3)"));   // no result yet
 # Ok::<(), excelerate::Error>(())
 ```
 
@@ -84,7 +89,7 @@ sheet.set(at("A4"), CellValue::formula("SUM(A1:A3)"));   // no result yet
 whole cell with `entry`:
 
 ```rust
-# use excelerate::CellRef;
+use excelerate::at;
 # use excelerate::model::Worksheet;
 # use excelerate::style::{Style, StyleTable};
 # let mut sheet = Worksheet::new("S")?;
@@ -92,7 +97,7 @@ whole cell with `entry`:
 # let mut style = Style::default();
 # style.font.bold = true;
 let bold = styles.intern(style);
-sheet.entry(CellRef::parse("A1")?).style = bold;
+sheet.entry(at!("A1")).style = bold;
 # Ok::<(), excelerate::Error>(())
 ```
 

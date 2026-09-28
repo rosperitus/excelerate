@@ -4,11 +4,11 @@ Setting a cell is one call and touches one cell:
 
 ```rust
 use excelerate::model::{Spreadsheet, Worksheet};
-use excelerate::CellRef;
+use excelerate::at;
 
 let mut book = Spreadsheet::empty();
 let mut sheet = Worksheet::new("Sheet1")?;
-sheet.set(CellRef::parse("B2")?, 42.0);
+sheet.set(at!("B2"), 42.0);
 book.add_sheet(sheet)?;
 # Ok::<(), excelerate::Error>(())
 ```
@@ -68,7 +68,7 @@ Ctrl+X differ, and it is about the formulas:
 
 ```rust
 use excelerate::edit::{copy_range, move_range};
-use excelerate::{CellRef, Range};
+use excelerate::{Range, at};
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # book.add_sheet(Worksheet::new("Data")?)?;
@@ -76,11 +76,11 @@ let from = Range::parse("A1:B3")?;
 
 // A copy is rewritten as if it had been written where it lands: `=A1` one
 // column right reads `=B1`, `$A$1` stays where it is.
-copy_range(&mut book, 0, from, 0, CellRef::parse("D1")?)?;
+copy_range(&mut book, 0, from, 0, at!("D1"))?;
 
 // A move keeps its answers - `=A1` still reads A1 - and the formulas
 // elsewhere that read the moved cells follow them instead.
-move_range(&mut book, 0, from, 0, CellRef::parse("A10")?)?;
+move_range(&mut book, 0, from, 0, at!("A10"))?;
 # Ok::<(), excelerate::Error>(())
 ```
 
@@ -154,13 +154,12 @@ decides first, and equal rows keep their order:
 
 ```rust
 use excelerate::edit::{SortKey, SortOptions, sort_range, sort_range_with, sort_table};
-use excelerate::{Col, Range};
+use excelerate::{Col, Range, at};
 # use excelerate::model::{Spreadsheet, Worksheet};
-# use excelerate::CellRef;
 # let mut book = Spreadsheet::empty();
 # let mut sheet = Worksheet::new("Data")?;
-# sheet.set(CellRef::parse("A1")?, "Region");
-# sheet.set(CellRef::parse("B1")?, "Amount");
+# sheet.set(at!("A1"), "Region");
+# sheet.set(at!("B1"), "Amount");
 # book.add_sheet(sheet)?;
 
 // Rows 2..100 by column C, largest first, then by A.
@@ -281,6 +280,15 @@ indices and are left as they are.
 
 Chart series (`<c:f>`) are rewritten the same way, by `edit::chart`. The part
 is full of numbers, so a wider rewrite would corrupt them.
+
+The sheet's `<extLst>` travels as bytes too, and the rules in it name cells:
+the `x14` half of a data bar, a validation whose list sits on another sheet,
+sparklines. `edit::extension` rewrites the text of two elements only:
+`<xm:sqref>` moves with the cells of the sheet that holds it, and `<xm:f>`
+is rewritten like any formula, on every sheet and on a rename. A rule left
+with no cells is cut out with its element. `Worksheet::sparklines` moves in
+the model the same way, so the writer finds the two in agreement and keeps
+the bytes.
 
 Comment addresses move in the model. Before that they did not move at all, and
 a note stayed on the cell it used to describe.

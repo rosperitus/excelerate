@@ -3,13 +3,13 @@
 | Page | What's in it |
 |---|---|
 | [Getting started](getting-started.md) | install, read a file, write one, the whole loop |
-| [Recipes](recipes.md) | short answers: read a value, convert a file, recalculate one cell |
+| [Recipes](recipes.md) | short answers: name a cell, colour part of its text, read a value, convert a file, recalculate one cell |
 | [Workbook model](model.md) | workbook, sheet, cell, addresses and ranges |
 | [Editing the grid](editing.md) | inserting and removing rows, columns and sheets, and what moves with them |
-| [Everything on a sheet that is not a cell](sheet-features.md) | merges, comments, tables, protection, filters, validation, print setup |
+| [Everything on a sheet that is not a cell](sheet-features.md) | merges, comments, tables, protection, filters and sorts, sparklines, validation, print setup |
 | [File formats](formats.md) | what each format carries and what it drops |
 | [Formulas](formulas.md) | evaluation, incremental recalc, driving the engine yourself |
-| [Styles and number formats](styles.md) | fonts, fills, borders, format strings |
+| [Styles and number formats](styles.md) | fonts, fills, borders, format strings, rich text |
 | [Progress, custom functions and big files](long-operations.md) | the `*_with` pairs, what each step costs, threads |
 | [Links to other workbooks](external-links.md) | `[1]Sheet1!A1`, the value cache, plugging in a live file |
 | [WebAssembly](wasm.md) | building for Node and reading a book from JS |

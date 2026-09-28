@@ -6,7 +6,7 @@ Styles are interned once per workbook and referenced by id, the way the file
 does it - a million cells sharing one look cost one `Style`.
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::{Spreadsheet, Worksheet};
 use excelerate::style::{Color, NumberFormat, Style};
 
@@ -20,8 +20,8 @@ style.font.color = Color::Argb(0xFF19_4D33);
 style.number_format = NumberFormat::Custom("#,##0.00 ₽".into());
 
 let id = book.styles.intern(style);
-sheet.set(CellRef::parse("A1")?, 1234.5);
-sheet.entry(CellRef::parse("A1")?).style = id;
+sheet.set(at!("A1"), 1234.5);
+sheet.entry(at!("A1")).style = id;
 
 book.add_sheet(sheet)?;
 # Ok::<(), excelerate::Error>(())

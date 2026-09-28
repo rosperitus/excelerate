@@ -46,14 +46,14 @@ sniffing: `read_xlsx`, `read_xls`, `read_ods`, `read_csv`, `read_html`,
 ## Read some values
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::CellValue;
 # use excelerate::reader;
 
 # let book = reader::read("tests/fixtures/sample.xlsx")?;
 let sheet = book.sheet(0).unwrap();
 
-match &sheet.get(CellRef::parse("B4")?).map(|c| &c.value) {
+match &sheet.get(at!("B4")).map(|c| &c.value) {
     Some(CellValue::Number(n)) => println!("number: {n}"),
     Some(CellValue::Text(t)) => println!("text: {t}"),
     // A formula keeps the result the file was saved with, so you can read a

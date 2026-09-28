@@ -11,14 +11,14 @@ A merge is a rectangle, and the value belongs to its top left cell. Excel
 keeps whatever sat in the covered cells and shows none of it.
 
 ```rust
-use excelerate::{CellRef, Range};
+use excelerate::{Range, at};
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # let mut sheet = Worksheet::new("Sheet1")?;
 
 sheet.merges.push(Range::new(
-    CellRef::parse("A1")?,
-    CellRef::parse("C1")?,
+    at!("A1"),
+    at!("C1"),
 ));
 # book.add_sheet(sheet)?;
 # Ok::<(), excelerate::Error>(())
@@ -34,14 +34,14 @@ comment at a row of it; writing rebuilds that table from what the comments say,
 so there is no list to keep in step.
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::{Comment, TextRun};
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # let mut sheet = Worksheet::new("Sheet1")?;
 
 sheet.comments.insert(
-    CellRef::parse("B2")?,
+    at!("B2"),
     Comment {
         author: "Отдел продаж".to_owned(),
         text: vec![TextRun {
@@ -170,7 +170,7 @@ moves the cell a sparkline sits in and rewrites what it reads on any sheet, and
 so does renaming or removing a sheet.
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::sparkline::{Sparkline, SparklineGroup, SparklineKind};
 # use excelerate::model::Worksheet;
 # let mut sheet = Worksheet::new("Sheet1")?;
@@ -179,7 +179,7 @@ let mut group = SparklineGroup::new(SparklineKind::Column);
 group.high = true;
 group.sparklines.push(Sparkline {
     data: Some("Sheet1!B2:M2".to_owned()),
-    location: CellRef::parse("N2")?,
+    location: at!("N2"),
 });
 sheet.sparklines.push(group);
 # Ok::<(), excelerate::Error>(())
@@ -189,13 +189,13 @@ sheet.sparklines.push(group);
 
 ```rust
 use excelerate::model::{DataValidation, ValidationType};
-use excelerate::{CellRef, Range};
+use excelerate::{Range, at};
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # let mut sheet = Worksheet::new("Sheet1")?;
 
 sheet.data_validations.push(DataValidation {
-    sqref: vec![Range::new(CellRef::parse("A2")?, CellRef::parse("A99")?)],
+    sqref: vec![Range::new(at!("A2"), at!("A99"))],
     kind: ValidationType::List,
     formula1: "\"да,нет\"".to_owned(),
     allow_blank: true,
@@ -223,12 +223,12 @@ a place inside it:
 
 ```rust
 use excelerate::model::{Hyperlink, LinkTarget};
-use excelerate::{CellRef, Range};
+use excelerate::{Range, at};
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # let mut sheet = Worksheet::new("Sheet1")?;
 
-let a1 = CellRef::parse("A1")?;
+let a1 = at!("A1");
 sheet.hyperlinks.push(Hyperlink {
     range: Range::new(a1, a1),
     target: LinkTarget::Outside("https://example.org/report".to_owned()),
