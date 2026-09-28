@@ -262,7 +262,7 @@ fn a_chart_made_in_code_is_written() {
         anchor,
         title: Some(Title {
             text: Some(ChartText::text("Выручка\nпо кварталам")),
-            markup: String::new(),
+            ..Title::default()
         }),
         plots: vec![plot.clone()],
         axes: vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)],
@@ -1309,4 +1309,33 @@ fn the_chart_and_plot_area_formatting_is_read_and_rewritten() {
     assert_eq!(after.matches("<c:spPr>").count(), 1);
     let plot = &text[text.find("<c:plotArea>").unwrap()..text.find("</c:plotArea>").unwrap()];
     assert!(plot.contains("112233"));
+}
+
+#[test]
+fn a_title_and_a_legend_put_by_hand_keep_their_place() {
+    use excelerate::model::chart::ManualLayout;
+    let mut book = open("chart1.xlsx");
+    let path = "xl/charts/chart2.xml";
+    let chart = chart_at_mut(&mut book, path);
+    let at = ManualLayout {
+        x: 12_500,
+        y: 80_000,
+        w: None,
+        h: None,
+    };
+    chart.legend.get_or_insert_default().layout = Some(at);
+    chart.title.get_or_insert_default().layout = Some(ManualLayout { x: 5_000, ..at });
+    let back = cycle(&book);
+    let chart = chart_at(&back, path);
+    assert_eq!(chart.legend.as_ref().unwrap().layout, Some(at));
+    assert_eq!(
+        chart.title.as_ref().unwrap().layout,
+        Some(ManualLayout { x: 5_000, ..at })
+    );
+    let text = text_of(&back, path);
+    let legend = &text[text.find("<c:legend>").unwrap()..text.find("</c:legend>").unwrap()];
+    assert!(legend.contains(r#"<c:x val="0.125"/>"#), "{legend}");
+    // The layout stands before the overlay, as the schema orders them.
+    let overlay = legend.find("<c:overlay").unwrap_or(legend.len());
+    assert!(legend.find("<c:layout>").unwrap() < overlay, "{legend}");
 }

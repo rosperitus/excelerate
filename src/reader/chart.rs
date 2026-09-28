@@ -12,9 +12,9 @@ use crate::model::chart::{
     Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartColor,
     ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint,
     DataSource, Dimension, DimensionRole, EditAs, ExSeries, Fill, GradientPath, GradientStop,
-    Grouping, LabelPosition, Legend, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot,
-    PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, SeriesMarker, ShapeFormat, Title,
-    UpDownBars,
+    Grouping, LabelPosition, Legend, LegendPosition, LineFormat, ManualLayout, Marker,
+    MarkerSymbol, Plot, PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, SeriesMarker,
+    ShapeFormat, Title, UpDownBars,
 };
 use core::ops::Range;
 use quick_xml::Reader;
@@ -422,6 +422,11 @@ fn read_title(node: &Node<'_>) -> Title {
     for child in node.children() {
         if child.name == "tx" {
             out.text = read_text(&child);
+        } else if let Some(layout) = (child.name == "layout")
+            .then(|| read_manual_layout(&child))
+            .flatten()
+        {
+            out.layout = Some(layout);
         } else {
             out.markup.push_str(child.outer);
         }
@@ -474,11 +479,54 @@ fn read_legend(node: &Node<'_>) -> Legend {
     for child in node.children() {
         if child.name == "legendPos" {
             out.position = LegendPosition::parse(child.val().unwrap_or_default());
+        } else if let Some(layout) = (child.name == "layout")
+            .then(|| read_manual_layout(&child))
+            .flatten()
+        {
+            out.layout = Some(layout);
         } else {
             out.markup.push_str(child.outer);
         }
     }
     out
+}
+
+/// Reads `<c:layout>` whose `c:manualLayout` places the corner by edges;
+/// `None` for any other layout, which the markup keeps.
+fn read_manual_layout(layout: &Node<'_>) -> Option<ManualLayout> {
+    let manual = layout.child("manualLayout")?;
+    let kids = manual.children();
+    let val = |name: &str| kids.iter().find(|n| n.name == name).and_then(Node::val);
+    let share = |name: &str| -> Option<Option<i32>> {
+        match val(name) {
+            None => Some(None),
+            Some(v) => {
+                let v: f64 = v.parse().ok()?;
+                #[allow(clippy::cast_possible_truncation, reason = "clamped to a share")]
+                let v = (v.clamp(-10.0, 10.0) * 100_000.0).round() as i32;
+                Some(Some(v))
+            }
+        }
+    };
+    let known = kids.iter().all(|n| {
+        matches!(
+            n.name,
+            "xMode" | "yMode" | "wMode" | "hMode" | "x" | "y" | "w" | "h"
+        )
+    });
+    let factor = |name: &str| val(name).is_none_or(|v| v == "factor");
+    if !known || val("xMode")? != "edge" || val("yMode")? != "edge" {
+        return None;
+    }
+    if !factor("wMode") || !factor("hMode") {
+        return None;
+    }
+    Some(ManualLayout {
+        x: share("x")??,
+        y: share("y")??,
+        w: share("w")?,
+        h: share("h")?,
+    })
 }
 
 fn read_plot(node: &Node<'_>) -> Option<Plot> {

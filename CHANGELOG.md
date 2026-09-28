@@ -18,11 +18,17 @@
   `Chart::format` (`c:chartSpace/c:spPr`) and `Chart::plot_format`
   (`c:plotArea/c:spPr`), read out of the carried markup and rewritten the
   way a series' `spPr` is.
+- A chart title or legend put by hand keeps its place: `Title::layout` and
+  `Legend::layout` (`ManualLayout`, the corner of a `c:manualLayout` in edge
+  mode as a share of the chart area, and its size when set). A layout in
+  factor mode stays in the markup.
 
 ### Changed
 
 - `Shape` gains `rotation`, `flip_h`, `flip_v`, `format` and `font`: a
   `Shape { .. }` literal needs them (or `Shape::new`).
+- `Title` and `Legend` gain `layout`: a literal needs it (or
+  `..Default::default()`).
 - `Chart` gains `format` and `plot_format`; `ChartMarkup::after_chart` and
   `after_axes` no longer hold those `c:spPr` elements.
 

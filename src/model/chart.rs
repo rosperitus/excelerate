@@ -393,8 +393,26 @@ pub struct Title {
     /// What it says; `None` when Excel makes the text up - a series name over
     /// the chart, nothing beside an axis.
     pub text: Option<ChartText>,
-    /// Position, overlay and formatting, carried as written.
+    /// Where it was put by hand; `None` - where Excel puts it.
+    pub layout: Option<ManualLayout>,
+    /// Overlay, formatting and a layout the model does not read, carried as
+    /// written.
     pub markup: String,
+}
+
+/// Where a title or a legend was put by hand: `c:manualLayout` with both
+/// modes `edge`, the top-left corner as a share of the chart area in
+/// 100 000ths. A layout in `factor` mode stays in the markup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ManualLayout {
+    /// Left edge, from the chart area's left.
+    pub x: i32,
+    /// Top edge, from the chart area's top.
+    pub y: i32,
+    /// Width, when the layout sets one.
+    pub w: Option<i32>,
+    /// Height, when the layout sets one.
+    pub h: Option<i32>,
 }
 
 /// One plot: a chart type and the series drawn that way.
@@ -1508,9 +1526,13 @@ impl AxisPosition {
 /// A legend.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct Legend {
-    /// Where it sits.
+    /// Where it sits; with a `layout` it is only where the plot area makes
+    /// room for it.
     pub position: LegendPosition,
-    /// Hidden entries, layout, overlay and formatting, carried as written.
+    /// Where it was put by hand.
+    pub layout: Option<ManualLayout>,
+    /// Hidden entries, overlay, formatting and a layout the model does not
+    /// read, carried as written.
     pub markup: String,
 }
 
