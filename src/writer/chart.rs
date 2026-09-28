@@ -989,7 +989,7 @@ fn element(xml: &str) -> Option<Node<'_>> {
 /// `order` are replaced by the text given (dropped when it is empty), those in
 /// slots `drop` accepts go, and everything else stays as it was. `tag`
 /// replaces the start tag.
-fn rebuild(
+pub(super) fn rebuild(
     node: &Node<'_>,
     order: &[&[&str]],
     owned: &[(usize, String)],
@@ -1035,7 +1035,7 @@ fn rebuild(
 }
 
 /// A start tag with one attribute set to `value`, or removed.
-fn set_attr(tag: &str, name: &str, value: Option<String>) -> String {
+pub(super) fn set_attr(tag: &str, name: &str, value: Option<String>) -> String {
     let body = tag.trim_end_matches('>').trim_end_matches('/').trim_end();
     let body = match tag_attr(body, name) {
         Some(old) => {
@@ -1070,7 +1070,7 @@ fn color_xml(color: &ChartColor) -> String {
 }
 
 /// A fill made from the model, declaring the namespace it is written in.
-fn fill_xml(fill: &Fill) -> String {
+pub(super) fn fill_xml(fill: &Fill) -> String {
     match fill {
         Fill::None => format!(r#"<a:noFill xmlns:a="{MAIN_NS}"/>"#),
         Fill::Solid(color) => format!(
@@ -1200,7 +1200,7 @@ fn line_xml(line: &LineFormat, read: Option<&Node<'_>>) -> String {
 }
 
 /// `c:spPr` for a series or a point; `p` is the chart namespace prefix.
-fn shape_format(p: &str, format: &ShapeFormat) -> String {
+pub(super) fn shape_format(p: &str, format: &ShapeFormat) -> String {
     let read = format.source.as_deref().and_then(element);
     let Some(node) = read else {
         return format!(

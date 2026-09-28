@@ -670,7 +670,7 @@ fn read_gradient(node: &Node<'_>) -> Option<Fill> {
     })
 }
 
-fn read_color(node: &Node<'_>) -> Option<ChartColor> {
+pub(crate) fn read_color(node: &Node<'_>) -> Option<ChartColor> {
     let hex = |v: &str| u32::from_str_radix(v, 16).ok().filter(|_| v.len() == 6);
     let base = match node.name {
         "srgbClr" => ColorBase::Rgb(hex(node.val()?)?),

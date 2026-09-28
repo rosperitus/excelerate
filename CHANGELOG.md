@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Shapes carry their look: `Shape::format` (fill and outline from
+  `xdr:spPr`, the chart's `ShapeFormat`), `Shape::font` (the first run's
+  family, size, bold, italic and colour as a `DiffFont`) and the turn of
+  `a:xfrm` (`rotation` in 60 000ths of a degree clockwise, `flip_h`,
+  `flip_v`). `effective_fill`, `effective_line` and `effective_font` answer
+  with what Excel shows, the shape's style (`xdr:style`) filling in what the
+  element leaves out. A changed fill or line rewrites only those children of
+  `xdr:spPr`, a changed turn the attributes of `a:xfrm`, a changed font the
+  runs of the new text; an untouched shape still goes back byte for byte, and
+  a new one is written with what it was given.
+
+### Changed
+
+- `Shape` gains `rotation`, `flip_h`, `flip_v`, `format` and `font`: a
+  `Shape { .. }` literal needs them (or `Shape::new`).
+
 ## 0.14.0
 
 ### Changed

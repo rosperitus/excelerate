@@ -2,8 +2,11 @@
 //!
 //! See [`crate::model::shape`] for what is modelled.
 
-use super::chart::{children, read_anchor, tag_attr};
-use crate::model::chart::Anchor;
+use super::chart::{Node, children, read_anchor, read_color, read_shape_format, tag_attr};
+use super::zipxml::is_true;
+use crate::model::chart::{Anchor, ShapeFormat};
+use crate::model::shape::ShapeStyle;
+use crate::style::DiffFont;
 use core::ops::Range;
 
 /// One shape element.
@@ -14,7 +17,13 @@ pub(crate) struct ShapeElement {
     pub name: String,
     pub description: String,
     pub geometry: Option<String>,
+    pub rotation: i32,
+    pub flip_h: bool,
+    pub flip_v: bool,
+    pub format: ShapeFormat,
     pub text: String,
+    pub font: DiffFont,
+    pub style: ShapeStyle,
     /// Whether it sits inside a group of shapes.
     pub grouped: bool,
     /// Where the element sits in the drawing part.
@@ -44,7 +53,10 @@ pub(crate) struct ShapeObject {
 /// One pass of events over the part. Parsing it into nodes level by level
 /// read every shape once per level it is nested in, and on a drawing of two
 /// thousand shapes that was most of what reading the workbook cost.
-pub(crate) fn scan_shapes(xml: &str) -> Vec<ShapeObject> {
+///
+/// `theme` is the workbook's, for text colours a cell style cannot say
+/// without resolving them.
+pub(crate) fn scan_shapes(xml: &str, theme: Option<&str>) -> Vec<ShapeObject> {
     use quick_xml::Reader;
     use quick_xml::events::Event;
 
@@ -87,7 +99,7 @@ pub(crate) fn scan_shapes(xml: &str) -> Vec<ShapeObject> {
                         }
                         depth -= 1;
                         let end = position(&reader);
-                        shapes.push(shape_element(xml, before..end, groups > 0));
+                        shapes.push(shape_element(xml, before..end, groups > 0, theme));
                     }
                     _ => {}
                 }
@@ -142,8 +154,13 @@ fn is_marker(name: &str) -> bool {
 }
 
 /// What the model takes from one `<sp>` element, found by name in its text:
-/// only the text body is parsed into nodes.
-fn shape_element(xml: &str, span: Range<usize>, grouped: bool) -> ShapeElement {
+/// only the properties, the style and the text body are parsed into nodes.
+fn shape_element(
+    xml: &str,
+    span: Range<usize>,
+    grouped: bool,
+    theme: Option<&str>,
+) -> ShapeElement {
     let outer = &xml[span.clone()];
     let props = start_tag(outer, "cNvPr");
     let attr = |name: &str| {
@@ -152,6 +169,14 @@ fn shape_element(xml: &str, span: Range<usize>, grouped: bool) -> ShapeElement {
             .map(|raw| quick_xml::escape::unescape(raw).map_or_else(|_| raw.to_owned(), Into::into))
             .unwrap_or_default()
     };
+    let properties = child_element(outer, "spPr");
+    let transform = properties.and_then(|p| start_tag(p, "xfrm"));
+    let flag = |name: &str| {
+        transform
+            .and_then(|t| tag_attr(t, name))
+            .is_some_and(is_true)
+    };
+    let body = text_body(outer);
     ShapeElement {
         id: props
             .and_then(|t| tag_attr(t, "id"))
@@ -162,14 +187,30 @@ fn shape_element(xml: &str, span: Range<usize>, grouped: bool) -> ShapeElement {
         geometry: start_tag(outer, "prstGeom")
             .and_then(|t| tag_attr(t, "prst"))
             .map(str::to_owned),
-        text: text_body(outer).map(body_text).unwrap_or_default(),
+        rotation: transform
+            .and_then(|t| tag_attr(t, "rot"))
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        flip_h: flag("flipH"),
+        flip_v: flag("flipV"),
+        format: properties
+            .and_then(|p| children(p).into_iter().next())
+            .map(|node| read_shape_format(&node))
+            .unwrap_or_default(),
+        text: body.map(body_text).unwrap_or_default(),
+        font: body
+            .and_then(|b| first_run_font(b, theme))
+            .unwrap_or_default(),
+        style: child_element(outer, "style")
+            .map(|s| read_style(s, theme))
+            .unwrap_or_default(),
         grouped,
         span,
     }
 }
 
 /// The first start tag with this local name in `xml`, from `<` to `>`.
-fn start_tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+pub(crate) fn start_tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
     let mut from = 0;
     while let Some(found) = xml[from..].find(name) {
         let at = from + found;
@@ -191,6 +232,93 @@ fn start_tag<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+/// The first element with this local name, from its start tag to its end
+/// tag; for an element that holds no other of its name.
+pub(crate) fn child_element<'a>(xml: &'a str, name: &str) -> Option<&'a str> {
+    let open = start_tag(xml, name)?;
+    let start = open.as_ptr() as usize - xml.as_ptr() as usize;
+    if open.ends_with("/>") {
+        return Some(open);
+    }
+    let after = start + open.len();
+    let mut from = after;
+    while let Some(found) = xml[from..].find(name) {
+        let at = from + found;
+        from = at + name.len();
+        let before = &xml[after..at];
+        // `</name>` or `</prefix:name>`.
+        let closes = before.ends_with("</")
+            || before
+                .strip_suffix(':')
+                .and_then(|head| head.rfind("</").map(|lt| &head[lt + 2..]))
+                .is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_alphanumeric()));
+        if closes && xml[from..].starts_with('>') {
+            return Some(&xml[start..=from]);
+        }
+    }
+    None
+}
+
+/// `<xdr:style>`: the references a shape takes what it does not state from.
+fn read_style(style: &str, theme: Option<&str>) -> ShapeStyle {
+    let Some(node) = children(style).into_iter().next() else {
+        return ShapeStyle::default();
+    };
+    let kids = node.children();
+    let find = |name: &str| kids.iter().find(|k| k.name == name);
+    let color = |n: &Node<'_>| n.children().first().and_then(read_color);
+    let reference = |name: &str| {
+        find(name).map(|n| {
+            (
+                n.attr("idx").and_then(|v| v.parse().ok()).unwrap_or(0),
+                color(n),
+            )
+        })
+    };
+    ShapeStyle {
+        fill: reference("fillRef"),
+        line: reference("lnRef"),
+        font: find("fontRef")
+            .and_then(color)
+            .and_then(|c| c.to_style(theme)),
+    }
+}
+
+/// The font of the first run of a text body that states one (`a:rPr`).
+fn first_run_font(body: &str, theme: Option<&str>) -> Option<DiffFont> {
+    // Most shapes have no run of their own formatting; parsing their bodies
+    // into nodes for nothing cost a tenth of reading a drawing-heavy book.
+    if !body.contains(":rPr") && !body.contains("<rPr") {
+        return None;
+    }
+    let body = children(body).into_iter().next()?;
+    let props = body
+        .children()
+        .iter()
+        .filter(|p| p.name == "p")
+        .flat_map(Node::children)
+        .filter(|r| r.name == "r")
+        .find_map(|r| r.child("rPr"))?;
+    let flag = |name: &str| props.attr(name).map(is_true);
+    let kids = props.children();
+    Some(DiffFont {
+        name: kids
+            .iter()
+            .find(|k| k.name == "latin")
+            .and_then(|k| k.attr_text("typeface"))
+            .filter(|t| !t.is_empty()),
+        size: props.attr("sz").and_then(|v| v.parse().ok()),
+        bold: flag("b"),
+        italic: flag("i"),
+        color: kids
+            .iter()
+            .find(|k| k.name == "solidFill")
+            .and_then(|f| f.children().first().and_then(read_color))
+            .and_then(|c| c.to_style(theme)),
+        ..DiffFont::default()
+    })
 }
 
 /// The text body element of a shape, from its start tag to its end tag.

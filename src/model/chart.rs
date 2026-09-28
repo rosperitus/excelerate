@@ -884,30 +884,104 @@ impl ChartColor {
     pub fn resolve(&self, theme: Option<&str>) -> Option<u32> {
         let mut rgb = match &self.base {
             ColorBase::Rgb(rgb) => *rgb & 0x00FF_FFFF,
-            ColorBase::Scheme(name) => {
-                let id = match name.as_str() {
-                    "lt1" | "bg1" => 0,
-                    "dk1" | "tx1" => 1,
-                    "lt2" | "bg2" => 2,
-                    "dk2" | "tx2" => 3,
-                    "accent1" => 4,
-                    "accent2" => 5,
-                    "accent3" => 6,
-                    "accent4" => 7,
-                    "accent5" => 8,
-                    "accent6" => 9,
-                    "hlink" => 10,
-                    "folHlink" => 11,
-                    _ => return None,
-                };
-                crate::shared::palette::rgb_of(&crate::style::Color::Theme { id, tint: 0 }, theme)?
-            }
+            ColorBase::Scheme(name) => crate::shared::palette::rgb_of(
+                &crate::style::Color::Theme {
+                    id: scheme_id(name)?,
+                    tint: 0,
+                },
+                theme,
+            )?,
         };
         for t in &self.transforms {
             rgb = t.apply(rgb);
         }
         Some(rgb)
     }
+
+    /// The colour as a cell style states one. A theme colour lightened or
+    /// darkened the way Excel's palette does it (`lumMod`, with `lumOff` to
+    /// lighten) stays a theme colour with a tint; anything else is resolved
+    /// against `theme` into RGB.
+    pub(crate) fn to_style(&self, theme: Option<&str>) -> Option<crate::style::Color> {
+        use crate::style::Color;
+        if let ColorBase::Scheme(name) = &self.base
+            && let Some(id) = scheme_id(name)
+        {
+            // Tints are in millionths, the transforms in thousandths of a
+            // percent.
+            let tint = match self.transforms.as_slice() {
+                [] => Some(0),
+                [ColorTransform::LumMod(m)] if (0..=100_000).contains(m) => {
+                    Some((m - 100_000) * 10)
+                }
+                [ColorTransform::LumMod(m), ColorTransform::LumOff(o)]
+                    if (0..=100_000).contains(o) && m.checked_add(*o) == Some(100_000) =>
+                {
+                    Some(o * 10)
+                }
+                _ => None,
+            };
+            if let Some(tint) = tint {
+                return Some(Color::Theme { id, tint });
+            }
+        }
+        self.resolve(theme)
+            .map(|rgb| Color::Argb(0xFF00_0000 | rgb))
+    }
+
+    /// A cell style's colour as `DrawingML` states it; `None` for
+    /// [`crate::style::Color::Auto`], which leaves the colour to the reader.
+    #[cfg(feature = "write")]
+    pub(crate) fn from_style(color: &crate::style::Color) -> Option<Self> {
+        use crate::style::Color;
+        match color {
+            Color::Theme { id, tint } => {
+                let name = *SCHEME_NAMES.get(usize::try_from(*id).ok()?)?;
+                let mut color = Self::scheme(name);
+                let tint = tint.clamp(&-1_000_000, &1_000_000) / 10;
+                if tint < 0 {
+                    color
+                        .transforms
+                        .push(ColorTransform::LumMod(100_000 + tint));
+                } else if tint > 0 {
+                    color
+                        .transforms
+                        .push(ColorTransform::LumMod(100_000 - tint));
+                    color.transforms.push(ColorTransform::LumOff(tint));
+                }
+                Some(color)
+            }
+            Color::Auto => None,
+            other => crate::shared::palette::rgb_of(other, None).map(Self::rgb),
+        }
+    }
+}
+
+/// The names a text colour uses for the theme's colours, in the order
+/// [`crate::style::Color::Theme`] counts them.
+#[cfg(feature = "write")]
+const SCHEME_NAMES: [&str; 12] = [
+    "bg1", "tx1", "bg2", "tx2", "accent1", "accent2", "accent3", "accent4", "accent5", "accent6",
+    "hlink", "folHlink",
+];
+
+/// Where a theme colour's name sits in [`SCHEME_NAMES`].
+fn scheme_id(name: &str) -> Option<u32> {
+    Some(match name {
+        "lt1" | "bg1" => 0,
+        "dk1" | "tx1" => 1,
+        "lt2" | "bg2" => 2,
+        "dk2" | "tx2" => 3,
+        "accent1" => 4,
+        "accent2" => 5,
+        "accent3" => 6,
+        "accent4" => 7,
+        "accent5" => 8,
+        "accent6" => 9,
+        "hlink" => 10,
+        "folHlink" => 11,
+        _ => return None,
+    })
 }
 
 /// Where a [`ChartColor`] starts.

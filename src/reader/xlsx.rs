@@ -179,7 +179,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
         let drawings = sheet_drawings(&mut zip, &links, sheet_base);
         (sheet.charts, sheet.extended_charts) = read_sheet_charts(&mut zip, &drawings);
         sheet.images = read_sheet_images(&mut zip, &drawings);
-        sheet.shapes = read_sheet_shapes(&drawings);
+        sheet.shapes = read_sheet_shapes(&drawings, book.theme.as_deref());
         sheet.attachments = attachments(&links, sheet_base, &["hyperlink", "comments", "table"]);
         book.add_sheet(sheet)?;
     }
@@ -809,7 +809,10 @@ fn read_sheet_charts<R: Read + Seek>(
 }
 
 /// The shapes drawn on one sheet, in drawing order.
-fn read_sheet_shapes(drawings: &[(String, String)]) -> Vec<crate::model::shape::Shape> {
+fn read_sheet_shapes(
+    drawings: &[(String, String)],
+    theme: Option<&str>,
+) -> Vec<crate::model::shape::Shape> {
     use crate::model::shape::{Shape, ShapeOrigin};
     let mut shapes = Vec::new();
     for (drawing, xml) in drawings {
@@ -817,7 +820,7 @@ fn read_sheet_shapes(drawings: &[(String, String)]) -> Vec<crate::model::shape::
             continue;
         }
         let first = shapes.len();
-        for object in super::shape::scan_shapes(xml) {
+        for object in super::shape::scan_shapes(xml, theme) {
             let Some(anchor) = object.anchor else {
                 continue;
             };
@@ -830,15 +833,26 @@ fn read_sheet_shapes(drawings: &[(String, String)]) -> Vec<crate::model::shape::
                         name: element.name.clone(),
                         description: element.description.clone(),
                         anchor,
+                        rotation: element.rotation,
+                        flip_h: element.flip_h,
+                        flip_v: element.flip_v,
                         geometry: element.geometry.clone(),
+                        format: element.format.clone(),
                         text: element.text.clone(),
+                        font: element.font.clone(),
+                        style: element.style,
                         read_from_drawing: 0,
                     }),
                     name: element.name,
                     description: element.description,
                     anchor,
+                    rotation: element.rotation,
+                    flip_h: element.flip_h,
+                    flip_v: element.flip_v,
                     geometry: element.geometry,
+                    format: element.format,
                     text: element.text,
+                    font: element.font,
                 });
             }
         }

@@ -9,12 +9,15 @@ use super::chart::{
     DRAWING_NS, DRAWING_TYPE, MAIN_NS, REL_NS, XML_DECL, drawings, max_object_id, part_text,
     render_anchor, set_part,
 };
+use super::chart::{fill_xml, rebuild, set_attr, shape_format};
 use super::image::{free_path, reanchor, rename, set_attribute, splice};
 use super::xmlesc::escape;
+use crate::model::chart::{ChartColor, Fill, ShapeFormat};
 use crate::model::shape::Shape;
 use crate::model::{Attachment, Spreadsheet, Worksheet};
-use crate::reader::chart::children;
-use crate::reader::shape::{ShapeObject, scan_shapes};
+use crate::reader::chart::{FILLS, Node, children};
+use crate::reader::shape::{ShapeObject, child_element, scan_shapes};
+use crate::style::DiffFont;
 use core::ops::Range;
 use std::borrow::Cow;
 
@@ -59,7 +62,7 @@ fn lost_shapes(book: &Spreadsheet, sheet: &Worksheet, drawing: &str) -> bool {
     if !xml.contains(":sp ") && !xml.contains(":sp>") && !xml.contains("<sp") {
         return false;
     }
-    scan_shapes(xml)
+    scan_shapes(xml, None)
         .iter()
         .filter(|o| o.anchor.is_some())
         .flat_map(|o| &o.shapes)
@@ -107,7 +110,7 @@ fn rewrite_drawing(book: &mut Spreadsheet, path: &str, shapes: &[Shape], takes_n
     let Some(xml) = part_text(book, path).map(str::to_owned) else {
         return;
     };
-    let mut splices: Vec<(Range<usize>, String)> = scan_shapes(&xml)
+    let mut splices: Vec<(Range<usize>, String)> = scan_shapes(&xml, None)
         .iter()
         // An object without an anchor the reader understood never reached
         // the model, so it is not the model's to change.
@@ -159,6 +162,11 @@ fn rewrite_object(
             continue;
         };
         let mut text = original[local.clone()].to_owned();
+        // The fill and outline first: they are rebuilt from the properties
+        // as read, which the outline and the turn below then edit.
+        if shape.format != origin.format {
+            text = reformat(&text, &shape.format, &origin.format);
+        }
         if shape.name != origin.name || shape.description != origin.description {
             text = rename(&text, &shape.name, &shape.description);
         }
@@ -167,8 +175,14 @@ fn rewrite_object(
         {
             text = regeometry(&text, geometry);
         }
-        if shape.text != origin.text {
-            text = retext(&text, &shape.text);
+        if (shape.rotation, shape.flip_h, shape.flip_v)
+            != (origin.rotation, origin.flip_h, origin.flip_v)
+        {
+            text = retransform(&text, shape);
+        }
+        if shape.text != origin.text || shape.font != origin.font {
+            let font = (shape.font != origin.font).then_some((&shape.font, &origin.font));
+            text = retext(&text, &shape.text, font);
         }
         if text != original[local.clone()] {
             splices.push((local, text));
@@ -186,6 +200,71 @@ fn rewrite_object(
         Some(anchor) => reanchor(&text, anchor),
         None => text,
     })
+}
+
+/// A shape element with its fill and outline from the model: the children of
+/// `spPr` that say them are replaced and the rest kept.
+fn reformat(element: &str, format: &ShapeFormat, read: &ShapeFormat) -> String {
+    let Some(properties) = child_element(element, "spPr") else {
+        return element.to_owned();
+    };
+    let start = properties.as_ptr() as usize - element.as_ptr() as usize;
+    // A format without the element as read is rebuilt into the one that was:
+    // written alone it would lose the frame and the outline.
+    let mut format = format.clone();
+    if format.source.is_none() {
+        format.source.clone_from(&read.source);
+    }
+    if format.source.is_none() {
+        return element.to_owned();
+    }
+    format!(
+        "{}{}{}",
+        &element[..start],
+        shape_format("", &format),
+        &element[start + properties.len()..]
+    )
+}
+
+/// A shape element turned and mirrored as the model says: attributes of
+/// `a:xfrm`, which is added when the element has none.
+fn retransform(element: &str, shape: &Shape) -> String {
+    let Some(properties) = child_element(element, "spPr") else {
+        return element.to_owned();
+    };
+    let base = properties.as_ptr() as usize - element.as_ptr() as usize;
+    if let Some(tag) = crate::reader::shape::start_tag(properties, "xfrm") {
+        let start = base + (tag.as_ptr() as usize - properties.as_ptr() as usize);
+        let end = start + tag.trim_end_matches('>').len();
+        let mut tag = element[start..end].to_owned();
+        for (name, value) in transform_attributes(shape) {
+            tag = set_attribute(&tag, name, &value);
+        }
+        return format!("{}{tag}{}", &element[..start], &element[end..]);
+    }
+    let Some(open) = properties
+        .find('>')
+        .filter(|&gt| !properties[..gt].ends_with('/'))
+    else {
+        return element.to_owned();
+    };
+    let at = base + open + 1;
+    let mut tag = "<a:xfrm/".to_owned();
+    for (name, value) in transform_attributes(shape) {
+        tag = set_attribute(&tag, name, &value);
+    }
+    format!("{}{tag}>{}", &element[..at], &element[at..])
+}
+
+/// `rot`, `flipH` and `flipV` of `a:xfrm`, all three: a turn back to none is
+/// written as `0`, not dropped.
+fn transform_attributes(shape: &Shape) -> [(&'static str, String); 3] {
+    let flag = |on: bool| if on { "1" } else { "0" }.to_owned();
+    [
+        ("rot", shape.rotation.to_string()),
+        ("flipH", flag(shape.flip_h)),
+        ("flipV", flag(shape.flip_v)),
+    ]
 }
 
 /// A shape element with another preset outline.
@@ -206,7 +285,8 @@ fn regeometry(element: &str, geometry: &str) -> String {
 /// A shape element with its text replaced. The body's own properties, the
 /// first paragraph's properties and the first run's formatting are kept, so
 /// the new text looks like the old; a shape that had no text gets a body.
-fn retext(element: &str, text: &str) -> String {
+/// `font` is a new font with the one read, which every run takes.
+fn retext(element: &str, text: &str, font: Option<(&DiffFont, &DiffFont)>) -> String {
     let Some(sp) = children(element).into_iter().next() else {
         return element.to_owned();
     };
@@ -217,9 +297,10 @@ fn retext(element: &str, text: &str) -> String {
     };
     let Some(body) = sp.child("txBody") else {
         let at = sp.inner_start + sp.inner.len();
+        let run = font.map_or_else(String::new, |(new, was)| run_props(None, new, was, "a:"));
         let fresh = format!(
             r#"<{own}txBody><a:bodyPr rtlCol="0" anchor="ctr"/><a:lstStyle/>{}</{own}txBody>"#,
-            paragraphs(text, "a:", "", "")
+            paragraphs(text, "a:", "", &run)
         );
         return format!("{}{fresh}{}", &element[..at], &element[at..]);
     };
@@ -235,20 +316,78 @@ fn retext(element: &str, text: &str) -> String {
         .filter(|k| !k.prefix.is_empty())
         .map_or_else(|| "a:".to_owned(), |k| format!("{}:", k.prefix));
     let paragraph_props = first.and_then(|p| p.child("pPr")).map_or("", |n| n.outer);
-    let run_props = kids
+    let read = kids
         .iter()
         .filter(|k| k.name == "p")
-        .flat_map(crate::reader::chart::Node::children)
-        .find_map(|r| r.child("rPr").filter(|_| r.name == "r"))
-        .map_or("", |n| n.outer);
+        .flat_map(Node::children)
+        .find_map(|r| r.child("rPr").filter(|_| r.name == "r"));
+    let run_props = match font {
+        Some((new, was)) => run_props(read.as_ref(), new, was, &a),
+        None => read.map_or_else(String::new, |n| n.outer.to_owned()),
+    };
     let start = sp.inner_start + body.inner_start;
     let end = start + body.inner.len();
     format!(
         "{}{keep}{}{}",
         &element[..start],
-        paragraphs(text, &a, paragraph_props, run_props),
+        paragraphs(text, &a, paragraph_props, &run_props),
         &element[end..]
     )
+}
+
+/// Children of `a:rPr`, in schema order.
+const RUN: &[&[&str]] = &[
+    &["ln"],
+    &FILLS,
+    &["effectLst", "effectDag"],
+    &["highlight"],
+    &["uLnTx", "uLn"],
+    &["uFillTx", "uFill"],
+    &["latin"],
+    &["ea"],
+    &["cs"],
+    &["sym"],
+    &["hlinkClick"],
+    &["hlinkMouseOver"],
+    &["rtl"],
+    &["extLst"],
+];
+
+/// `a:rPr` with the font the model gives: `read` edited, or a new one. Size,
+/// bold and italic are attributes, set or dropped; the colour and the family
+/// are children, replaced only when they changed from `was`, so a colour the
+/// model reads approximately is not rewritten for a change of size.
+fn run_props(read: Option<&Node<'_>>, font: &DiffFont, was: &DiffFont, a: &str) -> String {
+    let fresh = format!("<{a}rPr/>");
+    let parsed = children(&fresh);
+    let Some(node) = read.or_else(|| parsed.first()) else {
+        return String::new();
+    };
+    let flag = |on: Option<bool>| on.map(|b| if b { "1" } else { "0" }.to_owned());
+    let mut tag = node.tag.to_owned();
+    for (name, value) in [
+        ("sz", font.size.map(|v| v.to_string())),
+        ("b", flag(font.bold)),
+        ("i", flag(font.italic)),
+    ] {
+        tag = set_attr(&tag, name, value);
+    }
+    let mut owned = Vec::new();
+    if font.color != was.color {
+        let fill = font
+            .color
+            .as_ref()
+            .and_then(ChartColor::from_style)
+            .map_or_else(String::new, |c| fill_xml(&Fill::Solid(c)));
+        owned.push((1, fill));
+    }
+    if font.name != was.name {
+        let latin = font.name.as_ref().map_or_else(String::new, |n| {
+            format!(r#"<a:latin xmlns:a="{MAIN_NS}" typeface="{}"/>"#, escape(n))
+        });
+        owned.push((6, latin));
+    }
+    rebuild(node, RUN, &owned, |_| false, Some(tag))
 }
 
 /// Paragraphs of `DrawingML` text, a paragraph per line.
@@ -280,16 +419,46 @@ fn render_shape(shape: &Shape, id: u32) -> String {
     let body = if shape.text.is_empty() {
         String::new()
     } else {
+        let run = if shape.font == DiffFont::default() {
+            String::new()
+        } else {
+            run_props(None, &shape.font, &DiffFont::default(), "a:")
+        };
         format!(
             r#"<xdr:txBody><a:bodyPr vertOverflow="clip" horzOverflow="clip" rtlCol="0" anchor="ctr"/><a:lstStyle/>{}</xdr:txBody>"#,
-            paragraphs(&shape.text, "a:", r#"<a:pPr algn="ctr"/>"#, "")
+            paragraphs(&shape.text, "a:", r#"<a:pPr algn="ctr"/>"#, &run)
         )
     };
+    let mut transform = String::new();
+    if shape.rotation != 0 {
+        transform = format!(r#" rot="{}""#, shape.rotation);
+    }
+    if shape.flip_h {
+        transform.push_str(r#" flipH="1""#);
+    }
+    if shape.flip_v {
+        transform.push_str(r#" flipV="1""#);
+    }
+    // The fill and outline go into the properties the way a change to a read
+    // shape does, in schema order after the outline.
+    let properties = shape_format(
+        "",
+        &ShapeFormat {
+            source: Some(format!(
+                concat!(
+                    r#"<xdr:spPr><a:xfrm{}><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm>"#,
+                    r#"<a:prstGeom prst="{}"><a:avLst/></a:prstGeom></xdr:spPr>"#
+                ),
+                transform,
+                escape(geometry)
+            )),
+            ..shape.format.clone()
+        },
+    );
     format!(
         concat!(
             r#"<xdr:sp macro="" textlink=""><xdr:nvSpPr><xdr:cNvPr id="{id}" name="{name}" descr="{descr}"/>"#,
-            r#"<xdr:cNvSpPr/></xdr:nvSpPr><xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="0" cy="0"/></a:xfrm>"#,
-            r#"<a:prstGeom prst="{geometry}"><a:avLst/></a:prstGeom></xdr:spPr>"#,
+            r#"<xdr:cNvSpPr/></xdr:nvSpPr>{properties}"#,
             r#"<xdr:style><a:lnRef idx="2"><a:schemeClr val="accent1"><a:shade val="50000"/></a:schemeClr></a:lnRef>"#,
             r#"<a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef>"#,
             r#"<a:effectRef idx="0"><a:schemeClr val="accent1"/></a:effectRef>"#,
@@ -299,7 +468,7 @@ fn render_shape(shape: &Shape, id: u32) -> String {
         id = id,
         name = escape(&name),
         descr = escape(&shape.description),
-        geometry = escape(geometry),
+        properties = properties,
         body = body,
     )
 }
@@ -317,7 +486,7 @@ mod tests {
 
     #[test]
     fn new_text_keeps_the_formatting_of_the_old() {
-        let out = retext(SHAPE, "one & two\n\nthree");
+        let out = retext(SHAPE, "one & two\n\nthree", None);
         assert!(out.contains(r#"<a:bodyPr anchor="t"/><a:lstStyle/>"#));
         assert!(out.contains(
             r#"<a:p><a:pPr algn="l"/><a:r><a:rPr lang="ru-RU" b="1"/><a:t>one &amp; two</a:t></a:r></a:p>"#
@@ -337,8 +506,27 @@ mod tests {
             &SHAPE[SHAPE.find("<xdr:txBody>").unwrap()..SHAPE.find("</xdr:sp>").unwrap()],
             "",
         );
-        let out = retext(&bare, "hi");
+        let out = retext(&bare, "hi", None);
         assert!(out.ends_with("<a:t>hi</a:t></a:r></a:p></xdr:txBody></xdr:sp>"));
         assert!(regeometry(SHAPE, "ellipse").contains(r#"<a:prstGeom prst="ellipse">"#));
+    }
+
+    #[test]
+    fn a_turn_adds_the_transform_an_element_lacks() {
+        let mut shape = Shape::new(
+            "rect",
+            crate::model::chart::Anchor::Absolute {
+                x: 0,
+                y: 0,
+                width: 1,
+                height: 1,
+            },
+        );
+        shape.rotation = 60_000;
+        shape.flip_h = true;
+        let out = retransform(SHAPE, &shape);
+        assert!(out.contains(
+            r#"<xdr:spPr><a:xfrm rot="60000" flipH="1" flipV="0"/><a:prstGeom prst="rect">"#
+        ));
     }
 }
