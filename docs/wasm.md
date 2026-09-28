@@ -16,8 +16,8 @@ from the Rust signatures, so they never drift from the API.
 ## Build it yourself
 
 ```text
-tools/build-npm.sh            # nodejs target, release, into npm/pkg
-tools/build-npm.sh web        # or bundler
+./build-npm.sh            # nodejs target, release, into npm/pkg
+./build-npm.sh web        # or bundler
 ```
 
 The result is a publishable npm package: wasm, the JS glue, `.d.ts`, and

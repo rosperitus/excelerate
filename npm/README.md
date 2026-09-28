@@ -318,19 +318,19 @@ This folder is both the published package's readme and the workspace that
 builds and exercises it.
 
 ```
-../tools/build-npm.sh          # wasm-pack --release --target nodejs -> npm/pkg
+../build-npm.sh                # wasm-pack --release --target nodejs -> npm/pkg
 npm install && npm test        # tests against the freshly built package
 npm start                      # example.js: build a book, calculate, round-trip
 npm run ts                     # typescript/basic.ts, no build step
 npm run typecheck              # tsc --strict over the TypeScript examples
 npm run bench [iterations]     # parse timings, median and best
-../tools/pack-npm.sh           # pkg -> pkg-publish, then: cd pkg-publish && npm publish --otp=...
+../pack-npm.sh                 # pkg -> pkg-publish, then: cd pkg-publish && npm publish --otp=...
 ```
 
 | Path | What it is |
 |---|---|
 | `pkg/` | build output for Node (git-ignored); `pkg-web/` and `pkg-bundler/` for the other targets |
-| `pkg-publish/` | `tools/pack-npm.sh`: a copy of `pkg/` renamed to `@rosperitus/excelerate`, the folder `npm publish` runs in (git-ignored) |
+| `pkg-publish/` | `pack-npm.sh`: a copy of `pkg/` renamed to `@rosperitus/excelerate`, the folder `npm publish` runs in (git-ignored) |
 | `example.js`, `test.js`, `bench.js` | JavaScript examples, tests, benchmark |
 | `typescript/` | TypeScript examples, run from here: `node typescript/basic.ts` (Node 22.6+). No node_modules of their own - they resolve the package from this folder |
 | `browser/` | the same API in a page: `index.html` over `pkg-web/` |

@@ -529,7 +529,7 @@ Every format has its own sharp edges; they are all written down in
 
 ```text
 cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
-tools/build-npm.sh && (cd npm && npm install && npm test && npm run typecheck)
+./build-npm.sh && (cd npm && npm install && npm test && npm run typecheck)
 ```
 
 ## Status
