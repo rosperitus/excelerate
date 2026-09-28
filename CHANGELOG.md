@@ -83,6 +83,15 @@
 
 ### Added
 
+- `at!("A1")`: a cell address checked while compiling, so a literal address
+  needs no `?` and a wrong one (`at!("A0")`) does not build. Behind it,
+  `CellRef::from_a1` is a `const fn`, and `CellRef::parse` now goes through
+  it; `$$A1` is no longer accepted.
+- `Worksheet::set_at(row, column, value)` and `get_at(row, column)`, counted
+  from one; `CellRef::from_row_col(row, column)`.
+- `From<i32>` and `From<u32>` for `CellValue`: `sheet.set(at, 123)` no longer
+  needs `123_i64`.
+
 - Formatted text in every format that holds it: xls reads and writes the runs
   of the string table and reads `RSTRING` (BIFF5), xlsb reads `RichStr`, ODS
   reads and writes `text:span` with text styles, HTML reads `<b>`, `<i>`,

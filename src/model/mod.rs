@@ -250,6 +250,20 @@ impl From<i64> for CellValue {
     }
 }
 
+impl From<i32> for CellValue {
+    /// What an integer literal is by default, so `sheet.set(at, 123)` needs
+    /// no suffix.
+    fn from(v: i32) -> Self {
+        Self::Number(f64::from(v))
+    }
+}
+
+impl From<u32> for CellValue {
+    fn from(v: u32) -> Self {
+        Self::Number(f64::from(v))
+    }
+}
+
 impl From<bool> for CellValue {
     fn from(v: bool) -> Self {
         Self::Bool(v)
@@ -1686,8 +1700,28 @@ impl Worksheet {
     }
 
     /// Writes a value, keeping the style of an existing cell.
+    ///
+    /// For a literal address, [`at!`](crate::at) checks it while compiling:
+    /// `sheet.set(at!("A1"), 123)`.
     pub fn set(&mut self, at: CellRef, value: impl Into<CellValue>) {
         self.entry(at).value = value.into();
+    }
+
+    /// The same by row and column counted from one, as Excel shows them:
+    /// `set_at(1, 1, 123)` writes `A1`.
+    ///
+    /// # Errors
+    /// [`Error::InvalidCellRef`] for a zero or a number past the sheet.
+    pub fn set_at(&mut self, row: u32, column: u32, value: impl Into<CellValue>) -> Result<()> {
+        self.set(CellRef::from_row_col(row, column)?, value);
+        Ok(())
+    }
+
+    /// The cell at a row and column counted from one; `None` for a cell that
+    /// holds nothing, and for one outside the sheet.
+    #[must_use]
+    pub fn get_at(&self, row: u32, column: u32) -> Option<&Cell> {
+        self.get(CellRef::from_row_col(row, column).ok()?)
     }
 
     /// Writes a value and the style it is shown in.
