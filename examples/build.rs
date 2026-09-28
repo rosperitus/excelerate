@@ -13,7 +13,7 @@ use excelerate::formula::eval::recalculate;
 use excelerate::model::protection::PasswordHash;
 use excelerate::model::table::{Table, TableColumn};
 use excelerate::model::{
-    CellValue, Comment, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet,
+    AutoFilter, CellValue, Comment, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet,
 };
 use excelerate::progress::Options;
 use excelerate::style::{Color, Fill, NumberFormat, Pattern, Style};
@@ -103,7 +103,11 @@ fn main() {
         range: Range::new(at("A2"), at(&format!("C{}", total - 1))),
         header_row_count: None,
         totals_row_count: None,
-        auto_filter: Some(Range::new(at("A2"), at(&format!("C{}", total - 1)))),
+        auto_filter: Some(AutoFilter::new(Range::new(
+            at("A2"),
+            at(&format!("C{}", total - 1)),
+        ))),
+        sort_state: None,
         columns: ["Товар", "Штук", "Сумма"]
             .into_iter()
             .enumerate()
@@ -114,6 +118,7 @@ fn main() {
             })
             .collect(),
         style: None,
+        extensions: None,
     });
 
     sheet.comments.insert(
@@ -124,6 +129,7 @@ fn main() {
                 text: "Суммы считает формула, не человек.".to_owned(),
                 font: None,
             }],
+            ..Comment::default()
         },
     );
 

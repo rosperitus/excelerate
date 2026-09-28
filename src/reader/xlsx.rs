@@ -31,8 +31,8 @@ use crate::model::{
     DateGroup, DefinedName, ExternalBook, ExternalSheet, FilterOperator, Hyperlink, LinkTarget,
     OpaquePart, Orientation, PageBreak, Pane, PanePosition, PaneState, PasswordHash,
     ProtectedRange, RowProperties, Selection, SheetView, SheetViewType, SheetVisibility,
-    Spreadsheet, TextRun, ValidationErrorStyle, ValidationOperator, ValidationType,
-    WorkbookProtection, Worksheet,
+    SortCondition, SortState, Spreadsheet, TextRun, ValidationErrorStyle, ValidationOperator,
+    ValidationType, WorkbookProtection, Worksheet,
 };
 use crate::progress::{Options, Stage};
 use crate::shared::date::Epoch;
@@ -118,12 +118,15 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
     };
 
     let mut book = Spreadsheet::empty();
+    book.template = matches!(types.get(&workbook_path), Some(t) if t.contains(".template."));
     if let Some(r) = rels.values().find(|r| r.kind.ends_with("/styles")) {
         let styles_path = resolve(base, &r.target);
         if let Ok(xml) = read_part(&mut zip, &styles_path) {
             book.style_extensions = trailing_extensions(&xml);
-            book.table_styles = element_of(&xml, "tableStyles");
-            book.palette = element_of(&xml, "colors");
+            let root = root_namespaces(&xml);
+            let own = |e: Option<String>| e.map(|e| self_contained(&e, &root));
+            book.table_styles = own(element_of(&xml, "tableStyles"));
+            book.palette = own(element_of(&xml, "colors"));
         }
         book.styles = read_styles(&mut zip, &styles_path)?;
     }
@@ -137,6 +140,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
     book.epoch = header.epoch;
     book.workbook_properties = header.properties;
     book.calculation_properties = header.calculation;
+    book.workbook_view = header.view;
     book.protection = header.protection;
     let sheet_count = header.sheets.len();
     for (done, (name, rel_id, visibility)) in header.sheets.into_iter().enumerate() {
@@ -163,6 +167,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
             sheet.comments =
                 read_comments(&mut zip, &resolve(sheet_base, &rel.target)).unwrap_or_default();
         }
+        read_note_boxes(&mut zip, &links, sheet_base, &mut sheet.comments);
         sheet.pivot_tables = read_sheet_pivots(&mut zip, &links, sheet_base);
         // The tables are modelled and written back, so their parts are read
         // rather than carried, the way the notes are.
@@ -206,8 +211,15 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
     );
     let root = read_relationships(&mut zip, "_rels/.rels").unwrap_or_default();
     book.doc_props = attachments(&root, "", &["officeDocument"]);
-    let roots: Vec<String> = book
-        .attachments
+    carry(&mut zip, &carried_roots(&book), &types, &mut book.parts);
+    read_properties(&mut book);
+    Ok(book)
+}
+
+/// The parts the workbook, the package and the sheets point at that travel
+/// unmodelled; `carry` follows their relationships from there.
+fn carried_roots(book: &Spreadsheet) -> Vec<String> {
+    book.attachments
         .iter()
         .chain(&book.doc_props)
         .map(|a| a.target.clone())
@@ -216,9 +228,56 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
                 .iter()
                 .flat_map(|s| s.attachments.iter().map(|a| a.target.clone())),
         )
-        .collect();
-    carry(&mut zip, &roots, &types, &mut book.parts);
-    Ok(book)
+        .collect()
+}
+
+/// The document properties of a package read straight from the zip, for a
+/// reader that carries no parts: xlsb keeps them in the same XML parts as
+/// xlsx.
+pub(crate) fn package_properties<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+) -> crate::model::DocumentProperties {
+    use super::properties::{APP_REL, CORE_REL, CUSTOM_REL, read_app, read_core, read_custom};
+    let root = read_relationships(zip, "_rels/.rels").unwrap_or_default();
+    let mut text = |kind: &str| {
+        let rel = root.values().find(|r| r.kind == kind && !r.external)?;
+        read_part(zip, &resolve("", &rel.target)).ok()
+    };
+    let (core, app, custom) = (text(CORE_REL), text(APP_REL), text(CUSTOM_REL));
+    let mut props = crate::model::DocumentProperties::default();
+    if let Some(xml) = core {
+        read_core(&xml, &mut props);
+    }
+    if let Some(xml) = app {
+        read_app(&xml, &mut props);
+    }
+    if let Some(xml) = custom {
+        props.custom = read_custom(&xml);
+    }
+    props
+}
+
+/// Fills [`Spreadsheet::properties`] from the parts the package points at.
+/// The parts stay in `parts`: the writer keeps their bytes while the model
+/// still says what they say.
+fn read_properties(book: &mut Spreadsheet) {
+    use super::properties::{APP_REL, CORE_REL, CUSTOM_REL, read_app, read_core, read_custom};
+    let text = |kind: &str| {
+        let target = &book.doc_props.iter().find(|a| a.kind == kind)?.target;
+        let part = book.parts.iter().find(|p| &p.path == target)?;
+        core::str::from_utf8(&part.data).ok().map(str::to_owned)
+    };
+    let (core, app, custom) = (text(CORE_REL), text(APP_REL), text(CUSTOM_REL));
+    let props = &mut book.properties;
+    if let Some(xml) = core {
+        read_core(&xml, props);
+    }
+    if let Some(xml) = app {
+        read_app(&xml, props);
+    }
+    if let Some(xml) = custom {
+        props.custom = read_custom(&xml);
+    }
 }
 
 /// One entry of a `.rels` part.
@@ -460,6 +519,8 @@ fn read_sheet_list<R: Read + Seek>(
     let mut epoch = Epoch::Windows1900;
     let mut properties = Vec::new();
     let mut calculation = Vec::new();
+    let mut view = Vec::new();
+    let mut seen_view = false;
     let mut protection = WorkbookProtection::default();
     let mut external = Vec::new();
     let mut pivot_caches: Vec<(u32, String)> = Vec::new();
@@ -495,10 +556,13 @@ fn read_sheet_list<R: Read + Seek>(
                 protection.revisions_password =
                     PasswordHash::from_attrs(PasswordAttrs::REVISIONS, |name| attr(&e, name));
             }
-            Ok(Event::Empty(e) | Event::Start(e)) if e.local_name().as_ref() == "workbookView" => {
-                active = attr(&e, "activeTab")
-                    .and_then(|v| v.parse().ok())
-                    .unwrap_or(0);
+            // A workbook with several windows has a view for each; the first
+            // is the one Excel opens with.
+            Ok(Event::Empty(e) | Event::Start(e))
+                if e.local_name().as_ref() == "workbookView" && !seen_view =>
+            {
+                seen_view = true;
+                view = workbook_view(&e, &mut active);
             }
             Ok(Event::Empty(e) | Event::Start(e)) if e.local_name().as_ref() == "pivotCache" => {
                 if let (Some(id), Some(rel)) = (
@@ -547,10 +611,28 @@ fn read_sheet_list<R: Read + Seek>(
         epoch,
         properties,
         calculation,
+        view,
         protection,
         pivot_caches,
         external,
     })
+}
+
+/// The first `<workbookView>`: the active tab, and the attributes carried
+/// as they are - all but the window's geometry.
+fn workbook_view(
+    e: &quick_xml::events::BytesStart<'_>,
+    active: &mut usize,
+) -> Vec<(String, String)> {
+    let mut view = Vec::new();
+    for (key, value) in attrs(e) {
+        match key.as_str() {
+            "activeTab" => *active = value.parse().unwrap_or(0),
+            "xWindow" | "yWindow" | "windowWidth" | "windowHeight" => {}
+            _ => view.push((key, value)),
+        }
+    }
+    view
 }
 
 /// What the workbook part says before its sheets are read.
@@ -565,6 +647,8 @@ struct WorkbookHeader {
     properties: Vec<(String, String)>,
     /// The attributes of `<calcPr>`.
     calculation: Vec<(String, String)>,
+    /// The rest of the first `<workbookView>`.
+    view: Vec<(String, String)>,
     /// What `<workbookProtection>` locks.
     protection: WorkbookProtection,
     /// The pivot caches the workbook declares: the id a report points at, and
@@ -577,6 +661,31 @@ struct WorkbookHeader {
 
 /// The pivot reports of one sheet, in name order.
 ///
+/// Whether each note shows and how big its box is: that lives in the VML.
+fn read_note_boxes<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    links: &HashMap<String, Relationship>,
+    base: &str,
+    comments: &mut BTreeMap<CellRef, Comment>,
+) {
+    let Some(rel) = links
+        .values()
+        .find(|r| !r.external && r.kind.ends_with("/vmlDrawing"))
+    else {
+        return;
+    };
+    let Ok(vml) = read_part(zip, &resolve(base, &rel.target)) else {
+        return;
+    };
+    for shape in super::vml::note_shapes(&vml) {
+        if let Some(note) = shape.cell.and_then(|at| comments.get_mut(&at)) {
+            note.visible = shape.visible;
+            // Excel's own size is what `None` means.
+            note.size = shape.size.filter(|&s| s != (108.0, 59.25));
+        }
+    }
+}
+
 /// They are read as well as carried: nothing writes them back, so the parts
 /// still travel whole and this is a view of them.
 fn read_sheet_pivots<R: Read + Seek>(
@@ -831,13 +940,26 @@ fn read_table<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Resul
         header_row_count: None,
         totals_row_count: None,
         auto_filter: None,
+        sort_state: None,
         columns: Vec::new(),
         style: None,
+        extensions: trailing_extensions(&xml),
     };
     let mut seen = false;
+    let mut filter_col = None;
+    let mut in_filter = false;
     loop {
-        match reader.read_event() {
+        let event = reader.read_event();
+        if let Ok(Event::Start(ref e)) = event
+            && e.local_name().as_ref() == "autoFilter"
+        {
+            in_filter = true;
+        }
+        match event {
             Ok(Event::Start(ref e) | Event::Empty(ref e)) => match e.local_name().as_ref() {
+                // Last in the schema; its `x14:table` shares the local name
+                // and would overwrite the table with empty attributes.
+                "extLst" => break,
                 "table" => {
                     seen = true;
                     out.id = attr(e, "id").and_then(|v| v.parse().ok()).unwrap_or(0);
@@ -855,9 +977,6 @@ fn read_table<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Resul
                     }
                     out.header_row_count = attr(e, "headerRowCount").and_then(|v| v.parse().ok());
                     out.totals_row_count = attr(e, "totalsRowCount").and_then(|v| v.parse().ok());
-                }
-                "autoFilter" => {
-                    out.auto_filter = attr(e, "ref").and_then(|r| Range::parse(&r).ok());
                 }
                 "tableColumn" => out.columns.push(TableColumn {
                     id: attr(e, "id").and_then(|v| v.parse().ok()).unwrap_or(0),
@@ -885,6 +1004,15 @@ fn read_table<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Resul
                             .is_some_and(|v| is_true(&v)),
                     });
                 }
+                name => {
+                    let sort = sort_target(&mut out.sort_state, &mut out.auto_filter, in_filter);
+                    let _ = read_sort_element(sort, name, e)
+                        || read_filter_element(&mut out.auto_filter, &mut filter_col, name, e);
+                }
+            },
+            Ok(Event::End(ref e)) => match e.local_name().as_ref() {
+                "filterColumn" => filter_col = None,
+                "autoFilter" => in_filter = false,
                 _ => {}
             },
             Ok(Event::Eof) | Err(_) => break,
@@ -1050,7 +1178,69 @@ fn element_of(xml: &str, name: &str) -> Option<String> {
 fn trailing_extensions(xml: &str) -> Option<String> {
     let open = xml.rfind("<extLst")?;
     let close = xml[open..].find("</extLst>")? + open + "</extLst>".len();
-    Some(xml[open..close].to_owned())
+    Some(self_contained(&xml[open..close], &root_namespaces(xml)))
+}
+
+/// The `xmlns:p` declarations on the root element of a part.
+fn root_namespaces(xml: &str) -> Vec<(String, String)> {
+    let mut reader = Reader::from_str(xml);
+    loop {
+        match reader.read_event() {
+            Ok(Event::Start(e) | Event::Empty(e)) => return namespaces_of(&e),
+            Ok(Event::Eof) | Err(_) => return Vec::new(),
+            Ok(_) => {}
+        }
+    }
+}
+
+/// The `xmlns:p` declarations an element makes, as (prefix, uri).
+fn namespaces_of(e: &quick_xml::events::BytesStart<'_>) -> Vec<(String, String)> {
+    e.attributes()
+        .flatten()
+        .filter_map(|a| {
+            let prefix = a.key.as_ref().strip_prefix("xmlns:")?.to_owned();
+            let uri = a
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .ok()?
+                .into_owned();
+            Some((prefix, uri))
+        })
+        .collect()
+}
+
+/// An element cut out of its part - an `<extLst>`, `<tableStyles>` -
+/// declaring on itself the prefixes it borrowed from the part's root.
+///
+/// Excel 365 puts `xr2:uid` on a sparkline group and declares `xr2` only on
+/// `<worksheet>`. Our root declares its own namespaces, not the file's, so the
+/// element written back as it was read would use an undeclared prefix.
+fn self_contained(ext: &str, root: &[(String, String)]) -> String {
+    let mut borrowed = String::new();
+    for (prefix, uri) in root {
+        let used = ext.contains(&format!("<{prefix}:")) || ext.contains(&format!(" {prefix}:"));
+        if used && !ext.contains(&format!("xmlns:{prefix}=")) {
+            let _ = std::fmt::Write::write_fmt(
+                &mut borrowed,
+                format_args!(r#" xmlns:{prefix}="{}""#, escape_attr(uri)),
+            );
+        }
+    }
+    if borrowed.is_empty() {
+        return ext.to_owned();
+    }
+    // Just past the element's name.
+    let at = ext
+        .find(|c: char| c.is_ascii_whitespace() || c == '>' || c == '/')
+        .unwrap_or(ext.len());
+    format!("{}{borrowed}{}", &ext[..at], &ext[at..])
+}
+
+/// A namespace URI back in an attribute. They never hold markup in practice;
+/// this keeps a hostile one from breaking the element.
+fn escape_attr(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
 }
 
 /// Reads a sheet's notes: the author table, then the notes that point into it.
@@ -1126,6 +1316,7 @@ fn read_comments<R: Read + Seek>(
                             Comment {
                                 author: authors.get(author_id).cloned().unwrap_or_default(),
                                 text: std::mem::take(&mut runs),
+                                ..Comment::default()
                             },
                         );
                     }
@@ -1235,6 +1426,7 @@ fn apply_run_font(font: Option<&mut DiffFont>, name: &str, e: &quick_xml::events
         "color" => font.color = Some(read_color(e)),
         "rFont" => font.name = attr(e, "val"),
         "charset" => font.charset = attr(e, "val").and_then(|v| v.parse().ok()),
+        "family" => font.family = attr(e, "val").and_then(|v| v.parse().ok()),
         "scheme" => font.scheme = attr(e, "val").and_then(|v| FontScheme::parse(&v)),
         "vertAlign" => {
             font.script = Some(match attr(e, "val").as_deref() {
@@ -1828,6 +2020,7 @@ fn read_sheet<R: Read + Seek>(
         formula: String::new(),
         in_value: false,
         in_formula: false,
+        in_phonetic: false,
         shared_index: None,
         masters: HashMap::new(),
         header_part: None,
@@ -1838,6 +2031,8 @@ fn read_sheet<R: Read + Seek>(
         in_formula1: false,
         in_formula2: false,
         filter_col: None,
+        in_filter: false,
+        root_namespaces: Vec::new(),
         ext_depth: 0,
     };
 
@@ -1851,7 +2046,13 @@ fn read_sheet<R: Read + Seek>(
     ));
     let mut buf = Vec::new();
     let mut depth = 0u32;
-    let mut extension_start: Option<u64> = None;
+    // Where the `<extLst>` being copied out began, how deep it sits and
+    // whether it is a rule's rather than the sheet's.
+    let mut extension_start: Option<(u64, u32, bool)> = None;
+    // Whether a `<cfRule>` of the sheet is open: its `<extLst>` is kept on
+    // the rule. The `x14:cfRule` inside the sheet's own extensions shares
+    // the local name, and is never looked at: nothing starts while copying.
+    let mut in_rule = false;
     loop {
         buf.clear();
         let before = reader.buffer_position();
@@ -1862,20 +2063,23 @@ fn read_sheet<R: Read + Seek>(
         match event {
             Event::Start(ref e) | Event::Empty(ref e) => {
                 let empty = matches!(event, Event::Empty(_));
-                if depth == 1 && e.local_name().as_ref() == "extLst" {
+                if depth == 0 {
+                    state.root_namespaces = namespaces_of(e);
+                }
+                let name = e.local_name();
+                if name.as_ref() == "cfRule" && extension_start.is_none() {
+                    in_rule = !empty;
+                }
+                if name.as_ref() == "extLst" && extension_start.is_none() && (depth == 1 || in_rule)
+                {
                     if empty {
-                        state.sheet.extensions = Some(
-                            String::from_utf8_lossy(
-                                &reader
-                                    .get_ref()
-                                    .get_ref()
-                                    .since(before, reader.buffer_position()),
-                            )
-                            .trim_start()
-                            .to_owned(),
-                        );
+                        let bytes = reader
+                            .get_ref()
+                            .get_ref()
+                            .since(before, reader.buffer_position());
+                        state.keep_extensions(in_rule, &bytes);
                     } else {
-                        extension_start = Some(before);
+                        extension_start = Some((before, depth, in_rule));
                     }
                 }
                 state.start(e, empty);
@@ -1888,16 +2092,18 @@ fn read_sheet<R: Read + Seek>(
             Event::End(ref e) => {
                 depth = depth.saturating_sub(1);
                 state.end(e.local_name().as_ref());
-                if depth == 1
-                    && e.local_name().as_ref() == "extLst"
-                    && let Some(start) = extension_start.take()
+                if extension_start.is_none() && e.local_name().as_ref() == "cfRule" {
+                    in_rule = false;
+                }
+                if let Some((start, at, rule)) = extension_start
+                    && at == depth
                 {
+                    extension_start = None;
                     let bytes = reader
                         .get_ref()
                         .get_ref()
                         .since(start, reader.buffer_position());
-                    state.sheet.extensions =
-                        Some(String::from_utf8_lossy(&bytes).trim_start().to_owned());
+                    state.keep_extensions(rule, &bytes);
                 }
             }
             Event::Eof => break,
@@ -1983,6 +2189,9 @@ struct SheetReader<'a> {
     formula: String,
     in_value: bool,
     in_formula: bool,
+    /// Inside `<rPh>` of an inline string: a reading guide for the text, not
+    /// part of it.
+    in_phonetic: bool,
     /// `si` of the shared formula this cell takes part in, and the master cell
     /// of each group: xlsx writes the text once and leaves every other cell of
     /// the run to offset it.
@@ -2006,6 +2215,12 @@ struct SheetReader<'a> {
     /// Offset of the `<filterColumn>` being read. Its criteria arrive as
     /// children, so the column they belong to has to be remembered.
     filter_col: Option<u32>,
+    /// Inside an open `<autoFilter>`: a `<sortState>` there is the filter's,
+    /// one after it the sheet's.
+    in_filter: bool,
+    /// The namespaces `<worksheet>` declares, which a carried `<extLst>` may
+    /// lean on.
+    root_namespaces: Vec<(String, String)>,
 
     /// How deep inside `<extLst>` the reader is. What an extension holds
     /// travels whole in [`Worksheet::extensions`], and the names inside it
@@ -2034,10 +2249,10 @@ impl SheetReader<'_> {
             || self.start_page(name, e)
             || self.start_conditional(name, e)
             || self.start_validation(name, e, empty)
-            || self.start_filter(name, e);
+            || self.start_filter(name, e, empty);
     }
 
-    /// `<c>` and the two elements that live inside one.
+    /// `<c>` and the elements that live inside one.
     fn start_cell(
         &mut self,
         name: &str,
@@ -2084,6 +2299,17 @@ impl SheetReader<'_> {
             // every later run of text in the sheet - down to the formulas of
             // its data validations - be swallowed as formula source.
             "v" => self.in_value = !empty,
+            // `t="inlineStr"` keeps its text in `<is><t>`, or in a `<t>` per
+            // run of `<is><r>`; the runs are joined and their fonts dropped.
+            // ponytail: rich inline text reads as plain; parse `<r>` like the
+            // shared string pool does if a file needs the formatting.
+            "rPh" => self.in_phonetic = !empty,
+            "t" if self.at.is_some()
+                && self.kind == CellKind::InlineString
+                && !self.in_phonetic =>
+            {
+                self.in_value = !empty;
+            }
             "f" => {
                 self.in_formula = !empty;
                 self.shared_index = attr(e, "si");
@@ -2292,59 +2518,43 @@ impl SheetReader<'_> {
         true
     }
 
-    /// The autofilter, its columns and each kind of criterion they carry.
-    fn start_filter(&mut self, name: &str, e: &quick_xml::events::BytesStart<'_>) -> bool {
-        match name {
-            // A table has an `<autoFilter>` of its own, but it lives in its own
-            // part; the one inside a sheet is always the sheet's.
-            "autoFilter" => {
-                self.sheet.auto_filter = attr(e, "ref")
-                    .and_then(|v| Range::parse(&v).ok())
-                    .map(AutoFilter::new);
-            }
-            "filterColumn" => {
-                self.filter_col = attr(e, "colId").and_then(|v| v.parse().ok());
-                if let Some((filter, col_id)) = self.sheet.auto_filter.as_mut().zip(self.filter_col)
-                {
-                    let column = filter.column_at(col_id);
-                    column.hidden_button = attr(e, "hiddenButton").is_some_and(|v| is_true(&v));
-                }
-            }
-            "filters" | "customFilters" | "dynamicFilter" | "top10" => {
-                if let Some(column) = filter_column(&mut self.sheet, self.filter_col) {
-                    column.filter = ColumnFilter::empty(name);
-                    if let Some(filter) = column.filter.as_mut() {
-                        read_filter_attrs(filter, e);
-                    }
-                }
-            }
-            "filter" => {
-                if let Some(ColumnFilter::Values { values, .. }) =
-                    filter_column(&mut self.sheet, self.filter_col).and_then(|c| c.filter.as_mut())
-                {
-                    values.push(attr(e, "val").unwrap_or_default());
-                }
-            }
-            "dateGroupItem" => {
-                if let Some(ColumnFilter::Values { date_groups, .. }) =
-                    filter_column(&mut self.sheet, self.filter_col).and_then(|c| c.filter.as_mut())
-                {
-                    date_groups.push(read_date_group(e));
-                }
-            }
-            "customFilter" => {
-                if let Some(ColumnFilter::Custom { rules, .. }) =
-                    filter_column(&mut self.sheet, self.filter_col).and_then(|c| c.filter.as_mut())
-                {
-                    rules.push(CustomFilter {
-                        operator: FilterOperator::parse(&attr(e, "operator").unwrap_or_default()),
-                        value: attr(e, "val").unwrap_or_default(),
-                    });
-                }
-            }
-            _ => return false,
+    /// An `<extLst>` copied out whole: the rule's being read, or the sheet's.
+    fn keep_extensions(&mut self, rule: bool, bytes: &[u8]) {
+        let text = Some(self_contained(
+            String::from_utf8_lossy(bytes).trim_start(),
+            &self.root_namespaces,
+        ));
+        if !rule {
+            self.sheet.sparklines = text
+                .as_deref()
+                .map(crate::model::sparkline::read)
+                .unwrap_or_default();
+            self.sheet.extensions = text;
+        } else if let Some(rule) = last_rule(&mut self.sheet) {
+            rule.extensions = text;
         }
-        true
+    }
+
+    /// The autofilter, its columns and each kind of criterion they carry.
+    fn start_filter(
+        &mut self,
+        name: &str,
+        e: &quick_xml::events::BytesStart<'_>,
+        empty: bool,
+    ) -> bool {
+        if name == "autoFilter" {
+            self.in_filter = !empty;
+        }
+        let sheet = &mut self.sheet;
+        let sort = sort_target(
+            &mut sheet.sort_state,
+            &mut sheet.auto_filter,
+            self.in_filter,
+        );
+        // A table has an `<autoFilter>` of its own, but it lives in its own
+        // part; the one inside a sheet is always the sheet's.
+        read_sort_element(sort, name, e)
+            || read_filter_element(&mut sheet.auto_filter, &mut self.filter_col, name, e)
     }
 
     /// A closing element: everything here is a flag the opening element raised,
@@ -2359,7 +2569,8 @@ impl SheetReader<'_> {
             return;
         }
         match name {
-            "v" => self.in_value = false,
+            "v" | "t" => self.in_value = false,
+            "rPh" => self.in_phonetic = false,
             "f" => self.in_formula = false,
             "colorScale" | "dataBar" | "iconSet" => self.in_scale = false,
             "formula" => self.in_cf_formula = false,
@@ -2368,6 +2579,7 @@ impl SheetReader<'_> {
             "formula1" => self.in_formula1 = false,
             "formula2" => self.in_formula2 = false,
             "filterColumn" => self.filter_col = None,
+            "autoFilter" => self.in_filter = false,
             "dataValidation" => {
                 if let Some(dv) = self.validation.take() {
                     self.sheet.data_validations.push(dv);
@@ -2500,6 +2712,7 @@ fn read_cf_rule(e: &quick_xml::events::BytesStart<'_>) -> CfRule {
         std_dev: attr(e, "stdDev").and_then(|v| v.parse().ok()),
         formulas: Vec::new(),
         scale: None,
+        extensions: None,
     }
 }
 
@@ -2784,6 +2997,17 @@ fn read_sheet_view(e: &quick_xml::events::BytesStart<'_>) -> SheetView {
         show_row_col_headers: flag("showRowColHeaders", true),
         show_zeros: flag("showZeros", true),
         right_to_left: flag("rightToLeft", false),
+        show_formulas: flag("showFormulas", false),
+        show_outline_symbols: flag("showOutlineSymbols", true),
+        show_ruler: flag("showRuler", true),
+        show_white_space: flag("showWhiteSpace", true),
+        window_protection: flag("windowProtection", false),
+        // `colorId` means something only when the default is switched off.
+        grid_color: if flag("defaultGridColor", true) {
+            None
+        } else {
+            attr(e, "colorId").and_then(|v| v.parse().ok())
+        },
         workbook_view_id: attr(e, "workbookViewId")
             .and_then(|v| v.parse().ok())
             .unwrap_or(0),
@@ -2865,13 +3089,71 @@ fn read_protected_range(e: &quick_xml::events::BytesStart<'_>) -> ProtectedRange
     }
 }
 
-/// The column of the sheet's filter the criteria now being read belong to.
+/// One element of an `<autoFilter>`, the sheet's or a table's: `col` is the
+/// `<filterColumn>` open at the moment.
+fn read_filter_element(
+    auto_filter: &mut Option<AutoFilter>,
+    col: &mut Option<u32>,
+    name: &str,
+    e: &quick_xml::events::BytesStart<'_>,
+) -> bool {
+    match name {
+        "autoFilter" => {
+            *auto_filter = attr(e, "ref")
+                .and_then(|v| Range::parse(&v).ok())
+                .map(AutoFilter::new);
+        }
+        "filterColumn" => {
+            *col = attr(e, "colId").and_then(|v| v.parse().ok());
+            if let Some((filter, col_id)) = auto_filter.as_mut().zip(*col) {
+                let column = filter.column_at(col_id);
+                column.hidden_button = attr(e, "hiddenButton").is_some_and(|v| is_true(&v));
+            }
+        }
+        "filters" | "customFilters" | "dynamicFilter" | "top10" | "colorFilter" | "iconFilter" => {
+            if let Some(column) = filter_column(auto_filter, *col) {
+                column.filter = ColumnFilter::empty(name);
+                if let Some(filter) = column.filter.as_mut() {
+                    read_filter_attrs(filter, e);
+                }
+            }
+        }
+        "filter" => {
+            if let Some(ColumnFilter::Values { values, .. }) =
+                filter_column(auto_filter, *col).and_then(|c| c.filter.as_mut())
+            {
+                values.push(attr(e, "val").unwrap_or_default());
+            }
+        }
+        "dateGroupItem" => {
+            if let Some(ColumnFilter::Values { date_groups, .. }) =
+                filter_column(auto_filter, *col).and_then(|c| c.filter.as_mut())
+            {
+                date_groups.push(read_date_group(e));
+            }
+        }
+        "customFilter" => {
+            if let Some(ColumnFilter::Custom { rules, .. }) =
+                filter_column(auto_filter, *col).and_then(|c| c.filter.as_mut())
+            {
+                rules.push(CustomFilter {
+                    operator: FilterOperator::parse(&attr(e, "operator").unwrap_or_default()),
+                    value: attr(e, "val").unwrap_or_default(),
+                });
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+/// The column of the filter the criteria now being read belong to.
 fn filter_column(
-    sheet: &mut Worksheet,
+    auto_filter: &mut Option<AutoFilter>,
     col_id: Option<u32>,
 ) -> Option<&mut crate::model::FilterColumn> {
     let col_id = col_id?;
-    Some(sheet.auto_filter.as_mut()?.column_at(col_id))
+    Some(auto_filter.as_mut()?.column_at(col_id))
 }
 
 /// Reads the attributes a filter element carries itself, as opposed to the
@@ -2902,7 +3184,68 @@ fn read_filter_attrs(filter: &mut ColumnFilter, e: &quick_xml::events::BytesStar
             *top = attr(e, "top").is_none_or(|v| is_true(&v));
             *filter_value = attr(e, "filterVal");
         }
+        ColumnFilter::Color { dxf, cell_color } => {
+            *dxf = attr(e, "dxfId").and_then(|v| v.parse().ok());
+            // `cellColor` defaults to on, so only an explicit `0` turns it off.
+            *cell_color = attr(e, "cellColor").is_none_or(|v| is_true(&v));
+        }
+        ColumnFilter::Icon { icon_set, icon_id } => {
+            *icon_set = attr(e, "iconSet").unwrap_or_default();
+            *icon_id = attr(e, "iconId").and_then(|v| v.parse().ok());
+        }
     }
+}
+
+/// Where a `<sortState>` being read belongs: the open filter's, or the one
+/// beside it on the sheet or table.
+fn sort_target<'a>(
+    outer: &'a mut Option<SortState>,
+    filter: &'a mut Option<AutoFilter>,
+    in_filter: bool,
+) -> Option<&'a mut Option<SortState>> {
+    if in_filter {
+        filter.as_mut().map(|f| &mut f.sort_state)
+    } else {
+        Some(outer)
+    }
+}
+
+/// A `<sortState>` or one of its `<sortCondition>` keys.
+fn read_sort_element(
+    state: Option<&mut Option<SortState>>,
+    name: &str,
+    e: &quick_xml::events::BytesStart<'_>,
+) -> bool {
+    let flag = |name: &str| attr(e, name).is_some_and(|v| is_true(&v));
+    let range = || attr(e, "ref").and_then(|v| Range::parse(&v).ok());
+    match name {
+        "sortState" => {
+            if let Some(state) = state {
+                *state = range().map(|range| SortState {
+                    range,
+                    column_sort: flag("columnSort"),
+                    case_sensitive: flag("caseSensitive"),
+                    sort_method: attr(e, "sortMethod"),
+                    conditions: Vec::new(),
+                });
+            }
+        }
+        "sortCondition" => {
+            if let (Some(Some(state)), Some(range)) = (state, range()) {
+                state.conditions.push(SortCondition {
+                    range,
+                    descending: flag("descending"),
+                    sort_by: attr(e, "sortBy"),
+                    custom_list: attr(e, "customList"),
+                    dxf: attr(e, "dxfId").and_then(|v| v.parse().ok()),
+                    icon_set: attr(e, "iconSet"),
+                    icon_id: attr(e, "iconId").and_then(|v| v.parse().ok()),
+                });
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 /// Reads one `<dateGroupItem>`.
@@ -3172,6 +3515,40 @@ mod tests {
                 .and_then(|c| c.value.plain_text()),
             Some("one\r\ntwo".to_owned()),
             "the CR of a CRLF is the author's, not the XML's"
+        );
+    }
+
+    #[test]
+    fn an_inline_string_is_read_from_inside_the_cell() {
+        // 1C writes every text cell as `t="inlineStr"`; reading only `<v>`
+        // left a whole column of such an export empty.
+        let book = read_xlsx_from(Cursor::new(package(concat!(
+            r#"<sheetData><row r="1">"#,
+            r#"<c r="A1" t="inlineStr"><is><t xml:space="preserve">41.01 </t></is></c>"#,
+            r#"<c r="B1" t="inlineStr"><is><r><t>Bold</t></r><r><rPr><b/></rPr><t> part</t></r>"#,
+            r#"<rPh sb="0" eb="1"><t>ignored</t></rPh></is></c>"#,
+            r#"<c r="C1" t="inlineStr"><is><t/></is></c><c r="D1"><v>5</v></c>"#,
+            r#"</row></sheetData>"#
+        ))))
+        .expect("package reads");
+        let sheet = book.sheet(0).expect("one sheet");
+        let text = |a: &str| {
+            sheet
+                .get(CellRef::parse(a).unwrap())
+                .and_then(|c| c.value.plain_text())
+        };
+        assert_eq!(text("A1"), Some("41.01 ".to_owned()));
+        assert_eq!(
+            text("B1"),
+            Some("Bold part".to_owned()),
+            "runs join, phonetics do not"
+        );
+        assert_eq!(text("C1"), None);
+        assert_eq!(
+            sheet
+                .get(CellRef::parse("D1").unwrap())
+                .map(|c| c.value.clone()),
+            Some(CellValue::Number(5.0))
         );
     }
 

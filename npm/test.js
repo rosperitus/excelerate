@@ -19,7 +19,7 @@ test("a round trip through xlsx", () => {
   book.set(0, "C1", true);
   book.addSheet("Второй");
 
-  const reread = Book.fromXlsx(book.toXlsx());
+  const reread = Book.read(book.toXlsx());
   assert.deepStrictEqual(reread.sheetNames(), book.sheetNames());
   assert.strictEqual(reread.get(0, "A1"), "Гайка");
   assert.strictEqual(reread.get(0, "B1"), 12.5);
@@ -47,7 +47,7 @@ test("a round trip with a real file: read -> edit -> write", () => {
 
   // files/gen.xlsx: on sheet "01_Математика" column C holds formulas, D holds
   // the expectations, and the data they read sits in A101 and below.
-  const book = Book.fromXlsx(fs.readFileSync(path.join(__dirname, "files", "gen.xlsx")));
+  const book = Book.read(fs.readFileSync(path.join(__dirname, "files", "gen.xlsx")));
   assert.strictEqual(book.sheetNames()[0], "01_Математика");
   assert.strictEqual(book.get(0, "A101"), 10);
   assert.strictEqual(book.get(0, "D3"), 100);
@@ -60,7 +60,7 @@ test("a round trip with a real file: read -> edit -> write", () => {
   const out = path.join(os.tmpdir(), `excelerate-${process.pid}.xlsx`);
   fs.writeFileSync(out, book.toXlsx());
   try {
-    const reread = Book.fromXlsx(fs.readFileSync(out));
+    const reread = Book.read(fs.readFileSync(out));
     assert.deepStrictEqual(reread.sheetNames(), book.sheetNames());
     assert.strictEqual(reread.get(0, "A101"), 110);
     assert.strictEqual(reread.get(0, "D3"), 100);
@@ -95,7 +95,7 @@ test("Book.read works out the format on its own", () => {
 test("recalculating formulas when a workbook is opened", () => {
   const fs = require("node:fs");
   const path = require("node:path");
-  const book = Book.fromXlsx(fs.readFileSync(path.join(__dirname, "files", "gen.xlsx")));
+  const book = Book.read(fs.readFileSync(path.join(__dirname, "files", "gen.xlsx")));
 
   // In files/gen.xlsx the formulas carry no cache: column C is the formula, D the expectation.
   assert.strictEqual(book.get(0, "C3"), null);
@@ -485,7 +485,7 @@ test("column widths, row heights and a hidden sheet survive a round trip", () =>
   const hidden = book.addSheet("Служебный");
   book.setSheetVisibility(hidden, "veryHidden");
 
-  const back = Book.fromXlsx(book.toXlsx());
+  const back = Book.read(book.toXlsx());
   assert.strictEqual(back.columnWidth(0, 1), 32);
   assert.strictEqual(back.rowHeight(0, 1), 28);
   assert.strictEqual(back.rowHidden(0, 2), true);
@@ -509,7 +509,7 @@ test("painting cells", () => {
   book.setCellStyle(0, "B2", { numberFormat: "#,##0.00" });
   book.setRangeStyle(0, "A3:C3", { borders: { bottom: { style: "thin", color: "#FF000000" } } });
 
-  const back = Book.fromXlsx(book.toXlsx());
+  const back = Book.read(book.toXlsx());
   const title = back.cellStyle(0, "A1");
   assert.strictEqual(title.font.bold, true);
   assert.strictEqual(title.font.size, 14);
@@ -536,7 +536,7 @@ test("notes, links and tables can be written", () => {
   book.setHyperlink(0, "A2", "https://example.com", false, "прайс", "открыть");
   book.addTable(0, "Продажи", "A1:B3");
 
-  const back = Book.fromXlsx(book.toXlsx());
+  const back = Book.read(book.toXlsx());
   assert.deepStrictEqual(back.comments(0), [{ address: "B1", author: "Иванов", text: "с НДС" }]);
   const [link] = back.hyperlinks(0);
   assert.strictEqual(link.target, "https://example.com");
@@ -561,7 +561,7 @@ test("freezing panes and the sheet view", () => {
   book.setZoom(0, 85);
   book.setShowGridLines(0, false, false);
 
-  const back = Book.fromXlsx(book.toXlsx());
+  const back = Book.read(book.toXlsx());
   const view = back.sheetView(0);
   assert.strictEqual(view.frozenRows, 1);
   assert.strictEqual(view.frozenColumns, 2);
@@ -569,7 +569,7 @@ test("freezing panes and the sheet view", () => {
   assert.strictEqual(view.showGridLines, false);
   assert.strictEqual(view.showRowColHeaders, false);
 
-  book.unfreezePanes(0);
+  book.freezePanes(0, 0, 0);
   assert.strictEqual(book.sheetView(0).frozenRows, 0);
   assert.throws(() => book.setZoom(0, 5), /between 10 and 400/);
 });
@@ -581,7 +581,7 @@ test("defined names", () => {
   book.setDefinedName("Итог", "Worksheet!$A$1:$A$2");
   assert.strictEqual(book.evaluate(0, "B1", "=SUM(Итог)"), 13);
 
-  const back = Book.fromXlsx(book.toXlsx());
+  const back = Book.read(book.toXlsx());
   const [name] = back.definedNames();
   assert.strictEqual(name.name, "Итог");
   assert.strictEqual(name.sheet, null);
@@ -593,12 +593,12 @@ test("defined names", () => {
 test("csv with a delimiter of its own", () => {
   const book = new Book();
   book.setRange(0, "A1", [["a", 1], ["b", 2]]);
-  assert.strictEqual(book.toCsvWith(0, { delimiter: ";" }), "a;1\r\nb;2\r\n");
+  assert.strictEqual(book.toCsv(0, { delimiter: ";" }), "a;1\r\nb;2\r\n");
   assert.strictEqual(book.toCsv(0), "a,1\r\nb,2\r\n");
 
   const read = Book.readCsv(Buffer.from("a;1\n\nb;2\n"), { delimiter: ";", contiguous: true });
   assert.strictEqual(read.get(0, "A2"), "b", "the empty row is skipped");
-  assert.throws(() => book.toCsvWith(0, { delimiter: ";;" }), /one character/);
+  assert.throws(() => book.toCsv(0, { delimiter: ";;" }), /one character/);
 });
 
 test("protection", () => {
@@ -607,7 +607,7 @@ test("protection", () => {
   book.protectSheet(0, "проба");
   book.protectWorkbook("книга", true);
 
-  const back = Book.fromXlsx(book.toXlsx());
+  const back = Book.read(book.toXlsx());
   assert.deepStrictEqual(back.sheetProtection(0), { locked: true, hasPassword: true });
   assert.strictEqual(back.verifySheetPassword(0, "проба"), true);
   assert.strictEqual(back.verifySheetPassword(0, "не проба"), false);
@@ -698,4 +698,78 @@ test("sorting, filling a series and styles by the block", () => {
   book.setRangeStyles(0, "C1", { styles: [{ font: { italic: true } }], grid: [[0, null]] });
   assert.strictEqual(book.cellStyle(0, "C1").font.italic, true);
   assert.strictEqual(book.cellStyle(0, "D1").font.italic, false);
+});
+
+test("document properties", () => {
+  const book = new Book();
+  assert.strictEqual(book.documentProperties().title, null);
+  book.setDocumentProperties({
+    title: "Отчёт",
+    creator: "Анна",
+    company: "ООО «Ромашка»",
+    created: "2026-09-27T10:00:00Z",
+    custom: [
+      { name: "Отдел", value: "Продажи" },
+      { name: "Страниц", value: 12 },
+      { name: "Курс", value: 92.5 },
+      { name: "Проверено", value: true },
+      { name: "Срок", value: "2026-12-31T00:00:00Z", type: "date" },
+    ],
+  });
+  // A field the patch leaves out stays; null clears one.
+  book.setDocumentProperties({ creator: null, subject: "Продажи" });
+
+  for (const format of ["toXlsx", "toXls", "toOds"]) {
+    const props = Book.read(book[format]()).documentProperties();
+    assert.strictEqual(props.title, "Отчёт", format);
+    assert.strictEqual(props.subject, "Продажи", format);
+    assert.strictEqual(props.creator, null, format);
+    assert.deepStrictEqual(
+      props.custom.map((p) => [p.name, p.type, p.value]),
+      [
+        ["Отдел", "text", "Продажи"],
+        ["Страниц", "integer", 12],
+        ["Курс", "number", 92.5],
+        ["Проверено", "boolean", true],
+        ["Срок", "date", "2026-12-31T00:00:00Z"],
+      ],
+      format,
+    );
+  }
+  // ODS has no place for a company.
+  assert.strictEqual(Book.read(book.toXlsx()).documentProperties().company, "ООО «Ромашка»");
+  assert.strictEqual(Book.read(book.toOds()).documentProperties().company, null);
+  assert.throws(() => book.setDocumentProperties({ title: 5 }), /string or null/);
+});
+
+test("formatted text", () => {
+  const book = new Book();
+  const runs = [
+    { text: "Итого: ", font: { bold: true, color: "#FFFF0000" } },
+    { text: "x", font: null },
+    { text: "2", font: { script: "superscript", size: 8 } },
+  ];
+  book.setRichText(0, "A1", runs);
+  assert.strictEqual(book.get(0, "A1"), "Итого: x2");
+  assert.strictEqual(book.getRichText(0, "B1"), null);
+  book.set(0, "B1", "plain");
+  assert.strictEqual(book.getRichTextAt(0, 1, 2), null);
+  // Every format that keeps runs gives them back.
+  for (const [format, bytes] of [
+    ["xlsx", book.toXlsx()],
+    ["ods", book.toOds()],
+    ["xls", book.toXls()],
+  ]) {
+    const back = Book.read(bytes).getRichText(0, "A1");
+    assert.deepStrictEqual(
+      back.map((r) => r.text),
+      ["Итого: ", "x", "2"],
+      format,
+    );
+    assert.strictEqual(back[0].font.bold, true, format);
+    assert.strictEqual(back[0].font.color, "#FFFF0000", format);
+    assert.strictEqual(back[2].font.script, "superscript", format);
+    assert.strictEqual(back[2].font.size, 8, format);
+  }
+  assert.throws(() => book.setRichText(0, "A1", [{ font: {} }]), /text/);
 });

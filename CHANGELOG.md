@@ -1,5 +1,231 @@
 # Changelog
 
+## 0.14.0
+
+### Changed
+
+- `DiffFont` gains `family`: a literal needs it (or `..Default::default()`).
+- `AutoFilter` gains `sort_state`, `Table` gains `sort_state`, `Worksheet`
+  gains `sort_state` and `sparklines`, `Comment` gains `visible` and `size`
+  and no longer derives `Eq`: literals need the new fields (or
+  `..Default::default()` where there is one).
+
+- `SeriesMarkup::before_data` no longer holds `c:spPr`, `c:marker`, `c:dPt`
+  and `c:dLbls` (now fields of `Series`), and `invertIfNegative`,
+  `pictureOptions` and `explosion` moved to the new
+  `SeriesMarkup::after_format`; `Plot::markup` no longer holds `c:dLbls`.
+- `Plot` gains `drop_lines`, `high_low_lines` and `up_down_bars`, so a
+  `Plot { .. }` literal needs them (or `Plot::new`); `Plot::markup` no longer
+  holds `c:dropLines`, `c:hiLowLines` and `c:upDownBars`.
+- `SeriesMarker` gains `format` and `DataLabels` gains `points`: literals of
+  either need them (or `..Default::default()`).
+- `Plot` gains `show_markers`; `Plot::markup` no longer holds the
+  `c:marker` switch of `c:lineChart`.
+- `DataPoint` gains `marker`: a literal needs it (or `..Default::default()`).
+- `Fill` gains `Gradient` and `Pattern`: an exhaustive `match` needs arms
+  for them, and a gradient or pattern that read as `Fill::Other` now reads as
+  one of them.
+- `Table::auto_filter` is an `AutoFilter` instead of a bare `Range`: a
+  table's filter now keeps its hidden buttons (`hiddenButton`, which Excel's
+  templates set on every column) and its criteria, both of which a rewrite
+  used to drop. `Table` gains `extensions` and `CfRule` gains `extensions`:
+  literals need them.
+
+- `Error`, `CellError`, `Format`, `Fill`, `ColumnFilter`, `PlotKind`, `Expr`,
+  `CfScale`, `ChartText`, `DataSource`, `ImageFormat`, `PasswordHash`,
+  `LinkTarget`, `Stage`, `Color` and `NumberFormat` are `#[non_exhaustive]`:
+  a `match` on one needs a `_` arm, once. They are the enums whose
+  vocabulary grows with the formats; this release alone added variants to
+  `Fill`, and each such addition broke every exhaustive `match` downstream.
+  Enums fixed by the OOXML schema, `CellValue` and the formula `Value` stay
+  exhaustive.
+
+### Fixed
+
+- A grid edit left the newer rules in the sheet's `<extLst>` where they were:
+  the `x14` half of a data bar kept its old range while the rule beside it
+  moved, and a validation list on another sheet kept its old rows and name.
+  `<xm:sqref>` now moves with the sheet's cells, `<xm:f>` is rewritten like
+  any formula, and a rule left with no cells goes.
+
+- ODS and HTML wrote theme and indexed colours as nothing; they are now the
+  RGB they show, through the workbook's theme with the tint.
+- HTML reading lost the space between `a <b>b</b>`: each text node was trimmed
+  on its own. Whitespace now collapses across elements, as a browser does.
+- ODS writing let a reader collapse a leading space or a run of spaces;
+  they go out as `<text:s/>`, and reading honours `text:c`.
+- An xlsb whose `workbook.bin` holds the book twice (one converter writes it
+  so) failed with a duplicate sheet name; reading stops at `BrtEndBook`.
+
+- A grid edit on one sheet moved the second half of a range on another:
+  removing a row of `Shown` turned `Data!B3:B10` into `Data!B3:B9`, because
+  `B10` was read without the qualifier of `B3`.
+- A carried `<extLst>`, `<tableStyles>` or `<colors>` that used a prefix
+  declared only on the part's root (`xr2:uid` on a sparkline group, `xr9:uid`
+  on a table style, as Excel 365 writes them) was written with the prefix
+  undeclared. It now declares what it borrowed.
+
+- Writing xls hung forever on a workbook whose theme had ` val="` in text
+  outside a tag: the theme scan resumed before its own match. It also read
+  the theme once per colour of every style; now once. Found by the fuzzer.
+- `LCM` multiplied past `u64` (a wrong answer in release, a panic with
+  overflow checks) and `GCD` took arguments an f64 no longer holds exactly.
+  Both answer `#NUM!` at 2^53, as Microsoft documents. Found by the fuzzer.
+
+- A table part with an `<extLst>` (Excel keeps a table's alt text there as
+  `<x14:table>`) read as a table with id 0 and no name: the extension shares
+  the root's local name and overwrote it. Written back, such a table had
+  `name=""`.
+- The `<extLst>` of a table and of a conditional formatting rule is carried
+  whole. A data bar keeps its `x14:id` there, which ties it to its negative
+  colours and axis in the sheet's extensions; without it Excel drew the bar
+  the 2007 way.
+
+### Added
+
+- `at!("A1")`: a cell address checked while compiling, so a literal address
+  needs no `?` and a wrong one (`at!("A0")`) does not build. Behind it,
+  `CellRef::from_a1` is a `const fn`, and `CellRef::parse` now goes through
+  it; `$$A1` is no longer accepted.
+- `Worksheet::set_at(row, column, value)` and `get_at(row, column)`, counted
+  from one; `CellRef::from_row_col(row, column)`.
+- `From<i32>` and `From<u32>` for `CellValue`: `sheet.set(at, 123)` no longer
+  needs `123_i64`.
+
+- Formatted text in every format that holds it: xls reads and writes the runs
+  of the string table and reads `RSTRING` (BIFF5), xlsb reads `RichStr`, ODS
+  reads and writes `text:span` with text styles, HTML reads `<b>`, `<i>`,
+  `<u>`, `<s>`, `<sup>`, `<sub>`, `<font>` and `<span style>` inside a cell and
+  writes every part of a run's font. In wasm: `getRichText`, `setRichText` and
+  their `…At` twins.
+- `Font::with(&DiffFont)` and `From<&Font> for DiffFont`. `DiffFont` gains
+  `family`, which a rewrite of xlsx used to drop from `<rPr>`.
+
+- Sparklines are modelled: `Worksheet::sparklines` (`model::sparkline`) reads
+  the groups out of the sheet's `<extLst>`, the writer puts back only their
+  `<ext>` when they changed, and grid and sheet edits move them.
+- `SortState` on a sheet, an auto filter and a table (`<sortState>`), and the
+  `Color` and `Icon` kinds of `ColumnFilter` (`<colorFilter>`,
+  `<iconFilter>`). All three were dropped by a rewrite; COIN's sheet 7 had one.
+- `SheetView` gains `show_formulas`, `show_outline_symbols`, `show_ruler`,
+  `show_white_space`, `window_protection` and `grid_color`, read and written in
+  xlsx and, where the format has them, xls and xlsb.
+- `Comment::visible` and `Comment::size`, read from the VML frame and written
+  back into it, anchor included.
+- `Spreadsheet::workbook_view`: `firstSheet`, `tabRatio` and the other
+  attributes of `<workbookView>` that a rewrite used to drop.
+
+- Document properties: `Spreadsheet::properties` (`DocumentProperties`) holds
+  title, subject, author, keywords, comments, last editor, category, status,
+  language, identifier, revision, version, the three dates, company, manager
+  and the user's own fields (`CustomProperty`, `PropertyValue`: text, integer,
+  number, boolean, date), with `set_custom` and `custom` by name. Read and
+  written in xlsx (`docProps/core.xml`, `app.xml`, `custom.xml`, written by
+  comparison so an untouched part keeps its bytes), xls (the two MS-OLEPS
+  property set streams) and ODS (`meta.xml`); read from xlsb. In JS,
+  `documentProperties()` and `setDocumentProperties(patch)`.
+- The xls writer puts several streams in the compound file, not one:
+  `writer::ole::streams` replaces the internal `container`.
+
+- `Spreadsheet::template`: the book is a template. The xlsx writer gives the
+  main part the template content type (`spreadsheetml.template.main+xml`, or
+  `ms-excel.template.macroEnabled.main+xml` with a VBA project) - Excel will
+  not open an `.xltx` written as a plain workbook - and the xlsx reader sets
+  the flag from that type, so a template opened and saved stays one.
+- Charts: series formatting and data labels are modelled. `Series` gains
+  `format` (`c:spPr` as `ShapeFormat`: `Fill` - none, solid `ChartColor`,
+  other - and `LineFormat` with colour and width), `marker` (`SeriesMarker`:
+  `MarkerSymbol` and size), `data_points` (`c:dPt` as `DataPoint`: index and
+  its own fill, so pie slices keep their colours) and `labels`; `Plot` gains
+  `labels` (`DataLabels`: `deleted`, `position` as `LabelPosition`, the five
+  `show_*` flags). `ChartColor` keeps a theme colour by name with its
+  `lumMod`/`lumOff`/`tint`/`shade`/`alpha` transforms, and
+  `ChartColor::resolve` turns it into rgb through the workbook's theme. Each
+  element keeps its `source`: while the model still says what it says it is
+  written back as read, otherwise the model's fields are written into it and
+  gradients, dashes, effects and extensions stay.
+- Charts: the lines and bars of a stock chart are modelled. `Plot` gains
+  `high_low_lines` and `drop_lines` (`ChartLines`, with their `ShapeFormat`)
+  and `up_down_bars` (`UpDownBars`: `gap_width`, and the fill and outline of
+  the `up` and `down` bars), written back as read while unchanged.
+- Charts: a marker's own fill and outline (`SeriesMarker::format`, the
+  `c:spPr` inside `c:marker`) and labels of single points
+  (`DataLabels::points`: `DataLabel` with the point index, `deleted`,
+  `position` and the five `show_*` flags) are modelled. A point label keeps
+  its text, layout and extensions from `source`, and a cell it shows moves
+  with inserted rows like the rest of the chart.
+- Charts: the marker switch of a line plot (`c:lineChart/c:marker`) is
+  `Plot::show_markers`. With it on, a series with no marker of its own draws
+  automatic ones, as Excel's "line with markers" does.
+- Charts: the marker of a single point (`c:dPt/c:marker`) is
+  `DataPoint::marker`, a `SeriesMarker` like the series' own; a changed one is
+  written into the point, which keeps the rest of what it said.
+- Charts: gradient and pattern fills are described.
+  `Fill::Gradient { stops, angle, path }` holds the stops (`GradientStop`:
+  position and `ChartColor`), the angle of a linear gradient and the shape of
+  a radial one (`GradientPath`); `Fill::Pattern` the preset name and the
+  foreground and background colours. A changed gradient that was read keeps
+  its flip, rotation, tile and focus. Picture fills stay `Fill::Other`.
+- `formula::chart::source_numbers(book, sheet, chart, source)`: the cells a
+  chart source reads as `DataSource::Numbers`, with the format code of its
+  first cell and points numbered as the cache numbers them (text cells are
+  gaps). A text cache (`c:strCache`) has no format code in the file, so a
+  program drawing dates or numbers of text categories in its own locale reads
+  them here.
+- `formula::chart::refresh_caches(book, changed)`: reads the caches of chart
+  series names, categories, values, bubble sizes and titles again from their
+  cells, for every chart (`None`) or only for references covering the cells
+  an edit touched, and returns how many charts changed. A reference may be a
+  range, a union or a defined name (`[0]!Name` included). The caches come out
+  as Excel writes them - numbers with gaps left out, labels as the cells show
+  them (numbers through their format, text as is), hidden rows and columns
+  skipped under `plotVisOnly` - so on the 133 charts of the test files Excel
+  saved nothing changes, and an untouched chart still goes back byte for
+  byte.
+
+### Fixed
+
+- `SUBTOTAL` counted a nested `SUBTOTAL` or `AGGREGATE` in its references
+  again, so a grand total over group totals came out doubled. Cells whose
+  formula calls either are now left out, as Excel does; `AGGREGATE` does the
+  same with options 0 to 3 and counts them with 4 to 7.
+
+## 0.13.0
+
+### Fixed
+
+- xlsx: a cell with `t="inlineStr"` read as empty - its text sits in
+  `<is><t>`, and the sheet reader only looked in `<v>`. 1C exports write every
+  text cell this way, so whole columns came back `null`. Runs of a rich
+  inline string are joined as plain text; `<rPh>` phonetics are skipped.
+
+### Changed
+
+- JS bindings: `src/wasm.rs` (3200 lines) is split by topic into
+  `src/wasm/` - cells, sheet, style, objects, formulas, edit, output. The
+  string and numeric twins of each call share one body, sheet lookups and
+  the progress callback go through one helper each, and painting a cell and
+  painting a grid of styles are the same code.
+- `setRangeStyle` and `setCellStyle` work out every style before writing
+  any, as `setRangeStyles` already did: a bad patch leaves the sheet as it
+  was instead of half painted.
+- `set` and `setRange` both tell the dependency index when a formula is
+  overwritten by a value; `setRange` used to notice only new formulas.
+
+- npm docs: the README, `docs/wasm.md` and the reader's README list
+  `cellStyle`, `cellStyleAt`, `getRangeStylesAt`, `setRangeStylesAt`,
+  `recalculateCell`, the progress callback and `registerFunction`, which the
+  package had and the docs did not. The reader's README linked to an
+  unrelated unscoped `excelerate` package.
+- New TypeScript example `npm/typescript/long-operations.ts`: progress over
+  read, recalculation and write, and a function of your own.
+
+### Removed (breaking)
+
+- `Book.fromXlsx` - `Book.read` reads xlsx and every other format.
+- `toCsvWith(sheet, options)` - `toCsv(sheet, options?)` takes the options.
+- `unfreezePanes(sheet)` - `freezePanes(sheet, 0, 0)` does the same.
+
 ## 0.12.3
 
 ### Changed
@@ -31,8 +257,18 @@
   the last cells of each line and the series runs back from them (`1, 2`
   above goes `0, -1`, a single `Кв3` goes `Кв2`). JS: `fillSeries` with
   `"up"` or `"left"`.
+- HTML reader: column widths from `col.x` rules and row heights from `tr.x`
+  rules of a `<style>` block, the way PhpSpreadsheet sizes its export.
 
 ### Fixed
+
+- xlsx reader: a six-digit `rgb="D8D8D8"` in `styles.xml` is read as an
+  opaque colour, as Excel reads it. Before, it was dropped and the fill came
+  out blank. The JS style patch takes `#RRGGBB` for the same reason.
+- xls: row and column outline levels, collapsed groups and where summaries
+  sit (`WSBOOL`) are read and written back, with the `GUTS` record Excel needs
+  to show the outline bar. Before, a sheet with summaries above its groups
+  came back with them below, and column levels were lost.
 
 - xls reader: style 0 is the workbook's Normal style from the default cell
   format (XF 15), not the Calibri 11 default. Column widths are counted in

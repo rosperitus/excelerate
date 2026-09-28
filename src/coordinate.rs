@@ -166,20 +166,96 @@ impl CellRef {
     /// [`Error::InvalidCellRef`] if the string is not a cell reference or falls
     /// outside the sheet.
     pub fn parse(s: &str) -> Result<Self> {
-        let err = || Error::InvalidCellRef(s.to_owned());
-        let letters = s.trim_start_matches('$');
-        let split = letters.find(|c: char| !c.is_ascii_alphabetic());
-        let (col, rest) = letters.split_at(split.ok_or_else(err)?);
-        let digits = rest.strip_prefix('$').unwrap_or(rest);
-        if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-            return Err(err());
-        }
-        let row: u64 = digits.parse().map_err(|_| err())?;
-        Ok(Self {
-            col: Col::from_letters(col).map_err(|_| err())?,
-            row: Row::from_one_based(row).map_err(|_| err())?,
-        })
+        Self::from_a1(s).ok_or_else(|| Error::InvalidCellRef(s.to_owned()))
     }
+
+    /// The same parse, usable in a `const` context: `None` where
+    /// [`CellRef::parse`] gives an error. It is what [`at!`](crate::at)
+    /// checks a literal address with while compiling.
+    #[must_use]
+    pub const fn from_a1(s: &str) -> Option<Self> {
+        let b = s.as_bytes();
+        let mut i = 0;
+        if i < b.len() && b[i] == b'$' {
+            i += 1;
+        }
+        let letters = i;
+        let mut col: u32 = 0;
+        while i < b.len() && b[i].is_ascii_alphabetic() {
+            // Past XFD already: stop before the number can overflow.
+            if col > MAX_COL {
+                return None;
+            }
+            col = col * 26 + (b[i].to_ascii_uppercase() - b'A') as u32 + 1;
+            i += 1;
+        }
+        if i == letters {
+            return None;
+        }
+        if i < b.len() && b[i] == b'$' {
+            i += 1;
+        }
+        let digits = i;
+        let mut row: u32 = 0;
+        while i < b.len() && b[i].is_ascii_digit() {
+            if row > MAX_ROW {
+                return None;
+            }
+            row = row * 10 + (b[i] - b'0') as u32;
+            i += 1;
+        }
+        if i == digits || i != b.len() || row == 0 || col > MAX_COL {
+            return None;
+        }
+        match (Col::new(col - 1), Row::new(row - 1)) {
+            (Some(col), Some(row)) => Some(Self::new(col, row)),
+            _ => None,
+        }
+    }
+
+    /// A cell by its row and column counted from one, the way `ROW()` and
+    /// `COLUMN()` count them: `(1, 1)` is `A1`.
+    ///
+    /// # Errors
+    /// [`Error::InvalidCellRef`] for a zero or a number past the sheet.
+    pub fn from_row_col(row: u32, column: u32) -> Result<Self> {
+        let err = || Error::InvalidCellRef(format!("row {row}, column {column}"));
+        Ok(Self::new(
+            Col::from_one_based(u64::from(column)).map_err(|_| err())?,
+            Row::from_one_based(u64::from(row)).map_err(|_| err())?,
+        ))
+    }
+}
+
+/// A cell address checked while compiling: `at!("B4")` is the [`CellRef`]
+/// of `B4`, and `at!("XFE1")` - a column past the sheet - does not compile.
+///
+/// ```
+/// use excelerate::at;
+/// # use excelerate::model::Worksheet;
+/// let mut sheet = Worksheet::new("Sheet1")?;
+/// sheet.set(at!("A1"), 123);
+/// assert_eq!(at!("$B$4").to_string(), "B4");
+/// # Ok::<(), excelerate::Error>(())
+/// ```
+///
+/// ```compile_fail
+/// let _ = excelerate::at!("A0");
+/// ```
+///
+/// An address known only at run time goes through [`CellRef::parse`].
+#[macro_export]
+macro_rules! at {
+    ($address:literal) => {
+        const {
+            match $crate::CellRef::from_a1($address) {
+                ::core::option::Option::Some(cell) => cell,
+                ::core::option::Option::None => {
+                    ::core::panic!(::core::concat!("not a cell address: ", $address))
+                }
+            }
+        }
+    };
 }
 
 impl core::fmt::Display for CellRef {
@@ -388,6 +464,22 @@ pub(crate) fn scan_formula(
             qualifier = None;
             continue;
         }
+        // A reference the callback left alone is still a reference: it is
+        // stepped over whole, the second half of `A1:B2` included. Read on its
+        // own, that half would come without the qualifier of the first, and
+        // `Data!B3:B10` would move with an edit to whatever sheet holds it.
+        if !joined && let Some((len, _)) = parse_ref_at(&chars[i..]) {
+            let mut end = i + len;
+            if chars.get(end) == Some(&':')
+                && let Some((second, _)) = parse_ref_at(&chars[end + 1..])
+            {
+                end += 1 + second;
+            }
+            out.extend(&chars[i..end]);
+            i = end;
+            qualifier = None;
+            continue;
+        }
         // A bare name: a function or a defined name.
         if !joined && (c.is_alphabetic() || c == '_') {
             let start = i;
@@ -562,6 +654,42 @@ pub fn is_range(address: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn an_address_parses_at_the_edges_of_the_sheet_and_not_past_them() {
+        use super::CellRef;
+        for good in ["A1", "a1", "$A$1", "B$4", "$b4", "XFD1048576", "A01"] {
+            assert!(CellRef::from_a1(good).is_some(), "{good}");
+        }
+        for bad in [
+            "",
+            "A",
+            "1",
+            "A0",
+            "XFE1",
+            "A1048577",
+            "$$A1",
+            "A1 ",
+            "AAAAAAA1",
+            "A99999999999",
+            "Б1",
+        ] {
+            assert!(CellRef::from_a1(bad).is_none(), "{bad}");
+        }
+        assert_eq!(
+            CellRef::from_a1("$c$7").map(|c| c.to_string()).as_deref(),
+            Some("C7")
+        );
+        assert_eq!(
+            CellRef::from_row_col(7, 3)
+                .map(|c| c.to_string())
+                .ok()
+                .as_deref(),
+            Some("C7")
+        );
+        assert!(CellRef::from_row_col(0, 1).is_err());
+        assert!(CellRef::from_row_col(1, 16_385).is_err());
+    }
+
     use super::{CellRef, Col, MAX_COL, MAX_ROW, Range, Row, is_range};
     use crate::error::Error;
 

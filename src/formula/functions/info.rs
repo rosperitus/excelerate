@@ -181,7 +181,7 @@ pub fn formulatext(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Va
 
 /// The formula in the cell an argument names, if it names one and it has one.
 fn formula_of(
-    engine: &mut Engine<'_>,
+    engine: &Engine<'_>,
     origin: Origin,
     args: &[Expr],
 ) -> Result<Option<String>, CellError> {

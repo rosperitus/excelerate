@@ -502,23 +502,30 @@ pub fn quotient(args: &[Arg]) -> Value {
 
 /// `GCD(number1, ...)` - of the whole parts, as Excel takes them.
 pub fn gcd(args: &[Arg]) -> Value {
-    whole_numbers(args, |ns| ns.into_iter().fold(0u64, binary_gcd))
+    whole_numbers(args, |ns| Some(ns.into_iter().fold(0u64, binary_gcd)))
 }
 
 /// `LCM(number1, ...)`
 pub fn lcm(args: &[Arg]) -> Value {
     whole_numbers(args, |ns| {
-        ns.into_iter().fold(1u64, |acc, n| {
+        ns.into_iter().try_fold(1u64, |acc, n| {
             if n == 0 || acc == 0 {
-                return 0;
+                return Some(0);
             }
-            acc / binary_gcd(acc, n) * n
+            (acc / binary_gcd(acc, n))
+                .checked_mul(n)
+                .filter(|&m| m < EXACT_LIMIT)
         })
     })
 }
 
-/// Shared body of `GCD` and `LCM`: both refuse negatives and truncate.
-fn whole_numbers(args: &[Arg], body: impl Fn(Vec<u64>) -> u64) -> Value {
+/// 2^53: past it an f64 no longer holds every whole number. Excel answers
+/// `#NUM!` for a `GCD` argument or an `LCM` result that reaches it.
+const EXACT_LIMIT: u64 = 1 << 53;
+
+/// Shared body of `GCD` and `LCM`: both refuse negatives and truncate, and
+/// `None` from the body is a result too large to state.
+fn whole_numbers(args: &[Arg], body: impl Fn(Vec<u64>) -> Option<u64>) -> Value {
     let numbers = match aggregate_numbers(args) {
         Ok(ns) => ns,
         Err(e) => return Value::Error(e),
@@ -535,14 +542,16 @@ fn whole_numbers(args: &[Arg], body: impl Fn(Vec<u64>) -> u64) -> Value {
                       past what Excel's own 15 digits can say anyway"
         )]
         let truncated = n.trunc() as u64;
+        if truncated >= EXACT_LIMIT {
+            return Value::Error(CellError::Num);
+        }
         whole.push(truncated);
     }
     #[expect(
         clippy::cast_precision_loss,
         reason = "Excel stores every number as f64 regardless"
     )]
-    let result = body(whole) as f64;
-    Value::Number(result)
+    body(whole).map_or(Value::Error(CellError::Num), |n| Value::Number(n as f64))
 }
 
 /// Greatest common divisor, Stein's algorithm without the shifts: the numbers
@@ -1264,9 +1273,15 @@ fn aggregate_by_code(
     };
     // Options 2, 3, 6 and 7 say to pass over errors rather than report them.
     let skip_errors = matches!(code_of(options), 2 | 3 | 6 | 7);
+    // Options 0 to 3 leave out nested SUBTOTAL and AGGREGATE cells, 4 to 7
+    // count them; SUBTOTAL comes here with 0.
+    let skip_totals = matches!(code_of(options), 0..=3);
     let mut values: Vec<Arg> = Vec::with_capacity(args.len());
     for arg in args {
-        let value = engine.eval_expr(origin, arg);
+        let mut value = engine.eval_expr(origin, arg);
+        if skip_totals {
+            value = engine.without_totals(origin, arg, value);
+        }
         if skip_errors {
             values.push(Arg {
                 value: without_errors(value),

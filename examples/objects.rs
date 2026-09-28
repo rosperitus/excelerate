@@ -37,7 +37,9 @@ fn main() {
                 Some(ChartText::Reference { formula, cache }) => {
                     format!("{formula} -> {}", cache.as_deref().unwrap_or(""))
                 }
-                None => String::new(),
+                // `ChartText` may gain forms; a title of one this program
+                // does not know prints as nothing.
+                _ => String::new(),
             };
             println!(
                 "  chart    {:<8} {:<24} plots={}",

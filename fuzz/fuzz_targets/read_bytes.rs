@@ -35,6 +35,18 @@ fuzz_target!(|data: &[u8]| {
     if cells > 20_000 {
         return;
     }
+    // Two cells far apart are a sheet whose CSV is every field between them:
+    // A1 and a cell at row 414938, column 14938 write six billion commas,
+    // as Excel would. That is the format, not a bug, so the area is capped too.
+    let area: u64 = book
+        .sheets()
+        .iter()
+        .filter_map(excelerate::model::Worksheet::dimension)
+        .map(|r| u64::from(r.width()) * u64::from(r.height()))
+        .sum();
+    if area > 4_000_000 {
+        return;
+    }
     recalculate(&mut book, None, &Options::default());
     let _ = excelerate::writer::xlsx::write_xlsx_to(&book, Cursor::new(Vec::new()));
     let _ = excelerate::writer::xls::write_xls_to(&book, Vec::new());

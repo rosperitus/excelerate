@@ -163,7 +163,7 @@ impl Report<'_> {
             // The caption is what the report writes over the column, so it is
             // matched as it stands - no allowance for a name that merely
             // starts the same way, or "Sales" would take "Sales with VAT".
-            let names = [caption.clone(), field.to_owned()];
+            let names = [caption, field.to_owned()];
             narrowed_cols = names
                 .iter()
                 .any(|name| keep_cols(self.sheet, &mut cols, &header_rows, name, first_col, false));

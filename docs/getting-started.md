@@ -46,14 +46,14 @@ sniffing: `read_xlsx`, `read_xls`, `read_ods`, `read_csv`, `read_html`,
 ## Read some values
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::CellValue;
 # use excelerate::reader;
 
 # let book = reader::read("tests/fixtures/sample.xlsx")?;
 let sheet = book.sheet(0).unwrap();
 
-match &sheet.get(CellRef::parse("B4")?).map(|c| &c.value) {
+match &sheet.get(at!("B4")).map(|c| &c.value) {
     Some(CellValue::Number(n)) => println!("number: {n}"),
     Some(CellValue::Text(t)) => println!("text: {t}"),
     // A formula keeps the result the file was saved with, so you can read a
@@ -83,7 +83,7 @@ for (at, cell) in sheet.iter() {
 ## Build a workbook from scratch
 
 ```rust,no_run
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::{Spreadsheet, Worksheet};
 use excelerate::writer::write_xlsx;
 
@@ -92,16 +92,26 @@ use excelerate::writer::write_xlsx;
 let mut book = Spreadsheet::empty();
 let mut sheet = Worksheet::new("Sales")?;
 
-for (row, (name, amount)) in [("Tea", 42.0), ("Coffee", 128.5)].iter().enumerate() {
-    let row = u32::try_from(row).unwrap() + 1;
-    sheet.set(CellRef::parse(&format!("A{row}"))?, *name);
-    sheet.set(CellRef::parse(&format!("B{row}"))?, *amount);
+sheet.set(at!("A1"), "Item");
+sheet.set(at!("B1"), "Amount");
+for (row, (name, amount)) in (2..).zip([("Tea", 42.0), ("Coffee", 128.5)]) {
+    sheet.set_at(row, 1, name)?;
+    sheet.set_at(row, 2, amount)?;
 }
 
 book.add_sheet(sheet)?;
 write_xlsx(&book, "sales.xlsx")?;
 # Ok::<(), excelerate::Error>(())
 ```
+
+Three ways to name a cell, one for each place an address comes from:
+
+- `at!("A1")` - a literal in your code, checked while compiling: `at!("XFE1")`
+  is a build error, not a runtime one;
+- `set_at(row, column, value)` / `get_at(row, column)` - numbers counted from
+  one, as `ROW()` and `COLUMN()` count them, for loops;
+- `CellRef::parse(text)?` - an address that arrives at run time, from a user or
+  a file.
 
 Sheet names are validated where you make them: empty, longer than 31 chars, or
 containing `* : / \ ? [ ]` gets you an `Error::InvalidSheetName` instead of a

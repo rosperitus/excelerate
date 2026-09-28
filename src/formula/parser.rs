@@ -12,6 +12,7 @@ use crate::error::{CellError, Error, Result};
 
 /// A parsed formula.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Expr {
     /// A number literal.
     Number(f64),
@@ -36,27 +37,27 @@ pub enum Expr {
     /// An argument left out, as the middle one in `IF(A1,,0)`.
     Missing,
     /// A prefix or postfix operator.
-    Unary(UnaryOp, Box<Expr>),
+    Unary(UnaryOp, Box<Self>),
     /// An operator between two operands.
-    Binary(BinaryOp, Box<Expr>, Box<Expr>),
+    Binary(BinaryOp, Box<Self>, Box<Self>),
     /// A function call.
     Call {
         /// Function name, upper-cased.
         name: String,
         /// Arguments in source order.
-        args: Vec<Expr>,
+        args: Vec<Self>,
     },
     /// An array constant: rows of literals, as `{1,2;3,4}`.
-    Array(Vec<Vec<Expr>>),
+    Array(Vec<Vec<Self>>),
     /// A structured reference into a table, as `Sales[Amount]`.
     Structured(Structured),
     /// A call on something other than a name, as `LAMBDA(x,x+1)(5)`: the
     /// callee is computed first and has to answer with a function.
     Apply {
         /// What is being called.
-        callee: Box<Expr>,
+        callee: Box<Self>,
         /// Arguments in source order.
-        args: Vec<Expr>,
+        args: Vec<Self>,
     },
 }
 

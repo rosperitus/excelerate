@@ -67,9 +67,16 @@ Two deliberate calls:
 
 Reads sheets, every value type, the shared string table (including
 continuation records), the whole cell format - number format, font, fill,
-borders, alignment and protection - merges, column widths, row heights, row and column outline (levels, collapsed
-groups, whether summaries sit below and to the right) and the
-workbook epoch. Writes the same back.
+borders, alignment and protection - merges, column widths, row heights, row
+and column outline (levels, collapsed groups, whether summaries sit below and
+to the right), the sheet view (frozen or split panes, the selection of each
+pane, scroll position, the gridline, heading, zero and right-to-left
+switches) and the workbook epoch. Writes the same back.
+
+Style 0 is the workbook's Normal style, taken from the default cell format
+(XF 15). It matters beyond looks: column widths are counted in digits of its
+font, so a book in Arial 8 read as Calibri 11 would open with every column
+wider.
 
 Colours in BIFF8 are indexes into a 56-entry palette. Reading resolves them to
 RGB through the file's own palette, so a colour means the same thing once it
@@ -103,8 +110,9 @@ records are the same ones in the same order, packed more narrowly. One byte per
 character in the workbook's code page rather than UTF-16, one byte per column,
 the relative flags of a reference on its row rather than its column, and an
 `XF` record of sixteen bytes rather than twenty. A 3D reference names its sheet
-inside the token, where BIFF8 points at an `EXTERNSHEET` entry. One thing it leaves behind: the formatting runs of an `RSTRING` cell, whose
-text is kept and whose runs are not.
+inside the token, where BIFF8 points at an `EXTERNSHEET` entry. Its formatted
+text lives on the cell (`RSTRING`) rather than in the string table, and is
+read into the same `RichText`.
 
 Its text is bytes rather than UTF-16, so it needs a code page. The workbook
 names one in a `CODEPAGE` record, and `shared::codepage` holds the pages such
@@ -125,6 +133,14 @@ let book = read_xls_in("export.xls", WINDOWS_1251)?;
 Writing is BIFF8 only. BIFF4 and older, and encrypted workbooks, are rejected
 rather than read halfway.
 
+Document properties sit in two streams beside the workbook,
+`\x05SummaryInformation` and `\x05DocumentSummaryInformation`, in the
+property set format (MS-OLEPS). Reading honours each set's code page: 1C
+exports write 1251, WPS and 1C also write 1200, where text is UTF-16. Writing
+uses 1200 for every string, so no character is lost to an ANSI page. A whole
+number past 32 bits is written as a double, since the version 0 sets Excel
+writes have no 64-bit integer.
+
 ## ods - OpenDocument
 
 Both directions: sheets, value types (float, percentage, currency, boolean,
@@ -140,6 +156,10 @@ Three things behave differently by nature of the format:
   from the value on read and re-encoded on write; an arbitrary custom format
   does not survive the loop.
 - Theme and indexed palette colours have no equivalent and are lost.
+- Document properties live in `meta.xml` under ODF's names (the author is
+  `meta:initial-creator`, the last editor `dc:creator`). Category, status,
+  identifier, version, company and manager have no ODF element and are not
+  written; keywords come back as one string joined with `, `.
 
 Formula syntax is translated both ways (`A1` <-> `[.A1]`, argument separators,
 `COM.MICROSOFT.` prefixes), so a formula written here still parses there.
@@ -171,7 +191,9 @@ same precision Excel shows.
 
 Writing gives you one table per sheet, workbook styles as `td.styleN` classes,
 values rendered through the number-format engine, `colspan`/`rowspan`, widths,
-heights, hyperlinks and rich text:
+heights, hyperlinks and rich text, one `<span style>` per run. Reading a page
+turns `<b>`, `<i>`, `<u>`, `<s>`, `<sup>`, `<sub>`, `<font>` and
+`<span style>` inside a cell into runs:
 
 ```rust
 use excelerate::writer::{HtmlOptions, write_html_to};

@@ -47,6 +47,9 @@ fn value(sheet: &Worksheet, address: &str) -> CellValue {
 fn text(sheet: &Worksheet, address: &str) -> String {
     match value(sheet, address) {
         CellValue::Text(s) => s.to_string(),
+        // The other reader flattens formatted text; the words are what it
+        // checks.
+        CellValue::RichText(runs) => runs.iter().map(|r| r.text.as_str()).collect(),
         other => panic!("{address} is {other:?}, not text"),
     }
 }

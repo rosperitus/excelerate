@@ -133,6 +133,7 @@ impl DateGroup {
 /// The four variants are the four child elements a `<filterColumn>` may have,
 /// and it has exactly one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ColumnFilter {
     /// `<filters>`: keep the rows whose value is one of these. Always an OR.
     Values {
@@ -174,6 +175,21 @@ pub enum ColumnFilter {
         /// `filterVal`: the cut-off Excel had computed when it saved.
         filter_value: Option<String>,
     },
+    /// `<colorFilter>`: keep the rows whose cell or font is painted a colour.
+    Color {
+        /// `dxfId`: the colour, as an index into the workbook's differential
+        /// styles ([`crate::style::Styles::differential`]).
+        dxf: Option<u32>,
+        /// `cellColor`: the fill rather than the font. Defaults to on.
+        cell_color: bool,
+    },
+    /// `<iconFilter>`: keep the rows a conditional format marked with an icon.
+    Icon {
+        /// `iconSet`: the set, as the format spells it (`3Arrows`, `5Rating`...).
+        icon_set: String,
+        /// `iconId`: which icon of the set, from 0. Absent means "no icon".
+        icon_id: Option<u32>,
+    },
 }
 
 impl ColumnFilter {
@@ -185,6 +201,8 @@ impl ColumnFilter {
             Self::Custom { .. } => "customFilters",
             Self::Dynamic { .. } => "dynamicFilter",
             Self::Top10 { .. } => "top10",
+            Self::Color { .. } => "colorFilter",
+            Self::Icon { .. } => "iconFilter",
         }
     }
 
@@ -217,6 +235,15 @@ impl ColumnFilter {
                 top: true,
                 filter_value: None,
             },
+            "colorFilter" => Self::Color {
+                dxf: None,
+                // The schema's default.
+                cell_color: true,
+            },
+            "iconFilter" => Self::Icon {
+                icon_set: String::new(),
+                icon_id: None,
+            },
             _ => return None,
         })
     }
@@ -248,6 +275,91 @@ impl FilterColumn {
     }
 }
 
+/// One key of a sort: a `<sortCondition>`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SortCondition {
+    /// The cells the key is read from: a column of the sorted range, or a row
+    /// when the sort runs across columns.
+    pub range: Range,
+    /// Largest first.
+    pub descending: bool,
+    /// `sortBy`: `value` when absent, else `cellColor`, `fontColor` or `icon`.
+    pub sort_by: Option<String>,
+    /// `customList`: the order to sort by, such as `Mon,Tue,Wed`.
+    pub custom_list: Option<String>,
+    /// `dxfId`: the colour a colour sort puts first.
+    pub dxf: Option<u32>,
+    /// `iconSet` of an icon sort.
+    pub icon_set: Option<String>,
+    /// `iconId` of an icon sort.
+    pub icon_id: Option<u32>,
+}
+
+impl SortCondition {
+    /// A key over a range, ascending by value.
+    #[must_use]
+    pub const fn new(range: Range) -> Self {
+        Self {
+            range,
+            descending: false,
+            sort_by: None,
+            custom_list: None,
+            dxf: None,
+            icon_set: None,
+            icon_id: None,
+        }
+    }
+}
+
+/// The last sort Excel applied to a range: `<sortState>`.
+///
+/// It records what was done, not something to do: the cells are already in
+/// that order. Excel reads it back to fill the Sort dialog and to reapply the
+/// sort from the filter menu. It lives on a sheet, inside an auto filter or on
+/// a table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SortState {
+    /// The sorted cells, header excluded.
+    pub range: Range,
+    /// `columnSort`: the sort ran across columns, left to right.
+    pub column_sort: bool,
+    /// `caseSensitive`.
+    pub case_sensitive: bool,
+    /// `sortMethod`: `stroke` or `pinYin` for East Asian text; absent is none.
+    pub sort_method: Option<String>,
+    /// The keys, most significant first.
+    pub conditions: Vec<SortCondition>,
+}
+
+impl SortState {
+    /// A sort of a range with no keys yet.
+    #[must_use]
+    pub const fn new(range: Range) -> Self {
+        Self {
+            range,
+            column_sort: false,
+            case_sensitive: false,
+            sort_method: None,
+            conditions: Vec::new(),
+        }
+    }
+
+    /// The same sort after an edit moved its cells: `None` when the edit
+    /// removed the sorted range. A key whose cells are gone is dropped.
+    #[must_use]
+    pub(crate) fn moved(mut self, shift: impl Fn(Range) -> Option<Range>) -> Option<Self> {
+        self.range = shift(self.range)?;
+        self.conditions.retain_mut(|c| match shift(c.range) {
+            Some(range) => {
+                c.range = range;
+                true
+            }
+            None => false,
+        });
+        Some(self)
+    }
+}
+
 /// The auto filter of a sheet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AutoFilter {
@@ -256,6 +368,8 @@ pub struct AutoFilter {
     /// The columns that filter, in the order the file lists them. A column
     /// that filters nothing is absent.
     pub columns: Vec<FilterColumn>,
+    /// The sort applied from the filter's drop-downs, when there was one.
+    pub sort_state: Option<SortState>,
 }
 
 impl AutoFilter {
@@ -266,6 +380,7 @@ impl AutoFilter {
         Self {
             range,
             columns: Vec::new(),
+            sort_state: None,
         }
     }
 
@@ -317,11 +432,18 @@ mod tests {
 
     #[test]
     fn each_element_name_builds_its_own_variant() {
-        for tag in ["filters", "customFilters", "dynamicFilter", "top10"] {
+        for tag in [
+            "filters",
+            "customFilters",
+            "dynamicFilter",
+            "top10",
+            "colorFilter",
+            "iconFilter",
+        ] {
             let filter = ColumnFilter::empty(tag).unwrap_or_else(|| unreachable!());
             assert_eq!(filter.tag(), tag);
         }
-        assert!(ColumnFilter::empty("colorFilter").is_none());
+        assert!(ColumnFilter::empty("mystery").is_none());
     }
 
     #[test]

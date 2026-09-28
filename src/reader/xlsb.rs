@@ -64,6 +64,7 @@ mod record {
     pub const MERGE_CELL: u16 = 176;
     pub const NAME: u16 = 39;
     pub const BUNDLE_SH: u16 = 156;
+    pub const END_BOOK: u16 = 132;
     pub const WB_PROP: u16 = 153;
     pub const SUP_SELF: u16 = 357;
     pub const SUP_BOOK_SRC: u16 = 355;
@@ -111,13 +112,14 @@ pub fn read_xlsb_from_limited<R: Read + Seek>(source: R, max_expanded: u64) -> R
     let rels = read_relationships(&mut zip, &rels_path_for(&workbook_path))
         .map_err(|e| Error::Xlsb(e.to_string()))?;
 
-    let strings = match rels.values().find(|r| r.kind.ends_with("/sharedStrings")) {
-        Some(r) => shared_strings(&part(&mut zip, &resolve(base, &r.target))?),
-        None => Vec::new(),
-    };
-    let styles = match rels.values().find(|r| r.kind.ends_with("/styles")) {
+    // The styles come first: a formatted shared string names its fonts.
+    let (styles, fonts) = match rels.values().find(|r| r.kind.ends_with("/styles")) {
         Some(r) => styles(&part(&mut zip, &resolve(base, &r.target))?),
-        None => StyleTable::default(),
+        None => (StyleTable::default(), Vec::new()),
+    };
+    let strings = match rels.values().find(|r| r.kind.ends_with("/sharedStrings")) {
+        Some(r) => shared_strings(&part(&mut zip, &resolve(base, &r.target))?, &fonts),
+        None => Vec::new(),
     };
     let style_count = styles.len();
 
@@ -150,6 +152,7 @@ pub fn read_xlsb_from_limited<R: Read + Seek>(source: R, max_expanded: u64) -> R
         .iter()
         .filter_map(|name| name.resolve(&context))
         .collect();
+    book.properties = super::xlsx::package_properties(&mut zip);
     Ok(book)
 }
 
@@ -257,13 +260,35 @@ fn cell_ref(row: u32, col: u32) -> Option<CellRef> {
 }
 
 /// The strings of `sharedStrings.bin`, in the order cells index them.
-fn shared_strings(data: &[u8]) -> Vec<CellValue> {
+fn shared_strings(data: &[u8], fonts: &[crate::style::Font]) -> Vec<CellValue> {
     records(data)
         .filter(|(id, _)| *id == record::SST_ITEM)
-        // The flag byte says whether formatting runs and phonetic text follow
-        // the string; both are past the text, and neither is read.
-        .filter_map(|(_, body)| wide_string(body, 1).map(|(text, _)| CellValue::text(text)))
+        .filter_map(|(_, body)| rich_string(body, fonts))
         .collect()
+}
+
+/// A `RichStr`: a flag byte, the text, and when the first flag bit is set
+/// the formatting runs - a count, then where each starts in UTF-16 units and
+/// its font. The phonetic text that may follow is not read.
+fn rich_string(body: &[u8], fonts: &[crate::style::Font]) -> Option<CellValue> {
+    let (text, end) = wide_string(body, 1)?;
+    if body.first().copied().unwrap_or(0) & 0x01 == 0 {
+        return Some(CellValue::text(text));
+    }
+    let count = usize::try_from(u32_at(body, end).unwrap_or(0)).unwrap_or(0);
+    let offsets = super::utf16_offsets(&text);
+    let runs = (0..count)
+        .map_while(|i| {
+            let at = end + 4 + i * 4;
+            let (ich, font) = (u16_at(body, at)?, u16_at(body, at + 2)?);
+            let offset = offsets.get(usize::from(ich)).copied().unwrap_or(text.len());
+            let font = fonts
+                .get(usize::from(font))
+                .map(crate::style::DiffFont::from);
+            Some((offset, font))
+        })
+        .collect();
+    Some(super::rich_text(text, runs))
 }
 
 /// The style table of `styles.bin`.
@@ -272,7 +297,7 @@ fn shared_strings(data: &[u8]) -> Vec<CellValue> {
 /// borders each in their own run of records, then one `BrtXF` per cell style -
 /// so they are collected and resolved at the end, exactly as the xlsx reader
 /// does with `<fonts>`, `<fills>` and `<borders>`.
-fn styles(data: &[u8]) -> StyleTable {
+fn styles(data: &[u8]) -> (StyleTable, Vec<crate::style::Font>) {
     let mut custom: HashMap<u16, String> = HashMap::new();
     let (mut fonts, mut fills, mut borders, mut xfs) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
@@ -296,7 +321,7 @@ fn styles(data: &[u8]) -> StyleTable {
         }
     }
 
-    StyleTable::from_styles(
+    let table = StyleTable::from_styles(
         xfs.iter()
             .map(|xf| {
                 let piece = |at: usize, count: usize| {
@@ -323,7 +348,8 @@ fn styles(data: &[u8]) -> StyleTable {
                 }
             })
             .collect(),
-    )
+    );
+    (table, fonts)
 }
 
 /// A `BrtColor`: what kind of colour it is, an index into the palette or the
@@ -592,6 +618,10 @@ fn workbook(data: &[u8]) -> Result<WorkbookHeader> {
     };
     for (id, body) in records(data) {
         match id {
+            // The book ends here. Past it there is nothing to read, and one
+            // converter writes the whole part a second time, which would
+            // declare every sheet twice.
+            record::END_BOOK => break,
             // The first bit of the workbook's flags is the Mac epoch, which
             // moves every date in the book by 1462 days.
             record::WB_PROP => {
@@ -894,6 +924,11 @@ fn sheet_view(view: &mut SheetView, body: &[u8]) {
     view.show_zeros = flags & 0x0010 != 0;
     view.right_to_left = flags & 0x0020 != 0;
     view.tab_selected = flags & 0x0040 != 0;
+    view.window_protection = flags & 0x0001 != 0;
+    view.show_formulas = flags & 0x0002 != 0;
+    view.show_ruler = flags & 0x0080 != 0;
+    view.show_outline_symbols = flags & 0x0100 != 0;
+    view.show_white_space = flags & 0x0400 == 0;
     if let (Some(row), Some(col)) = (u32_at(body, 6), u32_at(body, 10))
         && (row, col) != (0, 0)
     {
@@ -1106,6 +1141,80 @@ fn column_info(sheet: &mut Worksheet, body: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One converter writes `workbook.bin` twice over; the book ends at its
+    /// first `BrtEndBook`, and the sheets after it are not sheets.
+    #[test]
+    fn the_workbook_ends_at_its_end_record() {
+        let wide = |text: &str| {
+            let units: Vec<u16> = text.encode_utf16().collect();
+            let mut out = u32::try_from(units.len())
+                .unwrap_or(0)
+                .to_le_bytes()
+                .to_vec();
+            for u in units {
+                out.extend_from_slice(&u.to_le_bytes());
+            }
+            out
+        };
+        let mut sheet = vec![0u8; 8];
+        sheet.extend(wide("rId1"));
+        sheet.extend(wide("Лист1"));
+        let mut book = record(record::BUNDLE_SH, &sheet);
+        book.extend(record(record::END_BOOK, &[]));
+        let twice = [book.clone(), book].concat();
+        let header = workbook(&twice).unwrap_or_else(|e| unreachable!("{e}"));
+        assert_eq!(header.sheets.len(), 1);
+    }
+
+    /// A `RichStr` laid out as MS-XLSB 2.5.121 has it: flags, the text,
+    /// then the runs with where each starts in UTF-16 units and its font.
+    /// No file with one was at hand, so the layout is the specification's.
+    #[test]
+    fn a_rich_shared_string_keeps_its_runs() {
+        use crate::model::TextRun;
+        let text = "a𝄞bc";
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let mut body = vec![0x01];
+        body.extend_from_slice(&u32::try_from(units.len()).unwrap_or(0).to_le_bytes());
+        for u in &units {
+            body.extend_from_slice(&u.to_le_bytes());
+        }
+        body.extend_from_slice(&2u32.to_le_bytes());
+        // "𝄞b" in font 1 (the clef is two units), "c" in font 0.
+        for (ich, font) in [(1u16, 1u16), (4, 0)] {
+            body.extend_from_slice(&ich.to_le_bytes());
+            body.extend_from_slice(&font.to_le_bytes());
+        }
+        let bold = crate::style::Font {
+            bold: true,
+            ..crate::style::Font::default()
+        };
+        let fonts = [crate::style::Font::default(), bold.clone()];
+        let Some(CellValue::RichText(runs)) = rich_string(&body, &fonts) else {
+            unreachable!("a rich string")
+        };
+        assert_eq!(
+            runs,
+            [
+                TextRun {
+                    text: "a".into(),
+                    font: None
+                },
+                TextRun {
+                    text: "𝄞b".into(),
+                    font: Some((&bold).into())
+                },
+                TextRun {
+                    text: "c".into(),
+                    font: Some((&fonts[0]).into())
+                },
+            ]
+        );
+        // Without the flag, the same text is plain.
+        body[0] = 0;
+        assert_eq!(rich_string(&body, &fonts), Some(CellValue::text(text)));
+    }
 
     /// Builds a record: its number and length, both seven bits at a time.
     fn record(id: u16, body: &[u8]) -> Vec<u8> {

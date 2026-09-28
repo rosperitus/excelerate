@@ -68,8 +68,15 @@ pub fn write_html_to<W: Write>(
             .to_owned();
         let _ = writeln!(out, "<title>{}</title>", escape(&title));
     }
+    // Theme colours are resolved through the workbook's theme: CSS has
+    // nothing to refer them to.
+    let theme = book
+        .theme
+        .as_deref()
+        .map(crate::shared::palette::theme_colors)
+        .unwrap_or_default();
     out.push_str("<style>\n");
-    stylesheet(book, &indices, &mut out);
+    stylesheet(book, &indices, &theme, &mut out);
     out.push_str("</style>\n");
     if !options.fragment {
         out.push_str("</head>\n<body>\n");
@@ -81,7 +88,7 @@ pub fn write_html_to<W: Write>(
         let Some(sheet) = book.sheet(index) else {
             continue;
         };
-        table(book, sheet, index, &mut engine, &mut out);
+        table(book, sheet, index, &mut engine, &theme, &mut out);
     }
 
     if !options.fragment {
@@ -94,7 +101,7 @@ pub fn write_html_to<W: Write>(
 
 /// Writes the stylesheet: the fixed rules, then one rule per cell style, then
 /// the column widths and row heights of each sheet.
-fn stylesheet(book: &Spreadsheet, indices: &[usize], out: &mut String) {
+fn stylesheet(book: &Spreadsheet, indices: &[usize], theme: &[u32], out: &mut String) {
     let default_font = book
         .styles
         .get(crate::style::StyleId::default())
@@ -108,7 +115,7 @@ fn stylesheet(book: &Spreadsheet, indices: &[usize], out: &mut String) {
     out.push_str("table { border-collapse: collapse; }\ntd, th { padding: 0 2px; }\n");
 
     for (index, style) in book.styles.all().iter().enumerate() {
-        let declarations = css_of(style);
+        let declarations = css_of(style, theme);
         if !declarations.is_empty() {
             let _ = writeln!(out, "td.style{index} {{ {declarations} }}");
         }
@@ -167,6 +174,7 @@ fn table(
     sheet: &Worksheet,
     index: usize,
     engine: &mut Engine<'_>,
+    theme: &[u32],
     out: &mut String,
 ) {
     let _ = writeln!(
@@ -202,7 +210,7 @@ fn table(
             if merge.is_some_and(|m| m.start != at) {
                 continue;
             }
-            cell(book, sheet, index, at, merge, engine, out);
+            cell(book, sheet, index, at, merge, engine, theme, out);
         }
         out.push_str("</tr>\n");
     }
@@ -210,6 +218,10 @@ fn table(
 }
 
 /// Writes one `<td>`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the page's state for one cell: where it is, its merge, the engine and the theme"
+)]
 fn cell(
     book: &Spreadsheet,
     sheet: &Worksheet,
@@ -217,6 +229,7 @@ fn cell(
     at: CellRef,
     merge: Option<Range>,
     engine: &mut Engine<'_>,
+    theme: &[u32],
     out: &mut String,
 ) {
     let cell = sheet.get(at);
@@ -234,7 +247,7 @@ fn cell(
         if merge.height() > 1 {
             let _ = write!(out, " rowspan=\"{}\"", merge.height());
         }
-        let edges = merged_edges(book, sheet, style_id, merge);
+        let edges = merged_edges(book, sheet, style_id, merge, theme);
         if !edges.is_empty() {
             let _ = write!(out, " style=\"{edges}\"");
         }
@@ -250,7 +263,7 @@ fn cell(
     out.push('>');
     let body = match cell.map(|c| &c.value) {
         None | Some(CellValue::Empty) => String::new(),
-        Some(CellValue::RichText(runs)) => rich_text(runs),
+        Some(CellValue::RichText(runs)) => rich_text(runs, theme),
         Some(value) => {
             let shown = displayed(engine, index, at, value);
             rendered(&shown, code, book.epoch)
@@ -285,6 +298,7 @@ fn merged_edges(
     sheet: &Worksheet,
     own: crate::style::StyleId,
     merge: Range,
+    theme: &[u32],
 ) -> String {
     let borders = |at: CellRef| {
         sheet
@@ -306,7 +320,7 @@ fn merged_edges(
         ("bottom", bottom, anchor.bottom),
     ] {
         if edge != mine {
-            let rule = border_css(&edge).unwrap_or_else(|| "none".to_owned());
+            let rule = border_css(&edge, theme).unwrap_or_else(|| "none".to_owned());
             let _ = write!(out, "border-{side}: {rule}; ");
         }
     }
@@ -417,24 +431,13 @@ fn colour_prefix(code: &str) -> Option<String> {
 }
 
 /// Formatted runs inside one cell, each as a `<span>`.
-fn rich_text(runs: &[TextRun]) -> String {
+fn rich_text(runs: &[TextRun], theme: &[u32]) -> String {
     let mut out = String::new();
     for run in runs {
-        let mut declarations = String::new();
-        if let Some(font) = &run.font {
-            if font.bold == Some(true) {
-                declarations.push_str("font-weight:bold;");
-            }
-            if font.italic == Some(true) {
-                declarations.push_str("font-style:italic;");
-            }
-            if let Some(color) = font.color.as_ref().and_then(css_color) {
-                let _ = write!(declarations, "color:{color};");
-            }
-            if let Some(size) = font.size {
-                let _ = write!(declarations, "font-size:{}pt;", points(size));
-            }
-        }
+        let declarations = run
+            .font
+            .as_ref()
+            .map_or_else(String::new, |font| run_css(font, theme));
         if declarations.is_empty() {
             out.push_str(&escape(&run.text));
         } else {
@@ -444,6 +447,57 @@ fn rich_text(runs: &[TextRun]) -> String {
                 escape(&run.text)
             );
         }
+    }
+    out
+}
+
+/// What a run changes about the cell's font, as inline CSS. The reader
+/// takes the same declarations back.
+fn run_css(font: &crate::style::DiffFont, theme: &[u32]) -> String {
+    let mut out = String::new();
+    if let Some(name) = &font.name {
+        let _ = write!(out, "font-family:{};", css_font_family(name));
+    }
+    if let Some(size) = font.size {
+        let _ = write!(out, "font-size:{}pt;", points(size));
+    }
+    if let Some(bold) = font.bold {
+        out.push_str(if bold {
+            "font-weight:bold;"
+        } else {
+            "font-weight:normal;"
+        });
+    }
+    if let Some(italic) = font.italic {
+        out.push_str(if italic {
+            "font-style:italic;"
+        } else {
+            "font-style:normal;"
+        });
+    }
+    let underline = font.underline.map(|u| u != Underline::None);
+    if underline.is_some() || font.strike.is_some() {
+        let lines: Vec<&str> = [
+            (underline == Some(true)).then_some("underline"),
+            (font.strike == Some(true)).then_some("line-through"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        let value = if lines.is_empty() {
+            "none".to_owned()
+        } else {
+            lines.join(" ")
+        };
+        let _ = write!(out, "text-decoration:{value};");
+    }
+    if let Some(color) = font.color.as_ref().and_then(|c| css_color(c, theme)) {
+        let _ = write!(out, "color:{color};");
+    }
+    match font.script {
+        Some(Script::Superscript) => out.push_str("vertical-align:super;"),
+        Some(Script::Subscript) => out.push_str("vertical-align:sub;"),
+        Some(Script::Baseline) | None => {}
     }
     out
 }
@@ -470,7 +524,7 @@ fn link_at(sheet: &Worksheet, at: CellRef) -> Option<&Hyperlink> {
 
 /// One cell style as CSS declarations.
 ///
-fn css_of(style: &Style) -> String {
+fn css_of(style: &Style, theme: &[u32]) -> String {
     let mut out = String::new();
     alignment_css(&style.alignment, &mut out);
     for (side, border) in [
@@ -479,12 +533,12 @@ fn css_of(style: &Style) -> String {
         ("bottom", &style.borders.bottom),
         ("left", &style.borders.left),
     ] {
-        if let Some(rule) = border_css(border) {
+        if let Some(rule) = border_css(border, theme) {
             let _ = write!(out, "border-{side}: {rule}; ");
         }
     }
-    font_css(&style.font, &mut out);
-    fill_css(&style.fill, &mut out);
+    font_css(&style.font, theme, &mut out);
+    fill_css(&style.fill, theme, &mut out);
     out.trim_end().to_owned()
 }
 
@@ -526,7 +580,7 @@ fn alignment_css(alignment: &Alignment, out: &mut String) {
 }
 
 /// One border side.
-fn border_css(border: &Border) -> Option<String> {
+fn border_css(border: &Border, theme: &[u32]) -> Option<String> {
     let line = match border.style {
         BorderStyle::None => return None,
         BorderStyle::Named(name) => match name {
@@ -541,12 +595,12 @@ fn border_css(border: &Border) -> Option<String> {
             _ => "1px solid",
         },
     };
-    let colour = css_color(&border.color).unwrap_or_else(|| "#000000".to_owned());
+    let colour = css_color(&border.color, theme).unwrap_or_else(|| "#000000".to_owned());
     Some(format!("{line} {colour}"))
 }
 
 /// Typeface.
-fn font_css(font: &Font, out: &mut String) {
+fn font_css(font: &Font, theme: &[u32], out: &mut String) {
     if font.bold {
         out.push_str("font-weight: bold; ");
     }
@@ -562,7 +616,7 @@ fn font_css(font: &Font, out: &mut String) {
     if font.italic {
         out.push_str("font-style: italic; ");
     }
-    if let Some(colour) = css_color(&font.color) {
+    if let Some(colour) = css_color(&font.color, theme) {
         let _ = write!(out, "color: {colour}; ");
     }
     let _ = write!(
@@ -579,21 +633,20 @@ fn font_css(font: &Font, out: &mut String) {
 }
 
 /// Background.
-fn fill_css(fill: &Fill, out: &mut String) {
+fn fill_css(fill: &Fill, theme: &[u32], out: &mut String) {
     if fill.pattern == Pattern::None {
         return;
     }
-    let colour = css_color(&fill.foreground).or_else(|| css_color(&fill.background));
+    let colour = css_color(&fill.foreground, theme).or_else(|| css_color(&fill.background, theme));
     if let Some(colour) = colour {
         let _ = write!(out, "background-color: {colour}; ");
     }
 }
 
-/// A colour as CSS, for the colours that state their own value.
-///
-/// Theme and indexed colours name an entry of a palette this writer does not
-/// resolve, so they are left to the page's default rather than guessed at.
-fn css_color(color: &Color) -> Option<String> {
+/// A colour as CSS. A theme colour is resolved through the workbook's theme,
+/// tint included, and an indexed one through the default palette; only
+/// automatic is left to the page.
+fn css_color(color: &Color, theme: &[u32]) -> Option<String> {
     match color {
         Color::Argb(v) => {
             let (r, g, b) = ((v >> 16) & 0xFF, (v >> 8) & 0xFF, v & 0xFF);
@@ -609,7 +662,10 @@ fn css_color(color: &Color) -> Option<String> {
                 ))
             }
         }
-        Color::Auto | Color::Indexed(_) | Color::Theme { .. } => None,
+        Color::Auto => None,
+        Color::Indexed(_) | Color::Theme { .. } => {
+            crate::shared::palette::rgb_in(color, theme).map(|v| format!("#{v:06X}"))
+        }
     }
 }
 

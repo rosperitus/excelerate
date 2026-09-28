@@ -6,7 +6,7 @@ Styles are interned once per workbook and referenced by id, the way the file
 does it - a million cells sharing one look cost one `Style`.
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::{Spreadsheet, Worksheet};
 use excelerate::style::{Color, NumberFormat, Style};
 
@@ -20,8 +20,8 @@ style.font.color = Color::Argb(0xFF19_4D33);
 style.number_format = NumberFormat::Custom("#,##0.00 ₽".into());
 
 let id = book.styles.intern(style);
-sheet.set(CellRef::parse("A1")?, 1234.5);
-sheet.entry(CellRef::parse("A1")?).style = id;
+sheet.set(at!("A1"), 1234.5);
+sheet.entry(at!("A1")).style = id;
 
 book.add_sheet(sheet)?;
 # Ok::<(), excelerate::Error>(())
@@ -105,6 +105,12 @@ let value = CellValue::RichText(vec![
 assert_eq!(value.plain_text().as_deref(), Some("Total: 480"));
 ```
 
+Every format that can hold runs keeps them: xlsx (`<r>` in the shared
+strings), xls (formatting runs in the string table, `RSTRING` in BIFF5), xlsb
+on reading, ODS (`text:span` with a text style) and HTML (`<span style>`).
+The binary formats give a run a whole font, so a run read from xls names every
+field of its `DiffFont`, not only what differs from the cell.
+
 ## Differential styles
 
 Conditional formatting uses `DifferentialStyle` - a *partial* style where each
@@ -116,8 +122,9 @@ never asked for.
 
 - **ODS** has no per-cell format string; date and time formats are inferred
   from the value, custom codes do not survive.
-- **HTML** and **ODS** lose theme and indexed palette colours - there is no
-  equivalent concept.
+- **HTML** and **ODS** have no theme and no palette: theme and indexed colours
+  are written as the RGB they show, tint included, so they no longer follow a
+  change of theme.
 - **xls** keeps the whole style, but only 56 colours fit its palette: past
   that, a colour is drawn with the nearest one. Theme colours are written as
   the RGB they show, so a later theme change no longer recolours them.

@@ -9,6 +9,7 @@
 
 mod anchor;
 mod chart;
+mod extension;
 mod range;
 mod series;
 
@@ -22,7 +23,8 @@ use crate::coordinate::{
     CellRef, Col, MAX_COL, MAX_ROW, Range, Row, parse_ref_at, scan_formula, scan_references,
 };
 use crate::error::{Error, Result};
-use crate::model::{CellValue, Spreadsheet, Worksheet};
+use crate::model::sparkline::SparklineGroup;
+use crate::model::{AutoFilter, CellValue, Spreadsheet, Worksheet};
 
 /// Which way the grid is being edited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -355,6 +357,26 @@ fn apply(book: &mut Spreadsheet, sheet: usize, shift: Shift) -> Result<()> {
     // A chart keeps its series as formulas, and they name their sheet.
     chart::rewrite_series(book, |series| adjust(series, shift, &title, false));
     chart::rewrite_model(book, |series| adjust(series, shift, &title, false));
+    rewrite_sparklines(book, |formula, on| {
+        adjust(formula, shift, &title, on == title)
+    });
+    // The carried extensions name cells too: their formulas on any sheet,
+    // their ranges on this one.
+    let range = |r: Range| shift.range(r);
+    for index in 0..book.sheets().len() {
+        let Some(target) = book.sheet_mut(index) else {
+            continue;
+        };
+        let own = target.title().eq_ignore_ascii_case(&title);
+        if let Some(ext) = target.extensions.take() {
+            let moved: Option<&dyn Fn(Range) -> Option<Range>> = own.then_some(&range);
+            target.extensions = Some(extension::rewrite(
+                &ext,
+                |f| adjust(f, shift, &title, own),
+                moved,
+            ));
+        }
+    }
 
     let Some(target) = book.sheet_mut(sheet) else {
         return Ok(());
@@ -387,6 +409,33 @@ fn move_cells(sheet: &mut Worksheet, shift: Shift) {
     for (at, cell) in carried {
         *sheet.entry(at) = cell;
     }
+}
+
+/// A filter after the edit, with the sort it carries; `None` when its range
+/// is gone.
+fn moved_filter(mut filter: AutoFilter, shift: Shift) -> Option<AutoFilter> {
+    filter.range = shift.range(filter.range)?;
+    filter.sort_state = filter
+        .sort_state
+        .take()
+        .and_then(|sort| sort.moved(|r| shift.range(r)));
+    Some(filter)
+}
+
+/// A sparkline is drawn in a cell and goes where the cell goes; one whose
+/// cell the edit removed goes with it, and so does a group left empty.
+fn move_sparklines(sheet: &mut Worksheet, shift: Shift) {
+    sheet.sparklines.retain_mut(|group| {
+        group.sparklines.retain_mut(|line| {
+            let at = line.location;
+            let Some(moved) = shift.moved(shift.of(at)).and_then(|i| shift.with(at, i)) else {
+                return false;
+            };
+            line.location = moved;
+            true
+        });
+        !group.sparklines.is_empty()
+    });
 }
 
 /// Moves everything on the sheet that names a row, a column or a range.
@@ -422,12 +471,15 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
         p.sqref = p.sqref.iter().filter_map(|&r| shift.range(r)).collect();
         !p.sqref.is_empty()
     });
-    if let Some(filter) = &mut sheet.auto_filter {
-        match shift.range(filter.range) {
-            Some(range) => filter.range = range,
-            None => sheet.auto_filter = None,
-        }
-    }
+    sheet.auto_filter = sheet
+        .auto_filter
+        .take()
+        .and_then(|f| moved_filter(f, shift));
+    sheet.sort_state = sheet
+        .sort_state
+        .take()
+        .and_then(|sort| sort.moved(|r| shift.range(r)));
+    move_sparklines(sheet, shift);
     // A note is attached to a cell, so it goes where the cell goes; one whose
     // cell the edit removed goes with it. Where its box is drawn is the VML
     // part, which `anchor` moves in the bytes.
@@ -446,7 +498,11 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
             return false;
         };
         t.range = range;
-        t.auto_filter = t.auto_filter.and_then(|f| shift.range(f));
+        t.auto_filter = t.auto_filter.take().and_then(|f| moved_filter(f, shift));
+        t.sort_state = t
+            .sort_state
+            .take()
+            .and_then(|sort| sort.moved(|r| shift.range(r)));
         true
     });
     move_drawn_objects(sheet, shift);
@@ -758,4 +814,36 @@ fn rewrite_qualifiers(book: &mut Spreadsheet, rename: impl Fn(&[String]) -> Opti
     // A chart series is a formula too, and it always names its sheet.
     chart::rewrite_series(book, |series| scan_formula(series, |_, _| None, &rename));
     chart::rewrite_model(book, |series| scan_formula(series, |_, _| None, &rename));
+    rewrite_sparklines(book, |formula, _| {
+        scan_formula(formula, |_, _| None, &rename)
+    });
+    for index in 0..book.sheets().len() {
+        if let Some(target) = book.sheet_mut(index)
+            && let Some(ext) = target.extensions.take()
+        {
+            target.extensions = Some(extension::rewrite(
+                &ext,
+                |f| scan_formula(f, |_, _| None, &rename),
+                None,
+            ));
+        }
+    }
+}
+
+/// Runs `rewrite` over what every sparkline of the workbook reads, with the
+/// title of the sheet it is drawn on. The data may sit on any sheet.
+fn rewrite_sparklines(book: &mut Spreadsheet, rewrite: impl Fn(&str, &str) -> String) {
+    for index in 0..book.sheets().len() {
+        let Some(sheet) = book.sheet_mut(index) else {
+            continue;
+        };
+        let title = sheet.title().to_owned();
+        for formula in sheet
+            .sparklines
+            .iter_mut()
+            .flat_map(SparklineGroup::formulas_mut)
+        {
+            *formula = rewrite(formula, &title);
+        }
+    }
 }

@@ -15,23 +15,29 @@ Spreadsheet
 ├── defined_names               named ranges and Excel's own `_xlnm.*`
 ├── external: Vec<ExternalBook> cached values of linked workbooks
 ├── epoch                       1900 or the Mac 1904 base date
+├── properties                  title, author, dates, the user's own fields
 └── parts, attachments, theme   everything carried through untouched
 ```
 
 ## Addresses
 
-`CellRef` is a column plus a row, both 1-based and both validated:
+`CellRef` is a column plus a row, both kept from zero and both checked
+against the sheet's 16,384 columns and 1,048,576 rows:
 
 ```rust
-use excelerate::{CellRef, Col, Range, Row};
+use excelerate::{CellRef, Col, Range, Row, at};
 
-let a1 = CellRef::parse("A1")?;
-let same = CellRef::parse("$A$1")?;      // `$` is accepted and dropped
+let a1 = at!("A1");
+let same = at!("$A$1");      // `$` is accepted and dropped
 assert_eq!(a1, same);
 
 // `new` takes 0-based indexes; `from_one_based` takes the numbers a user sees.
 let b4 = CellRef::new(Col::from_one_based(2)?, Row::from_one_based(4)?);
 assert_eq!(b4.to_string(), "B4");
+// The same by row and column, in the order ROW() and COLUMN() give them.
+assert_eq!(CellRef::from_row_col(4, 2)?, b4);
+// Text known only at run time.
+assert_eq!(CellRef::parse("b4")?, b4);
 
 // Ranges normalise their corners, so a backwards one still means what you
 // meant: D9:B4 is B4:D9.
@@ -41,7 +47,8 @@ assert_eq!(range.to_string(), "B4:D9");
 ```
 
 `A0` is an error, not a shrug - row 0 does not exist, and letting it slide only
-moves the bug downstream.
+moves the bug downstream. Inside `at!` it is a compile error:
+`at!` runs the same parse as `CellRef::parse` in a `const` block.
 
 ## Cell values
 
@@ -68,14 +75,13 @@ Two things worth internalising:
 Setting values is `impl Into<CellValue>`, so the common cases are short:
 
 ```rust
-# use excelerate::CellRef;
+# use excelerate::at;
 # use excelerate::model::{CellValue, Worksheet};
 # let mut sheet = Worksheet::new("S")?;
-# let at = |a: &str| CellRef::parse(a).unwrap();
-sheet.set(at("A1"), 42.0);          // number
-sheet.set(at("A2"), "hello");       // text
-sheet.set(at("A3"), true);          // bool
-sheet.set(at("A4"), CellValue::formula("SUM(A1:A3)"));   // no result yet
+sheet.set(at!("A1"), 42);           // number: i32, u32, i64 and f64 all go in
+sheet.set(at!("A2"), "hello");      // text
+sheet.set(at!("A3"), true);         // bool
+sheet.set(at!("A4"), CellValue::formula("SUM(A1:A3)"));   // no result yet
 # Ok::<(), excelerate::Error>(())
 ```
 
@@ -83,7 +89,7 @@ sheet.set(at("A4"), CellValue::formula("SUM(A1:A3)"));   // no result yet
 whole cell with `entry`:
 
 ```rust
-# use excelerate::CellRef;
+use excelerate::at;
 # use excelerate::model::Worksheet;
 # use excelerate::style::{Style, StyleTable};
 # let mut sheet = Worksheet::new("S")?;
@@ -91,7 +97,7 @@ whole cell with `entry`:
 # let mut style = Style::default();
 # style.font.bold = true;
 let bold = styles.intern(style);
-sheet.entry(CellRef::parse("A1")?).style = bold;
+sheet.entry(at!("A1")).style = bold;
 # Ok::<(), excelerate::Error>(())
 ```
 
@@ -166,9 +172,25 @@ assign.
 `Worksheet::charts` holds one `Chart` per chart frame in the sheet's drawing:
 its name, anchor, title, plots with their series, axes and legend. A series
 reads its cells through a formula (`DataSource::formula`) and keeps the values
-Excel cached next to it. Fills, fonts and label positions are not modelled;
-they stay in the `markup` fields as the XML they were written in, so a series
-edited through the model keeps its colour.
+Excel cached next to it. Series fill and line (`ShapeFormat`: none, solid,
+gradient or pattern), markers, data points, data labels, and a stock chart's
+high-low lines and up/down bars are fields of the model; each keeps the
+element it was read from, so pictures, effects and extensions the model does
+not name survive an edit. Fonts,
+trend lines and the rest stay in the `markup` fields as the XML they were
+written in.
+
+The cached values are what a program drawing the chart reads, and they go
+stale when the cells change. `formula::chart::refresh_caches` reads them again
+the way Excel does - numbers with gaps left out, labels as the cells show
+them, hidden cells skipped when the chart plots visible cells only - either
+for every chart or only for the references that cover the cells an edit
+touched. A cache that comes out the same is left alone, so the chart still
+goes back byte for byte.
+`formula::chart::source_numbers` reads a source's cells as numbers with the
+format code of its first cell, for categories Excel cached as text: the file
+keeps no format for those, and a program formatting dates in its own locale
+needs one.
 
 The writer compares each chart with the copy taken when it was read. An
 unchanged chart goes back as its original bytes. A changed one is rendered from
@@ -201,6 +223,8 @@ if let Some(sheet) = book.sheet_mut(0) {
         ..Chart::default()
     });
 }
+// Fill in the caches from the cells: one chart changed.
+assert_eq!(excelerate::formula::chart::refresh_caches(&mut book, None), 1);
 ```
 
 Two limits. A chart inside a group of shapes is positioned by the group, so
@@ -378,11 +402,44 @@ location, makes the write fail. The fields' items are written from the
 cache's shared items, so a hidden or reordered item of a changed report is
 shown again in cache order.
 
+## Document properties
+
+`Spreadsheet::properties` is what Excel shows under File > Info: title,
+subject, author, keywords, comments, last editor, category, status, dates,
+company, manager, and the fields a user adds under Custom. Text fields are
+`Option<String>`, dates are ISO 8601 text as xlsx stores them, and nothing
+sets `modified` on its own: whether a rewrite is a modification is the
+caller's call.
+
+```rust
+use excelerate::model::{PropertyValue, Spreadsheet, Worksheet};
+
+let mut book = Spreadsheet::empty();
+book.add_sheet(Worksheet::new("Sheet1")?)?;
+let props = &mut book.properties;
+props.title = Some("Q3 sales".into());
+props.creator = Some("Ann".into());
+props.created = Some("2026-09-27T10:00:00Z".into());
+props.set_custom("Department", "Sales");     // text
+props.set_custom("Pages", 12_i64);           // a whole number
+props.set_custom("Checked", true);
+props.set_custom("Due", PropertyValue::Date("2026-12-31T00:00:00Z".into()));
+
+// Names compare without regard to case, in any script.
+assert_eq!(props.custom("department"), Some(&PropertyValue::Text("Sales".into())));
+# Ok::<(), excelerate::Error>(())
+```
+
+In xlsx they are written by comparison, like charts: a part the model still
+states goes back as its bytes. A changed `core.xml` or `custom.xml` is written
+from the model; `app.xml` also holds Excel's own list of sheets and the
+version that saved the file, so only `Company` and `Manager` change inside
+it. What each other format keeps is in [File formats](formats.md).
+
 ## Carried parts
 
 `OpaquePart` and `Attachment` are the escape hatch. Anything the crate does not
-model, such as shapes, comments and their VML, and document properties, is
-carried as raw bytes plus the relationship pointing at it, recursively. Chart
+model, such as shapes, comments and their VML, is carried as raw bytes plus the relationship pointing at it, recursively. Chart
 parts, drawings and media are carried as well, which is what lets an untouched
 chart or picture go back byte for byte.
 

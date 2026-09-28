@@ -1664,3 +1664,53 @@ fn summaries_of_a_table_in_one_formula() {
         (r#"REGEXTEST("abc","[")"#, "#VALUE!"),
     ]);
 }
+
+#[test]
+fn subtotal_passes_over_nested_subtotals() {
+    // B4 and B6 are subtotals of their groups; the grand total over the whole
+    // column must count 1 + 2 + 10 once, not the group totals on top.
+    let mut wb = Spreadsheet::empty();
+    let mut ws = Worksheet::new("S").unwrap();
+    ws.set(at("B2"), 1.0);
+    ws.set(at("B3"), 2.0);
+    ws.set(at("B4"), CellValue::formula("SUBTOTAL(9,B2:B3)"));
+    ws.set(at("B5"), 10.0);
+    ws.set(at("B6"), CellValue::formula("AGGREGATE(9,0,B5:B5)+0"));
+    wb.add_sheet(ws).unwrap();
+    let mut engine = Engine::new(&wb);
+    let origin = Origin::new(0, at("D1"));
+    let mut eval = |f: &str| engine.eval(origin, f);
+    assert_eq!(eval("SUBTOTAL(9,B2:B6)"), Value::Number(13.0));
+    assert_eq!(eval("SUBTOTAL(109,B2:B6)"), Value::Number(13.0));
+    // A single-cell reference to a subtotal is passed over as well.
+    assert_eq!(eval("SUBTOTAL(9,B4,B5)"), Value::Number(10.0));
+    // AGGREGATE leaves nested totals out with options 0 to 3 ...
+    assert_eq!(eval("AGGREGATE(9,3,B2:B6)"), Value::Number(13.0));
+    // ... and counts them with options 4 to 7.
+    assert_eq!(eval("AGGREGATE(9,4,B2:B6)"), Value::Number(26.0));
+    assert_eq!(eval("AGGREGATE(9,6,B2:B6)"), Value::Number(26.0));
+    // Plain SUM knows nothing of the rule.
+    assert_eq!(eval("SUM(B2:B6)"), Value::Number(26.0));
+}
+
+/// Microsoft's pages for both: `GCD` refuses an argument of 2^53 or more and
+/// `LCM` a result that reaches it, since an f64 stops holding every whole
+/// number there. The fuzzer found `LCM` multiplying past `u64` instead.
+#[test]
+fn gcd_and_lcm_stop_where_f64_stops_being_exact() {
+    check(&[
+        ("GCD(24,36)", "12"),
+        ("GCD(5.9,10)", "5"),
+        ("GCD(-1,2)", "#NUM!"),
+        ("GCD(2^53,2)", "#NUM!"),
+        ("GCD(2^53-2,2)", "2"),
+        ("LCM(4,6)", "12"),
+        ("LCM(0,5)", "0"),
+        ("LCM(2^52,2)", "4503599627370496"),
+        ("LCM(2^52,3)", "#NUM!"),
+        (
+            "LCM(4444444444444444444444444444444444444444444,7)",
+            "#NUM!",
+        ),
+    ]);
+}

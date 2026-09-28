@@ -11,6 +11,7 @@ use crate::coordinate::Range;
 /// A password as a file stores it - a hash, never the text that was typed.
 ///
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum PasswordHash {
     /// `password="CC1A"`: the 16-bit verifier of the old method, in hex.
     ///

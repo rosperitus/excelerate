@@ -5,8 +5,8 @@ Gnumeric and SpreadsheetML 2003 - and read how their cells are painted. Rust
 compiled to WebAssembly, no native module to build and nothing to install
 alongside it.
 
-This is the reading half of [excelerate](https://www.npmjs.com/package/excelerate).
-The full package also writes files back out and carries a 443-function formula
+This is the reading half of [excelerate](https://www.npmjs.com/package/@rosperitus/excelerate).
+The full package also writes files back out and carries a 518-function formula
 engine; if you need either, use that one. Here they are not compiled in at all,
 which is the point: a reader that cannot write cannot be made to write, and the
 binary is the smaller for it.
@@ -109,6 +109,11 @@ for you - an indexed colour needs the palette of the file it came from, and a
 theme colour needs the workbook theme, which the reader keeps but does not
 interpret.
 
+For a block of cells, `getRangeStyles(sheet, "A1:H40")` answers `{ styles,
+grid }`: each distinct style once and a grid of indexes into them, which is
+one crossing instead of a `cellStyle` per cell. `cellStyleAt` and
+`getRangeStylesAt` take 1-based numbers instead of an address.
+
 ## Formulas
 
 A formula's **text** is here (`getFormula`), and so is the value the file was
@@ -126,6 +131,10 @@ its cached values may be stale.
 package may unpack, which is what stops a zip bomb. It defaults to 512 MB; a
 real workbook can outgrow that - a 100 MB package unpacking to 560 MB is not
 unusual - so raise it when you know where the file came from.
+
+A callback as the fourth argument hears about each sheet as it is read:
+`{ stage, done, total, what, fraction }`, with `total` `null` until the
+workbook part says how many sheets there are.
 
 ## What is not here
 

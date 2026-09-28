@@ -3,22 +3,84 @@
 Short answers to the questions that come up first. Each one compiles; the ones
 marked `no_run` need a file on disk.
 
+## Name a cell
+
+There are three ways, depending on where the address comes from:
+
+```rust
+use excelerate::{CellRef, at};
+# use excelerate::model::Worksheet;
+# let mut sheet = Worksheet::new("Sheet1")?;
+
+// Written in your code: checked by the compiler, no `?` needed.
+sheet.set(at!("A1"), 123);
+
+// Counted in a loop: row and column from one, as ROW() and COLUMN() count.
+for row in 2..=4 {
+    sheet.set_at(row, 1, row * 10)?;
+}
+assert_eq!(sheet.get_at(3, 1).and_then(|c| c.value.as_number()), Some(30.0));
+
+// Arriving at run time: parsed, and a bad one is an `Err`.
+let from_user = "B7";
+sheet.set(CellRef::parse(from_user)?, "typed in");
+assert!(CellRef::parse("B0").is_err());
+# Ok::<(), excelerate::Error>(())
+```
+
+`at!("XFE1")` does not compile: the column is past XFD, and the compiler says
+`not a cell address: XFE1`.
+
+## Colour part of a cell's text
+
+A cell whose formatting changes mid-string holds `RichText`, a list of runs.
+Each run names only what it changes about the cell's font; everything else
+comes from the cell.
+
+```rust
+use excelerate::at;
+use excelerate::model::{CellValue, TextRun, Worksheet};
+use excelerate::style::{Color, DiffFont};
+# let mut sheet = Worksheet::new("Sheet1")?;
+
+let colored = |text: &str, argb: u32| TextRun {
+    text: text.to_owned(),
+    font: Some(DiffFont {
+        color: Some(Color::Argb(argb)),
+        ..DiffFont::default()
+    }),
+};
+sheet.set(
+    at!("A1"),
+    CellValue::RichText(vec![
+        colored("Red ", 0xFFFF_0000),
+        colored("green ", 0xFF00_B050),
+        TextRun { text: "plain".into(), font: None },
+    ]),
+);
+# Ok::<(), excelerate::Error>(())
+```
+
+The runs survive xlsx, xls, ODS and HTML. xlsb keeps them on reading only,
+since there is no xlsb writer. A theme colour (`Color::Theme { id, tint }`)
+goes to ODS and HTML as the RGB it shows.
+
 ## Read a value, whatever kind it is
 
 `Worksheet::get` gives you the cell and `CellValue` says what is in it. A
 formula cell holds its text and the result the file cached.
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::CellValue;
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # let mut sheet = Worksheet::new("Sheet1")?;
-# sheet.set(CellRef::parse("A1")?, 1.0);
+# sheet.set(at!("A1"), 1.0);
 # book.add_sheet(sheet)?;
 # let sheet = &book.sheets()[0];
 
-match sheet.get(CellRef::parse("A1")?).map(|c| &c.value) {
+match sheet.get(at!("A1")).map(|c| &c.value) {
     Some(CellValue::Number(n)) => println!("number {n}"),
     Some(CellValue::Text(t)) => println!("text {t}"),
     Some(CellValue::Bool(b)) => println!("boolean {b}"),
@@ -39,11 +101,11 @@ looks through it to one type. A formula nobody has computed yet reads as empty
 rather than as an error.
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::model::CellValue;
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut sheet = Worksheet::new("Sheet1")?;
-# sheet.set(CellRef::parse("A1")?, 1.5);
+# sheet.set(at!("A1"), 1.5);
 
 let total: f64 = sheet
     .iter()
@@ -52,7 +114,7 @@ let total: f64 = sheet
 # let _ = total;
 
 // And writing one back, with no result until something computes it:
-sheet.set(CellRef::parse("B1")?, CellValue::formula("A1*2"));
+sheet.set(at!("B1"), CellValue::formula("A1*2"));
 # Ok::<(), excelerate::Error>(())
 ```
 
@@ -65,11 +127,11 @@ For a cell of a workbook you have, `Spreadsheet::formatted` looks up the
 cell's own format and the workbook's epoch for you:
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # book.add_sheet(Worksheet::new("Sheet1")?)?;
-println!("{}", book.formatted(0, CellRef::parse("A1")?));
+println!("{}", book.formatted(0, at!("A1")));
 println!("{}", book.formatted_at(0, 1, 1));   // the same cell, by numbers
 # Ok::<(), excelerate::Error>(())
 ```
@@ -130,9 +192,9 @@ A row at a time rather than a cell at a time, and the value with the style it
 is shown in:
 
 ```rust
+use excelerate::{CellRef, at};
 use excelerate::model::{CellValue, Spreadsheet, Worksheet};
 use excelerate::style::Style;
-use excelerate::CellRef;
 
 let mut book = Spreadsheet::empty();
 let mut sheet = Worksheet::new("Продажи")?;
@@ -140,12 +202,11 @@ let mut bold = Style::default();
 bold.font.bold = true;
 let bold = book.styles.intern(bold);
 
-sheet.set_styled(CellRef::parse("A1")?, "Товар", bold);
-sheet.set_styled(CellRef::parse("B1")?, "Сумма", bold);
+sheet.set_styled(at!("A1"), "Товар", bold);
+sheet.set_styled(at!("B1"), "Сумма", bold);
 
-for (index, (name, sum)) in [("Чай", 180.0), ("Кофе", 350.0)].into_iter().enumerate() {
-    let row = 2 + u32::try_from(index).unwrap();
-    let first = CellRef::parse(&format!("A{row}"))?;
+for (row, (name, sum)) in (2..).zip([("Чай", 180.0), ("Кофе", 350.0)]) {
+    let first = CellRef::from_row_col(row, 1)?;
     sheet.set_row(first, [CellValue::text(name), CellValue::Number(sum)]);
 }
 book.add_sheet(sheet)?;
@@ -175,10 +236,10 @@ insert_rows_with(&mut book, 0, Row::new(9).unwrap(), 1, CopyOrigin::Before)?;
 use excelerate::edit::{SortKey, SortOptions, sort_range_with};
 use excelerate::Range;
 # use excelerate::model::{Spreadsheet, Worksheet};
-# use excelerate::CellRef;
+use excelerate::at;
 # let mut book = Spreadsheet::empty();
 # let mut sheet = Worksheet::new("Sheet1")?;
-# sheet.set(CellRef::parse("B1")?, "Amount");
+# sheet.set(at!("B1"), "Amount");
 # book.add_sheet(sheet)?;
 
 let header = SortOptions { header: true, ..SortOptions::default() };
@@ -194,15 +255,15 @@ the header by itself.
 
 ```rust
 use excelerate::edit::{Axis, fill_series};
-use excelerate::{CellRef, Range};
+use excelerate::{Range, at};
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # book.add_sheet(Worksheet::new("Sheet1")?)?;
 
 let sheet = book.sheet_mut(0).unwrap();
-sheet.set(CellRef::parse("A2")?, 1.0);
-sheet.set(CellRef::parse("A3")?, 2.0);
-sheet.set(CellRef::parse("B1")?, "Jan");
+sheet.set(at!("A2"), 1.0);
+sheet.set(at!("A3"), 2.0);
+sheet.set(at!("B1"), "Jan");
 fill_series(&mut book, 0, Range::parse("A2:A100")?, Axis::Rows)?;     // 1..99
 fill_series(&mut book, 0, Range::parse("B1:M1")?, Axis::Columns)?;    // Jan..Dec
 # Ok::<(), excelerate::Error>(())
@@ -287,12 +348,12 @@ Three calls that sound alike and are not:
 ```rust
 use excelerate::formula::eval::{recalculate, recalculate_cell, recalculate_from};
 use excelerate::progress::Options;
-use excelerate::CellRef;
+use excelerate::at;
 # use excelerate::model::{Spreadsheet, Worksheet};
 # let mut book = Spreadsheet::empty();
 # book.add_sheet(Worksheet::new("Sheet1")?)?;
 
-let b4 = CellRef::parse("B4")?;
+let b4 = at!("B4");
 recalculate(&mut book, None, &Options::default());   // the whole workbook
 recalculate_cell(&mut book, 0, b4);                  // that cell, and cache it
 recalculate_from(&mut book, &[(0, b4)]);             // what reads B4, not B4

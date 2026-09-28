@@ -52,7 +52,11 @@ fn a_table_is_read_with_its_columns_and_style() {
     assert_eq!(table.header_row_count, None);
     assert_eq!(table.totals_row_count, None);
     assert_eq!(
-        table.auto_filter.map(|f| f.to_string()).as_deref(),
+        table
+            .auto_filter
+            .as_ref()
+            .map(|f| f.range.to_string())
+            .as_deref(),
         Some("A1:C5")
     );
 
@@ -84,7 +88,11 @@ fn an_inserted_row_takes_the_table_with_it() {
     let table = &book.sheets()[0].tables[0];
     assert_eq!(table.range.to_string(), "A1:C7");
     assert_eq!(
-        table.auto_filter.map(|f| f.to_string()).as_deref(),
+        table
+            .auto_filter
+            .as_ref()
+            .map(|f| f.range.to_string())
+            .as_deref(),
         Some("A1:C7")
     );
 
@@ -246,4 +254,61 @@ fn a_formula_can_name_the_table_instead_of_its_cells() {
         number(&mut engine, outside, "SUM([Sales])"),
         Value::Error(excelerate::error::CellError::Name)
     );
+}
+
+/// The fixture with every table part passed through `edit`.
+fn patched(edit: impl Fn(&str) -> String) -> Vec<u8> {
+    use std::io::{Read, Write};
+
+    let mut source = zip::ZipArchive::new(Cursor::new(fixture())).unwrap();
+    let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    let options = zip::write::SimpleFileOptions::default();
+    for i in 0..source.len() {
+        let mut part = source.by_index(i).unwrap();
+        let name = part.name().to_owned();
+        let mut data = String::new();
+        part.read_to_string(&mut data).unwrap();
+        if name.starts_with("xl/tables/") {
+            data = edit(&data);
+        }
+        out.start_file(name, options).unwrap();
+        out.write_all(data.as_bytes()).unwrap();
+    }
+    out.finish().unwrap().into_inner()
+}
+
+/// Excel puts the alt text of a table into `<extLst>` as `<x14:table>`: the
+/// same local name as the part's root, and it must not overwrite the root.
+/// Both it and the buttons a table hides in its filter survive a rewrite.
+#[test]
+fn a_table_keeps_its_hidden_buttons_and_its_extensions() {
+    let bytes = patched(|xml| {
+        xml.replace(
+            "</autoFilter>",
+            r#"<filterColumn colId="1" hiddenButton="1"/></autoFilter>"#,
+        )
+        .replace(
+            "</table>",
+            r#"<extLst><ext uri="{504A1905-F514-4f6f-8877-14C23A59335A}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:table altTextSummary="alt"/></ext></extLst></table>"#,
+        )
+    });
+    let book = read_xlsx_from(Cursor::new(bytes)).unwrap();
+    for book in [cycle(&book), book] {
+        let table = &book.sheets()[0].tables[0];
+        assert_eq!(table.name, "Sales");
+        assert_ne!(table.id, 0);
+        let filter = table.auto_filter.as_ref().expect("the table filters");
+        assert!(
+            filter
+                .columns
+                .iter()
+                .any(|c| c.col_id == 1 && c.hidden_button)
+        );
+        assert!(
+            table
+                .extensions
+                .as_deref()
+                .is_some_and(|x| x.contains(r#"altTextSummary="alt""#))
+        );
+    }
 }

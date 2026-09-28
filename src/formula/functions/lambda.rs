@@ -169,7 +169,7 @@ fn by_line(engine: &mut Engine<'_>, origin: Origin, args: &[Expr], rows: bool) -
     }
     let (height, width) = (grid.len(), grid.first().map_or(0, Vec::len));
     let lines: Vec<Vec<Value>> = if rows {
-        grid.clone()
+        grid
     } else {
         (0..width)
             .map(|c| (0..height).map(|r| grid[r][c].clone()).collect())

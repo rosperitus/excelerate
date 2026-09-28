@@ -9,6 +9,7 @@ mod image;
 pub mod ods;
 pub(crate) mod ole;
 mod pivot;
+mod properties;
 mod shape;
 pub mod xls;
 mod xls_formula;

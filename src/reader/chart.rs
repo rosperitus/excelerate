@@ -9,9 +9,12 @@
 
 use crate::coordinate::{Col, Row};
 use crate::model::chart::{
-    Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartEx, ChartText,
-    DataSource, Dimension, DimensionRole, EditAs, ExSeries, Grouping, Legend, LegendPosition,
-    Marker, Plot, PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, Title,
+    Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartColor,
+    ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint,
+    DataSource, Dimension, DimensionRole, EditAs, ExSeries, Fill, GradientPath, GradientStop,
+    Grouping, LabelPosition, Legend, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot,
+    PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, SeriesMarker, ShapeFormat, Title,
+    UpDownBars,
 };
 use core::ops::Range;
 use quick_xml::Reader;
@@ -69,11 +72,11 @@ impl<'a> Node<'a> {
     }
 
     /// The element's own children.
-    pub fn children(&self) -> Vec<Node<'a>> {
+    pub fn children(&self) -> Vec<Self> {
         children(self.inner)
     }
 
-    pub fn child(&self, name: &str) -> Option<Node<'a>> {
+    pub fn child(&self, name: &str) -> Option<Self> {
         self.children().into_iter().find(|n| n.name == name)
     }
 
@@ -157,7 +160,7 @@ fn position(reader: &Reader<&[u8]>) -> usize {
 }
 
 fn node(xml: &str, tag: Range<usize>, span: Range<usize>, inner: Range<usize>) -> Node<'_> {
-    let qname = &xml[span.start..span.end];
+    let qname = &xml[span.clone()];
     // The tag name runs from after `<` to the first space, `/` or `>`.
     let full = qname[1..]
         .split([' ', '/', '>', '\t', '\n', '\r'])
@@ -533,6 +536,11 @@ fn read_plot(node: &Node<'_>) -> Option<Plot> {
             "barDir" | "grouping" | "ofPieType" | "scatterStyle" | "radarStyle" | "wireframe" => {}
             "varyColors" => out.vary_colors = Some(child.flag()),
             "ser" => out.series.push(read_series(&child)),
+            "dLbls" => out.labels = Some(read_labels(&child)),
+            "dropLines" => out.drop_lines = Some(read_lines(&child)),
+            "hiLowLines" => out.high_low_lines = Some(read_lines(&child)),
+            "upDownBars" => out.up_down_bars = Some(read_up_down_bars(&child)),
+            "marker" if node.name == "lineChart" => out.show_markers = Some(child.flag()),
             "axId" => {
                 if let Some(id) = child.val().and_then(|v| v.parse().ok()) {
                     out.axis_ids.push(id);
@@ -566,10 +574,242 @@ fn read_series(node: &Node<'_>) -> Series {
                 out.bubble_sizes = read_data(&child);
             }
             _ if past_data => out.markup.after_data.push_str(child.outer),
+            "spPr" => out.format = Some(read_shape_format(&child)),
+            "marker" => out.marker = Some(read_marker(&child)),
+            "dPt" => out.data_points.push(read_point(&child)),
+            "dLbls" => out.labels = Some(read_labels(&child)),
+            // Named rather than placed: the schema puts these between the fill
+            // and the marker, and so does the writer, even when a file (excelize)
+            // wrote them elsewhere.
+            "invertIfNegative" | "pictureOptions" | "explosion" => {
+                out.markup.after_format.push_str(child.outer);
+            }
             _ => out.markup.before_data.push_str(child.outer),
         }
     }
     out
+}
+
+/// The fill elements of `DrawingML`, one of which a shape or line may hold.
+pub(crate) const FILLS: [&str; 6] = [
+    "noFill",
+    "solidFill",
+    "gradFill",
+    "blipFill",
+    "pattFill",
+    "grpFill",
+];
+
+/// Reads `<c:spPr>`, keeping the element as its source.
+pub(crate) fn read_shape_format(node: &Node<'_>) -> ShapeFormat {
+    let kids = node.children();
+    ShapeFormat {
+        fill: kids.iter().find(|n| FILLS.contains(&n.name)).map(read_fill),
+        line: kids.iter().find(|n| n.name == "ln").map(read_line),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads one fill element.
+pub(crate) fn read_fill(node: &Node<'_>) -> Fill {
+    match node.name {
+        "noFill" => Fill::None,
+        "solidFill" => node
+            .children()
+            .first()
+            .and_then(read_color)
+            .map_or(Fill::Other, Fill::Solid),
+        "gradFill" => read_gradient(node).unwrap_or(Fill::Other),
+        "pattFill" => {
+            let color = |name: &str| {
+                node.child(name)
+                    .map(|c| c.children().first().and_then(read_color))
+            };
+            let (foreground, background) = (color("fgClr"), color("bgClr"));
+            // A colour the model cannot read leaves the fill undescribed.
+            if matches!(foreground, Some(None)) || matches!(background, Some(None)) {
+                return Fill::Other;
+            }
+            Fill::Pattern {
+                preset: node.attr("prst").map(str::to_owned),
+                foreground: foreground.flatten(),
+                background: background.flatten(),
+            }
+        }
+        _ => Fill::Other,
+    }
+}
+
+/// Reads `<a:gradFill>`; `None` when a stop has a colour the model cannot
+/// read.
+fn read_gradient(node: &Node<'_>) -> Option<Fill> {
+    let kids = node.children();
+    let stops = kids
+        .iter()
+        .find(|n| n.name == "gsLst")
+        .map(Node::children)
+        .unwrap_or_default()
+        .iter()
+        .filter(|n| n.name == "gs")
+        .map(|gs| {
+            Some(GradientStop {
+                position: gs.attr("pos")?.parse().ok()?,
+                color: read_color(gs.children().first()?)?,
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    let find = |name: &str| kids.iter().find(|n| n.name == name);
+    Some(Fill::Gradient {
+        stops,
+        angle: find("lin")
+            .and_then(|n| n.attr("ang"))
+            .and_then(|v| v.parse().ok()),
+        path: find("path")
+            .and_then(|n| n.attr("path"))
+            .and_then(GradientPath::parse),
+    })
+}
+
+fn read_color(node: &Node<'_>) -> Option<ChartColor> {
+    let hex = |v: &str| u32::from_str_radix(v, 16).ok().filter(|_| v.len() == 6);
+    let base = match node.name {
+        "srgbClr" => ColorBase::Rgb(hex(node.val()?)?),
+        "sysClr" => ColorBase::Rgb(hex(node.attr("lastClr")?)?),
+        "schemeClr" => ColorBase::Scheme(node.val()?.to_owned()),
+        _ => return None,
+    };
+    let transforms = node
+        .children()
+        .iter()
+        .filter_map(|t| ColorTransform::parse(t.name, t.val()?.parse().ok()?))
+        .collect();
+    Some(ChartColor { base, transforms })
+}
+
+/// Reads `<a:ln>`.
+pub(crate) fn read_line(node: &Node<'_>) -> LineFormat {
+    LineFormat {
+        fill: node
+            .children()
+            .iter()
+            .find(|n| FILLS.contains(&n.name))
+            .map(read_fill),
+        width: node.attr("w").and_then(|w| w.parse().ok()),
+    }
+}
+
+/// Reads `<c:marker>`.
+pub(crate) fn read_marker(node: &Node<'_>) -> SeriesMarker {
+    let kids = node.children();
+    let val = |name: &str| kids.iter().find(|n| n.name == name).and_then(Node::val);
+    SeriesMarker {
+        symbol: val("symbol").and_then(MarkerSymbol::parse),
+        size: val("size").and_then(|v| v.parse().ok()),
+        format: kids
+            .iter()
+            .find(|n| n.name == "spPr")
+            .map(read_shape_format),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads `<c:dPt>`.
+pub(crate) fn read_point(node: &Node<'_>) -> DataPoint {
+    let kids = node.children();
+    DataPoint {
+        index: kids
+            .iter()
+            .find(|n| n.name == "idx")
+            .and_then(Node::val)
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0),
+        format: kids
+            .iter()
+            .find(|n| n.name == "spPr")
+            .map(read_shape_format),
+        marker: kids.iter().find(|n| n.name == "marker").map(read_marker),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads `<c:dropLines>` or `<c:hiLowLines>`.
+fn read_lines(node: &Node<'_>) -> ChartLines {
+    ChartLines {
+        format: node.child("spPr").as_ref().map(read_shape_format),
+    }
+}
+
+/// Reads `<c:upDownBars>`.
+pub(crate) fn read_up_down_bars(node: &Node<'_>) -> UpDownBars {
+    let kids = node.children();
+    let find = |name: &str| kids.iter().find(|n| n.name == name);
+    let bars = |name: &str| {
+        find(name)
+            .and_then(|n| n.child("spPr"))
+            .as_ref()
+            .map(read_shape_format)
+    };
+    UpDownBars {
+        gap_width: find("gapWidth")
+            .and_then(Node::val)
+            .and_then(|v| v.parse().ok()),
+        up: bars("upBars"),
+        down: bars("downBars"),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads `<c:dLbls>`. A flag that is not there is off, as Excel reads it.
+pub(crate) fn read_labels(node: &Node<'_>) -> DataLabels {
+    let kids = node.children();
+    let find = |name: &str| kids.iter().find(|n| n.name == name);
+    let flag = |name: &str| find(name).is_some_and(Node::flag);
+    DataLabels {
+        points: kids
+            .iter()
+            .filter(|n| n.name == "dLbl")
+            .map(read_label)
+            .collect(),
+        deleted: flag("delete"),
+        position: find("dLblPos")
+            .and_then(Node::val)
+            .and_then(LabelPosition::parse),
+        show_legend_key: flag("showLegendKey"),
+        show_value: flag("showVal"),
+        show_category_name: flag("showCatName"),
+        show_series_name: flag("showSerName"),
+        show_percent: flag("showPercent"),
+        source: Some(node.outer.to_owned()),
+    }
+}
+
+/// Reads `<c:dLbl>`: the same switches as `<c:dLbls>`, for one point.
+pub(crate) fn read_label(node: &Node<'_>) -> DataLabel {
+    let DataLabels {
+        points: _,
+        deleted,
+        position,
+        show_legend_key,
+        show_value,
+        show_category_name,
+        show_series_name,
+        show_percent,
+        source,
+    } = read_labels(node);
+    DataLabel {
+        index: node
+            .child("idx")
+            .and_then(|n| n.val().and_then(|v| v.parse().ok()))
+            .unwrap_or(0),
+        deleted,
+        position,
+        show_legend_key,
+        show_value,
+        show_category_name,
+        show_series_name,
+        show_percent,
+        source,
+    }
 }
 
 fn read_data(node: &Node<'_>) -> Option<DataSource> {
@@ -580,7 +820,7 @@ fn read_data(node: &Node<'_>) -> Option<DataSource> {
             let cache = if source.name == "numRef" {
                 source.child("numCache")
             } else {
-                Some(Node { ..source })
+                Some(source)
             };
             let (format_code, count, points) = cache.map(|c| numbers(&c)).unwrap_or_default();
             DataSource::Numbers {
@@ -594,7 +834,7 @@ fn read_data(node: &Node<'_>) -> Option<DataSource> {
             let cache = if source.name == "strRef" {
                 source.child("strCache")
             } else {
-                Some(Node { ..source })
+                Some(source)
             };
             let (count, points) = cache.map(|c| strings(&c)).unwrap_or_default();
             DataSource::Strings {

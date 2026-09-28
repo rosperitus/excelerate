@@ -62,7 +62,9 @@ pub fn write_xlsx_to_with<W: Write + Seek>(
     // Charts and pictures are applied to the parts first; an untouched book
     // passes through.
     let charts = super::pivot::prepare(super::chart_ex::prepare(super::chart::prepare(book)?)?)?;
-    let prepared = super::comment::prepare(super::shape::prepare(super::image::prepare(charts)));
+    let prepared = super::properties::prepare(super::comment::prepare(super::shape::prepare(
+        super::image::prepare(charts),
+    )));
     let book: &Spreadsheet = &prepared;
     let mut zip = zip::ZipWriter::new(sink);
     let opts = zip::write::SimpleFileOptions::default()
@@ -228,6 +230,9 @@ fn run_font_xml(font: &crate::style::DiffFont) -> String {
         Some(crate::style::Script::Subscript) => s.push_str(r#"<vertAlign val="subscript"/>"#),
         Some(crate::style::Script::Baseline) | None => {}
     }
+    if let Some(family) = font.family {
+        let _ = write!(s, r#"<family val="{family}"/>"#);
+    }
     if let Some(charset) = font.charset {
         let _ = write!(s, r#"<charset val="{charset}"/>"#);
     }
@@ -338,16 +343,22 @@ const ROOT_RELS: &str = concat!(
 
 /// The content type of the workbook part. A workbook that carries a VBA
 /// project is macro-enabled, and says so here: Excel refuses to open an `.xlsm`
-/// whose main part claims to be a plain workbook, macros and all.
+/// whose main part claims to be a plain workbook, macros and all. A template
+/// is the same story for `.xltx` and `.xltm`.
 fn main_content_type(book: &Spreadsheet) -> &'static str {
     let macros = book
         .parts
         .iter()
         .any(|p| p.content_type.as_deref() == Some("application/vnd.ms-office.vbaProject"));
-    if macros {
-        "application/vnd.ms-excel.sheet.macroEnabled.main+xml"
-    } else {
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+    match (book.template, macros) {
+        (false, false) => {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+        }
+        (false, true) => "application/vnd.ms-excel.sheet.macroEnabled.main+xml",
+        (true, false) => {
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"
+        }
+        (true, true) => "application/vnd.ms-excel.template.macroEnabled.main+xml",
     }
 }
 
@@ -417,6 +428,23 @@ fn content_types(book: &Spreadsheet) -> String {
     s
 }
 
+/// The carried attributes of `<workbookView>`. `firstSheet` past the last
+/// sheet, or past the active one, is a file Excel repairs, and a sheet removal
+/// makes one; it is pulled back.
+fn workbook_view_attrs(book: &Spreadsheet) -> String {
+    let mut s = String::new();
+    for (name, value) in &book.workbook_view {
+        let value = if name == "firstSheet" {
+            let first: usize = value.parse().unwrap_or(0);
+            first.min(book.active_index()).to_string()
+        } else {
+            value.clone()
+        };
+        let _ = write!(s, r#" {name}="{}""#, escape(&value));
+    }
+    s
+}
+
 fn workbook(book: &Spreadsheet) -> String {
     let mut s = format!(
         concat!(
@@ -426,7 +454,7 @@ fn workbook(book: &Spreadsheet) -> String {
             "{properties}",
             // `<workbookProtection>` precedes the views in the schema's order.
             "{protection}",
-            "<bookViews><workbookView activeTab=\"{active}\"/></bookViews>",
+            "<bookViews><workbookView{view} activeTab=\"{active}\"/></bookViews>",
             "<sheets>"
         ),
         decl = XML_DECL,
@@ -434,6 +462,7 @@ fn workbook(book: &Spreadsheet) -> String {
         // that last wrote the file, and this is not that application.
         properties = workbook_pr(book),
         protection = workbook_protection_xml(&book.protection),
+        view = workbook_view_attrs(book),
         active = book.active_index()
     );
     for (i, sheet) in book.sheets().iter().enumerate() {
@@ -1203,11 +1232,90 @@ fn worksheet(
     s.push_str(&print_tail_xml(sheet, outside));
     s.push_str(&attached_parts_xml(sheet));
     // `<extLst>` closes the element, and what is in it came from the file
-    // unread: sparklines and the newer conditional formats live there.
-    if let Some(extensions) = &sheet.extensions {
-        s.push_str(extensions);
+    // unread, except for the sparklines.
+    if let Some(extensions) = sheet_extensions(sheet) {
+        s.push_str(&extensions);
     }
     s.push_str("</worksheet>");
+    s
+}
+
+/// The sheet's `<extLst>`: as it was read, unless the sparkline groups in the
+/// model no longer say what it says. Then only their `<ext>` is replaced, and
+/// the extensions beside it stay byte for byte.
+fn sheet_extensions(sheet: &crate::model::Worksheet) -> Option<std::borrow::Cow<'_, str>> {
+    use crate::model::sparkline::{EXTENSION_URI, read};
+    use std::borrow::Cow;
+    let carried = sheet.extensions.as_deref();
+    if carried.map(read).unwrap_or_default() == sheet.sparklines {
+        return carried.map(Cow::Borrowed);
+    }
+    let ours = if sheet.sparklines.is_empty() {
+        String::new()
+    } else {
+        sparklines_ext_xml(&sheet.sparklines)
+    };
+    let Some(carried) = carried else {
+        return Some(Cow::Owned(format!("<extLst>{ours}</extLst>")));
+    };
+    // The carried `<ext>` holding them, if there is one.
+    let old = carried
+        .match_indices("<ext ")
+        .map(|(at, _)| at)
+        .find(|&at| {
+            let tag_end = carried[at..].find('>').map_or(carried.len(), |e| at + e);
+            carried[at..tag_end].contains(EXTENSION_URI)
+        })
+        .and_then(|at| Some((at, at + carried[at..].find("</ext>")? + "</ext>".len())));
+    // Without one, they go in last.
+    let (from, to) = old.unwrap_or_else(|| {
+        let at = carried.rfind("</extLst>").unwrap_or(carried.len());
+        (at, at)
+    });
+    let spliced = format!("{}{ours}{}", &carried[..from], &carried[to..]);
+    // An `<extLst>` left with no `<ext>` in it says nothing.
+    spliced.contains("<ext ").then_some(Cow::Owned(spliced))
+}
+
+/// The `<ext>` holding a sheet's sparkline groups.
+fn sparklines_ext_xml(groups: &[crate::model::sparkline::SparklineGroup]) -> String {
+    let mut s = format!(
+        concat!(
+            r#"<ext uri="{uri}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">"#,
+            r#"<x14:sparklineGroups xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">"#,
+        ),
+        uri = crate::model::sparkline::EXTENSION_URI,
+    );
+    for group in groups {
+        s.push_str("<x14:sparklineGroup");
+        if let Some(kind) = group.kind.as_str() {
+            let _ = write!(s, r#" type="{kind}""#);
+        }
+        for (name, value) in &group.attributes {
+            let _ = write!(s, r#" {name}="{}""#, escape(value));
+        }
+        for (name, on) in group.flags() {
+            if on {
+                let _ = write!(s, r#" {name}="1""#);
+            }
+        }
+        s.push('>');
+        // The schema's order: colours, the date axis, then the sparklines.
+        s.push_str(&group.colors);
+        if let Some(axis) = &group.date_axis {
+            let _ = write!(s, "<xm:f>{}</xm:f>", escape(axis));
+        }
+        s.push_str("<x14:sparklines>");
+        for line in &group.sparklines {
+            s.push_str("<x14:sparkline>");
+            if let Some(data) = &line.data {
+                let _ = write!(s, "<xm:f>{}</xm:f>", escape(data));
+            }
+            let _ = write!(s, "<xm:sqref>{}</xm:sqref></x14:sparkline>", line.location);
+        }
+        s.push_str("</x14:sparklines></x14:sparklineGroup>");
+    }
+    s.push_str("</x14:sparklineGroups></ext>");
     s
 }
 
@@ -1238,7 +1346,10 @@ fn table_xml(table: &crate::model::table::Table) -> String {
     }
     s.push('>');
     if let Some(filter) = &table.auto_filter {
-        let _ = write!(s, r#"<autoFilter ref="{filter}"/>"#);
+        s.push_str(&auto_filter_xml(filter));
+    }
+    if let Some(sort) = &table.sort_state {
+        s.push_str(&sort_state_xml(sort));
     }
     let _ = write!(s, r#"<tableColumns count="{}">"#, table.columns.len());
     for column in &table.columns {
@@ -1282,6 +1393,9 @@ fn table_xml(table: &crate::model::table::Table) -> String {
             rows = u8::from(style.show_row_stripes),
             columns = u8::from(style.show_column_stripes),
         );
+    }
+    if let Some(extensions) = &table.extensions {
+        s.push_str(extensions);
     }
     s.push_str("</table>");
     s
@@ -1530,7 +1644,7 @@ fn cf_rule_xml(rule: &crate::model::CfRule) -> String {
     if !rule.above_average {
         s.push_str(r#" aboveAverage="0""#);
     }
-    if rule.formulas.is_empty() && rule.scale.is_none() {
+    if rule.formulas.is_empty() && rule.scale.is_none() && rule.extensions.is_none() {
         s.push_str("/>");
         return s;
     }
@@ -1540,6 +1654,9 @@ fn cf_rule_xml(rule: &crate::model::CfRule) -> String {
     }
     if let Some(scale) = &rule.scale {
         s.push_str(&cf_scale_xml(scale));
+    }
+    if let Some(extensions) = &rule.extensions {
+        s.push_str(extensions);
     }
     s.push_str("</cfRule>");
     s
@@ -1728,6 +1845,10 @@ fn guards_xml(sheet: &crate::model::Worksheet) -> String {
     if let Some(filter) = &sheet.auto_filter {
         s.push_str(&auto_filter_xml(filter));
     }
+    // `<sortState>` follows `<autoFilter>` in the schema's fixed order.
+    if let Some(sort) = &sheet.sort_state {
+        s.push_str(&sort_state_xml(sort));
+    }
     s
 }
 
@@ -1782,7 +1903,7 @@ fn protected_range_xml(range: &crate::model::ProtectedRange) -> String {
 /// Renders `<autoFilter>` with the criteria of every column that has any.
 fn auto_filter_xml(filter: &crate::model::AutoFilter) -> String {
     let mut s = format!(r#"<autoFilter ref="{}""#, filter.range);
-    if filter.columns.is_empty() {
+    if filter.columns.is_empty() && filter.sort_state.is_none() {
         s.push_str("/>");
         return s;
     }
@@ -1801,7 +1922,78 @@ fn auto_filter_xml(filter: &crate::model::AutoFilter) -> String {
             }
         }
     }
+    if let Some(sort) = &filter.sort_state {
+        s.push_str(&sort_state_xml(sort));
+    }
     s.push_str("</autoFilter>");
+    s
+}
+
+/// Renders `<sortState>` and its keys.
+fn sort_state_xml(sort: &crate::model::SortState) -> String {
+    let mut s = format!(r#"<sortState ref="{}""#, sort.range);
+    if sort.column_sort {
+        s.push_str(r#" columnSort="1""#);
+    }
+    if sort.case_sensitive {
+        s.push_str(r#" caseSensitive="1""#);
+    }
+    if let Some(method) = &sort.sort_method {
+        let _ = write!(s, r#" sortMethod="{}""#, escape(method));
+    }
+    if sort.conditions.is_empty() {
+        s.push_str("/>");
+        return s;
+    }
+    s.push('>');
+    for key in &sort.conditions {
+        s.push_str("<sortCondition");
+        if key.descending {
+            s.push_str(r#" descending="1""#);
+        }
+        if let Some(by) = &key.sort_by {
+            let _ = write!(s, r#" sortBy="{}""#, escape(by));
+        }
+        let _ = write!(s, r#" ref="{}""#, key.range);
+        if let Some(list) = &key.custom_list {
+            let _ = write!(s, r#" customList="{}""#, escape(list));
+        }
+        if let Some(dxf) = key.dxf {
+            let _ = write!(s, r#" dxfId="{dxf}""#);
+        }
+        if let Some(set) = &key.icon_set {
+            let _ = write!(s, r#" iconSet="{}""#, escape(set));
+        }
+        if let Some(id) = key.icon_id {
+            let _ = write!(s, r#" iconId="{id}""#);
+        }
+        s.push_str("/>");
+    }
+    s.push_str("</sortState>");
+    s
+}
+
+/// The attributes of a colour or icon filter; nothing for the other kinds.
+fn marked_filter_attrs(filter: &crate::model::ColumnFilter) -> String {
+    use crate::model::ColumnFilter;
+    let mut s = String::new();
+    match filter {
+        ColumnFilter::Color { dxf, cell_color } => {
+            if let Some(dxf) = dxf {
+                let _ = write!(s, r#" dxfId="{dxf}""#);
+            }
+            if !*cell_color {
+                s.push_str(r#" cellColor="0""#);
+            }
+        }
+        ColumnFilter::Icon { icon_set, icon_id } => {
+            let _ = write!(s, r#" iconSet="{}""#, escape(icon_set));
+            if let Some(id) = icon_id {
+                let _ = write!(s, r#" iconId="{id}""#);
+            }
+        }
+        _ => {}
+    }
     s
 }
 
@@ -1885,6 +2077,11 @@ fn column_filter_xml(filter: &crate::model::ColumnFilter) -> String {
             if let Some(value) = filter_value {
                 let _ = write!(s, r#" filterVal="{}""#, escape(value));
             }
+            s.push_str("/>");
+            return s;
+        }
+        ColumnFilter::Color { .. } | ColumnFilter::Icon { .. } => {
+            s.push_str(&marked_filter_attrs(filter));
             s.push_str("/>");
             return s;
         }
@@ -2048,6 +2245,26 @@ fn sheet_views_xml(view: &crate::model::SheetView) -> String {
     }
     if view.right_to_left {
         s.push_str(r#" rightToLeft="1""#);
+    }
+    for (on, name) in [
+        (view.show_formulas, "showFormulas"),
+        (view.window_protection, "windowProtection"),
+    ] {
+        if on {
+            let _ = write!(s, r#" {name}="1""#);
+        }
+    }
+    for (on, name) in [
+        (view.show_outline_symbols, "showOutlineSymbols"),
+        (view.show_ruler, "showRuler"),
+        (view.show_white_space, "showWhiteSpace"),
+    ] {
+        if !on {
+            let _ = write!(s, r#" {name}="0""#);
+        }
+    }
+    if let Some(color) = view.grid_color {
+        let _ = write!(s, r#" defaultGridColor="0" colorId="{color}""#);
     }
     if let Some(cell) = view.top_left_cell {
         let _ = write!(s, r#" topLeftCell="{cell}""#);
@@ -2403,12 +2620,16 @@ mod tests {
             range: crate::coordinate::Range::parse("A1:C5").expect("a written range"),
             header_row_count: None,
             totals_row_count: None,
-            auto_filter: crate::coordinate::Range::parse("A1:C5").ok(),
+            auto_filter: crate::coordinate::Range::parse("A1:C5")
+                .ok()
+                .map(crate::model::AutoFilter::new),
+            sort_state: None,
             columns: vec![crate::model::table::TableColumn {
                 id: 1,
                 name: "Region".into(),
                 ..crate::model::table::TableColumn::default()
             }],
+            extensions: None,
             style: Some(crate::model::table::TableStyle {
                 name: Some("TableStyleMedium2".into()),
                 show_row_stripes: true,
@@ -2629,7 +2850,7 @@ mod tests {
     }
 
     /// The order `CT_Worksheet` fixes, as far as this writer emits it.
-    const WORKSHEET_ORDER: [&str; 22] = [
+    const WORKSHEET_ORDER: [&str; 23] = [
         "sheetPr",
         "dimension",
         "sheetViews",
@@ -2639,6 +2860,7 @@ mod tests {
         "sheetProtection",
         "protectedRanges",
         "autoFilter",
+        "sortState",
         "mergeCells",
         "conditionalFormatting",
         "dataValidations",

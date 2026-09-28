@@ -40,12 +40,12 @@ Full recalc on a book with 20k formulas costs ~70 ms. When you are editing,
 only what depends on the change needs to move:
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::formula::eval::recalculate_from;
 # use excelerate::reader;
 
 # let mut book = reader::read("tests/fixtures/sample.xlsx")?;
-let a1 = CellRef::parse("A1")?;
+let a1 = at!("A1");
 book.sheet_mut(0).unwrap().set(a1, 99.0);
 let touched = recalculate_from(&mut book, &[(0, a1)]);
 # let _ = touched;
@@ -56,12 +56,12 @@ To recompute a single formula instead - the cell itself, not the cells reading
 it - use `recalculate_cell`:
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::formula::eval::recalculate_cell;
 # use excelerate::reader;
 
 # let mut book = reader::read("tests/fixtures/sample.xlsx")?;
-let b4 = CellRef::parse("B4")?;
+let b4 = at!("B4");
 let was_a_formula = recalculate_cell(&mut book, 0, b4);
 # let _ = was_a_formula;
 # Ok::<(), excelerate::Error>(())
@@ -77,7 +77,7 @@ reading that range.
 Editing in a loop? Build the dependency index once and keep it:
 
 ```rust
-use excelerate::CellRef;
+use excelerate::at;
 use excelerate::formula::eval::Dependencies;
 # use excelerate::model::CellValue;
 # use excelerate::reader;
@@ -85,12 +85,12 @@ use excelerate::formula::eval::Dependencies;
 # let mut book = reader::read("tests/fixtures/sample.xlsx")?;
 let mut deps = Dependencies::of(&book);
 
-let a1 = CellRef::parse("A1")?;
+let a1 = at!("A1");
 book.sheet_mut(0).unwrap().set(a1, 1.0);
 deps.recalculate_from(&mut book, &[(0, a1)]);
 
 // Changed a *formula*, not a value? The index has to be told.
-let b1 = CellRef::parse("B1")?;
+let b1 = at!("B1");
 book.sheet_mut(0).unwrap().set(b1, CellValue::formula("A1*100"));
 deps.note(&book, 0, b1);
 # Ok::<(), excelerate::Error>(())
@@ -105,13 +105,14 @@ one at a time: 263 ms. Batch your edits; the pass is per call, not per cell.
 No cells involved, no book mutated:
 
 ```rust
+use excelerate::at;
 use excelerate::formula::{Value, eval::{Engine, Origin}};
 use excelerate::model::Spreadsheet;
 
 let book = Spreadsheet::new();
 let mut engine = Engine::new(&book);
 
-let answer = engine.eval(Origin::new(0, excelerate::CellRef::parse("A1")?), "ROUND(2/3, 4)");
+let answer = engine.eval(Origin::new(0, excelerate::at!("A1")), "ROUND(2/3, 4)");
 assert_eq!(answer, Value::Number(0.6667));
 # Ok::<(), excelerate::Error>(())
 ```

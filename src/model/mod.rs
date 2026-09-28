@@ -10,8 +10,10 @@ pub mod autofilter;
 pub mod chart;
 pub mod image;
 pub mod pivot;
+pub mod properties;
 pub mod protection;
 pub mod shape;
+pub mod sparkline;
 pub mod table;
 
 use crate::coordinate::{CellRef, Col, Range, Row};
@@ -22,8 +24,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 pub use autofilter::{
-    AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator,
+    AutoFilter, ColumnFilter, CustomFilter, DateGroup, FilterColumn, FilterOperator, SortCondition,
+    SortState,
 };
+pub use properties::{CustomProperty, DocumentProperties, PropertyValue};
 pub use protection::{PasswordHash, ProtectedRange, SheetProtection, WorkbookProtection};
 
 /// Longest string a cell can hold (`DataType::MAX_STRING_LENGTH`).
@@ -68,7 +72,7 @@ pub enum CellValue {
         formula: String,
         /// Cached result. It is stored in the file, which is what lets a
         /// workbook be read without recalculating it.
-        cached: Option<Box<CellValue>>,
+        cached: Option<Box<Self>>,
     },
 }
 
@@ -246,6 +250,20 @@ impl From<i64> for CellValue {
     }
 }
 
+impl From<i32> for CellValue {
+    /// What an integer literal is by default, so `sheet.set(at, 123)` needs
+    /// no suffix.
+    fn from(v: i32) -> Self {
+        Self::Number(f64::from(v))
+    }
+}
+
+impl From<u32> for CellValue {
+    fn from(v: u32) -> Self {
+        Self::Number(f64::from(v))
+    }
+}
+
 impl From<bool> for CellValue {
     fn from(v: bool) -> Self {
         Self::Bool(v)
@@ -278,9 +296,9 @@ pub struct TextRun {
 /// A note attached to a cell.
 ///
 /// The text is rich, as a comment usually starts with the author's name in
-/// bold. Where the note sits and how big its box is are not here: that lives
-/// in the sheet's VML drawing, which travels through unparsed - moving a
-/// comment is a drawing edit, and drawings are their own phase.
+/// bold. The box it is drawn in lives in the sheet's VML drawing, which
+/// travels as bytes; whether the box shows and how big it is are read out of
+/// it, and the writer changes just those in the bytes.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Comment {
     /// Who wrote it. Excel keeps the authors in a table and the comment points
@@ -289,6 +307,11 @@ pub struct Comment {
     pub author: String,
     /// The text, in runs.
     pub text: Vec<TextRun>,
+    /// Shown all the time, rather than when the pointer is over the cell.
+    pub visible: bool,
+    /// Width and height of the box in points; `None` for Excel's default,
+    /// 108 by 59.25, which is also how a box of that size reads.
+    pub size: Option<(f64, f64)>,
 }
 
 impl Comment {
@@ -573,6 +596,20 @@ pub struct SheetView {
     pub show_zeros: bool,
     /// Whether columns run right to left.
     pub right_to_left: bool,
+    /// Whether cells show their formulas instead of their values (Ctrl and the backquote key).
+    pub show_formulas: bool,
+    /// Whether the outline bars and buttons of grouped rows and columns are
+    /// drawn.
+    pub show_outline_symbols: bool,
+    /// Whether the ruler is drawn in page layout view.
+    pub show_ruler: bool,
+    /// Whether page layout view shows the margins between pages.
+    pub show_white_space: bool,
+    /// Whether the window of the sheet is locked in place.
+    pub window_protection: bool,
+    /// Grid line colour as an index into the palette, when the sheet does not
+    /// use the default one: `colorId` with `defaultGridColor="0"`.
+    pub grid_color: Option<u32>,
     /// Index of the workbook window this view belongs to.
     pub workbook_view_id: u32,
     /// Frozen or split panes, if any.
@@ -597,6 +634,12 @@ impl Default for SheetView {
             show_row_col_headers: true,
             show_zeros: true,
             right_to_left: false,
+            show_formulas: false,
+            show_outline_symbols: true,
+            show_ruler: true,
+            show_white_space: true,
+            window_protection: false,
+            grid_color: None,
             workbook_view_id: 0,
             pane: None,
             selections: Vec::new(),
@@ -788,7 +831,7 @@ pub struct DataValidation {
 }
 
 /// Properties of the sheet as a whole.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SheetProperties {
     /// Colour of the sheet's tab.
     pub tab_color: Option<Color>,
@@ -889,7 +932,7 @@ impl Orientation {
     clippy::struct_excessive_bools,
     reason = "the independent switches of one <pageSetup> element"
 )]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PageSetup {
     /// Paper size code; 1 is US Letter, 9 is A4.
     pub paper_size: Option<u32>,
@@ -950,7 +993,7 @@ pub struct PrintOptions {
     clippy::struct_excessive_bools,
     reason = "the independent switches of one <headerFooter> element"
 )]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeaderFooter {
     /// Whether even pages get their own header and footer.
     pub different_odd_even: bool,
@@ -1027,6 +1070,7 @@ pub struct PageBreak {
 
 /// Where a hyperlink points.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LinkTarget {
     /// Somewhere in this workbook, as `'Sheet 2'!A1`.
     Inside(String),
@@ -1035,7 +1079,7 @@ pub enum LinkTarget {
 }
 
 /// A hyperlink over a cell or a block of them.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hyperlink {
     /// The cells that carry the link.
     pub range: Range,
@@ -1052,7 +1096,7 @@ pub struct Hyperlink {
 /// Excel also keeps its own settings here under reserved names:
 /// `_xlnm.Print_Area` is the print area, `_xlnm.Print_Titles` the rows and
 /// columns repeated on every page.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DefinedName {
     /// The name as written.
     pub name: String,
@@ -1299,6 +1343,7 @@ impl Default for CfValue {
 
 /// The graphical part of a rule, for the three kinds that have one.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CfScale {
     /// A gradient between two or three colours.
     Color {
@@ -1340,7 +1385,7 @@ pub enum CfScale {
     clippy::struct_excessive_bools,
     reason = "the independent flags of one <cfRule> element"
 )]
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CfRule {
     /// What the rule tests.
     pub kind: CfRuleType,
@@ -1373,10 +1418,15 @@ pub struct CfRule {
     pub formulas: Vec<String>,
     /// The graphical part, for a colour scale, a data bar or an icon set.
     pub scale: Option<CfScale>,
+    /// The rule's own `<extLst>` as it stands in the file. A data bar keeps
+    /// its `x14:id` here, which ties it to the `x14:cfRule` in the sheet's
+    /// extensions that holds its negative colours and axis; without it Excel
+    /// draws the bar the 2007 way.
+    pub extensions: Option<String>,
 }
 
 /// A block of cells and the rules that paint it.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ConditionalFormat {
     /// The cells the rules cover.
     pub sqref: Vec<Range>,
@@ -1573,6 +1623,9 @@ pub struct Worksheet {
     pub protected_ranges: Vec<ProtectedRange>,
     /// The filter over a range of the sheet, when it has one.
     pub auto_filter: Option<AutoFilter>,
+    /// The last sort of a range made outside a filter (Data > Sort), when
+    /// Excel recorded one.
+    pub sort_state: Option<SortState>,
     /// Notes attached to cells, in address order.
     pub comments: BTreeMap<CellRef, Comment>,
     /// The pivot tables the sheet holds, read but not written: see
@@ -1592,6 +1645,9 @@ pub struct Worksheet {
     /// The shapes on the sheet - boxes, arrows, callouts, text boxes - read
     /// and written both: see [`crate::model::shape`].
     pub shapes: Vec<shape::Shape>,
+    /// The sparkline groups, read out of [`Self::extensions`]: see
+    /// [`crate::model::sparkline`].
+    pub sparklines: Vec<sparkline::SparklineGroup>,
     /// The sheet's `<extLst>`, carried as it was written.
     ///
     /// Everything newer than the 2006 schema hangs off this element:
@@ -1644,8 +1700,28 @@ impl Worksheet {
     }
 
     /// Writes a value, keeping the style of an existing cell.
+    ///
+    /// For a literal address, [`at!`](crate::at) checks it while compiling:
+    /// `sheet.set(at!("A1"), 123)`.
     pub fn set(&mut self, at: CellRef, value: impl Into<CellValue>) {
         self.entry(at).value = value.into();
+    }
+
+    /// The same by row and column counted from one, as Excel shows them:
+    /// `set_at(1, 1, 123)` writes `A1`.
+    ///
+    /// # Errors
+    /// [`Error::InvalidCellRef`] for a zero or a number past the sheet.
+    pub fn set_at(&mut self, row: u32, column: u32, value: impl Into<CellValue>) -> Result<()> {
+        self.set(CellRef::from_row_col(row, column)?, value);
+        Ok(())
+    }
+
+    /// The cell at a row and column counted from one; `None` for a cell that
+    /// holds nothing, and for one outside the sheet.
+    #[must_use]
+    pub fn get_at(&self, row: u32, column: u32) -> Option<&Cell> {
+        self.get(CellRef::from_row_col(row, column).ok()?)
     }
 
     /// Writes a value and the style it is shown in.
@@ -1999,12 +2075,25 @@ pub struct Spreadsheet {
     /// The attributes of `<calcPr>`: calculation mode, iteration limits, and
     /// the id of the engine that last computed the workbook.
     pub calculation_properties: Vec<(String, String)>,
+    /// The rest of the first `<workbookView>`, as the file wrote it: the first
+    /// tab shown in the tab bar (`firstSheet`), the tab bar's share of the
+    /// window (`tabRatio`), whether tabs and scroll bars show.
+    ///
+    /// `activeTab` is [`Spreadsheet::set_active`], and the window's position
+    /// and size are left out: they are the geometry of someone else's screen.
+    pub workbook_view: Vec<(String, String)>,
     /// What changing the workbook's shape refuses.
     pub protection: WorkbookProtection,
     /// Parts attached to the workbook, such as links to other workbooks.
     pub attachments: Vec<Attachment>,
-    /// Parts attached to the package itself: the document properties.
+    /// Parts attached to the package itself: the document properties and a
+    /// thumbnail, when the file has one.
     pub doc_props: Vec<Attachment>,
+    /// Title, author, dates and the user's own fields.
+    ///
+    /// Written back by comparison: a part whose content the model still
+    /// states travels as the bytes it came in.
+    pub properties: properties::DocumentProperties,
     /// Every part carried through unmodelled, in no particular order.
     pub parts: Vec<OpaquePart>,
     /// The cached values of the workbooks this one links to, in the order
@@ -2035,6 +2124,10 @@ pub struct Spreadsheet {
     /// The stylesheet's `<colors>`: the palette an `indexed` colour counts
     /// into, and the colours last picked in the dialog.
     pub palette: Option<String>,
+    /// Whether the book is a template (`.xltx`, `.xltm`). Only the content
+    /// type of the main part says so, and Excel will not open a template
+    /// written as a plain workbook; the xlsx reader sets it from that type.
+    pub template: bool,
 }
 
 impl Default for Spreadsheet {
@@ -2048,9 +2141,11 @@ impl Default for Spreadsheet {
             defined_names: Vec::new(),
             workbook_properties: Vec::new(),
             calculation_properties: Vec::new(),
+            workbook_view: Vec::new(),
             protection: WorkbookProtection::default(),
             attachments: Vec::new(),
             doc_props: Vec::new(),
+            properties: properties::DocumentProperties::default(),
             parts: Vec::new(),
             external: Vec::new(),
             theme: None,
@@ -2059,6 +2154,7 @@ impl Default for Spreadsheet {
             style_extensions: None,
             table_styles: None,
             palette: None,
+            template: false,
         }
     }
 }
@@ -2273,11 +2369,8 @@ mod tests {
         assert!(sheet.remove(at("B5")).is_none());
         assert_eq!(sheet.len(), 4);
         assert_eq!(sheet.dimension(), Some(Range::parse("A1:C2").unwrap()));
-        let row: Vec<crate::Col> = sheet
-            .row_cells(Row::new(1).unwrap())
-            .map(|(c, _)| c)
-            .collect();
-        assert_eq!(row.len(), 3);
+
+        assert_eq!(sheet.row_cells(Row::new(1).unwrap()).count(), 3);
     }
 
     use super::{CellValue, MAX_STRING_LENGTH, Spreadsheet, Worksheet};

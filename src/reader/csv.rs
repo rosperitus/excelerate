@@ -241,7 +241,7 @@ fn infer(text: &str) -> char {
 /// Lines with everything between quotes removed, for counting delimiters.
 ///
 fn unquoted_lines(text: &str) -> impl Iterator<Item = String> {
-    let mut chars = text.chars().peekable();
+    let mut chars = text.chars();
     core::iter::from_fn(move || {
         let mut line = String::new();
         let mut quoted = false;

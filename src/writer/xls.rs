@@ -67,7 +67,16 @@ pub fn write_xls(book: &Spreadsheet, path: impl AsRef<std::path::Path>) -> Resul
 /// As [`write_xls`].
 pub fn write_xls_to<W: Write>(book: &Spreadsheet, mut sink: W) -> Result<()> {
     let bytes = workbook_stream(book)?;
-    let container = super::ole::container("Workbook", &bytes);
+    // The workbook, then the title, author and the user's fields beside it.
+    let properties = super::properties::ole_streams(&book.properties);
+    let named: Vec<(&str, &[u8])> = std::iter::once(("Workbook", bytes.as_slice()))
+        .chain(
+            properties
+                .iter()
+                .map(|(name, data)| (*name, data.as_slice())),
+        )
+        .collect();
+    let container = super::ole::streams(&named);
     sink.write_all(&container)
         .map_err(|e| Error::Xls(e.to_string()))?;
     sink.flush().map_err(|e| Error::Xls(e.to_string()))
@@ -122,10 +131,16 @@ struct Plan {
     format_of: Vec<u16>,
     /// Format codes to spell out, with the index each takes.
     formats: Vec<(u16, String)>,
-    /// Every distinct string, in the order the table holds them.
-    strings: Vec<String>,
-    /// Where each string sits in the table.
+    /// Every distinct string, in the order the table holds them, with its
+    /// formatting runs: (first character, font index).
+    strings: Vec<(String, Vec<(u16, u16)>)>,
+    /// Where each plain string sits in the table.
     string_index: HashMap<String, u32>,
+    /// Where each rich string sits, keyed by its text and runs: the same text
+    /// in two cells of different fonts is two strings.
+    rich_index: HashMap<(String, Vec<(u16, u16)>), u32>,
+    /// The rich string of each rich cell.
+    rich_of: HashMap<(usize, CellRef), u32>,
     /// How many string cells there are altogether.
     string_uses: u32,
     /// What each formula cell works out to. A formula is written as its
@@ -154,6 +169,8 @@ impl Plan {
             formats: Vec::new(),
             strings: Vec::new(),
             string_index: HashMap::new(),
+            rich_index: HashMap::new(),
+            rich_of: HashMap::new(),
             string_uses: 0,
             resolved: HashMap::new(),
             compiled: HashMap::new(),
@@ -202,12 +219,26 @@ impl Plan {
                     }
                     other => other.clone(),
                 };
-                if let Some(text) = string_of(&value) {
+                if let CellValue::RichText(runs) = &value {
+                    let base = book
+                        .styles
+                        .get(cell.style)
+                        .map(|s| s.font.clone())
+                        .unwrap_or_default();
+                    let key = plan.rich_string(runs, &base);
+                    let next = u32::try_from(plan.strings.len()).unwrap_or(0);
+                    let slot = *plan.rich_index.entry(key.clone()).or_insert_with(|| {
+                        plan.strings.push(key);
+                        next
+                    });
+                    plan.rich_of.insert((index, at), slot);
+                    plan.string_uses += 1;
+                } else if let Some(text) = string_of(&value) {
                     plan.string_uses += 1;
                     if !plan.string_index.contains_key(&text) {
                         let index = u32::try_from(plan.strings.len()).unwrap_or(0);
                         plan.string_index.insert(text.clone(), index);
-                        plan.strings.push(text);
+                        plan.strings.push((text, Vec::new()));
                     }
                 }
             }
@@ -221,6 +252,34 @@ impl Plan {
             plan.names.push(compiled);
         }
         plan
+    }
+
+    /// A rich string as the table keeps it: the text, and where each run
+    /// starts in UTF-16 units with the font it is drawn in. A run's font is
+    /// the cell's own with what the run changes laid over it, since BIFF gives
+    /// a run a whole font record.
+    fn rich_string(
+        &mut self,
+        runs: &[crate::model::TextRun],
+        base: &crate::style::Font,
+    ) -> (String, Vec<(u16, u16)>) {
+        let mut text = String::new();
+        let mut starts = Vec::with_capacity(runs.len());
+        let mut units = 0usize;
+        for run in runs.iter().filter(|r| !r.text.is_empty()) {
+            let font = run
+                .font
+                .as_ref()
+                .map_or_else(|| base.clone(), |f| base.with(f));
+            // A string holds 65535 characters at most; a run past that has
+            // nothing left to format.
+            if let Ok(first) = u16::try_from(units) {
+                starts.push((first, plan_font(&mut self.fonts, &font)));
+            }
+            units += run.text.encode_utf16().count();
+            text.push_str(&run.text);
+        }
+        (text, starts)
     }
 
     /// The globals substream, up to but not including its `EOF`.
@@ -337,8 +396,8 @@ impl Plan {
             first.extend_from_slice(&self.string_uses.to_le_bytes());
             first.extend_from_slice(&unique.to_le_bytes());
         }
-        for text in &self.strings {
-            write_sst_string(&mut chunks, text);
+        for (text, runs) in &self.strings {
+            write_sst_string(&mut chunks, text, runs);
         }
         let mut chunks = chunks.into_iter();
         if let Some(first) = chunks.next() {
@@ -558,9 +617,12 @@ fn substream(sheet: &Worksheet, index: usize, plan: &Plan) -> Vec<u8> {
 /// record Excel opens the sheet with no gridlines and no headings, which is
 /// not what the model said.
 fn window(out: &mut Vec<u8>, view: &SheetView) {
-    // Default gridline colour, outline symbols, selected, in page view off.
-    let mut flags = 0x06A0u16;
+    // Selected, in page view off.
+    let mut flags = 0x0600u16;
     for (on, bit) in [
+        (view.show_formulas, 0x0001),
+        (view.grid_color.is_none(), 0x0020),
+        (view.show_outline_symbols, 0x0080),
         (view.show_grid_lines, 0x0002),
         (view.show_row_col_headers, 0x0004),
         (view.show_zeros, 0x0010),
@@ -581,7 +643,14 @@ fn window(out: &mut Vec<u8>, view: &SheetView) {
     let mut data = flags.to_le_bytes().to_vec();
     data.extend_from_slice(&top.to_le_bytes());
     data.extend_from_slice(&left.to_le_bytes());
-    data.extend_from_slice(&0x0000_0040u32.to_le_bytes());
+    // `icvHdr`, the grid colour: 64 is the system window-text colour the
+    // default flag stands for.
+    let icv = view
+        .grid_color
+        .and_then(|c| u16::try_from(c).ok())
+        .unwrap_or(0x40);
+    data.extend_from_slice(&icv.to_le_bytes());
+    data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
@@ -737,12 +806,10 @@ fn cell_record(
             data.push(1);
             record(out, 0x0205, &data);
         }
-        // Rich text keeps only its text; the old format holds the runs in the
-        // string table rather than on the cell.
+        // The runs live in the string table, not on the cell.
         CellValue::RichText(_) => {
-            let text = string_of(&value).unwrap_or_default();
             head(&mut data);
-            let index = plan.string_index.get(&text).copied().unwrap_or(0);
+            let index = plan.rich_of.get(&(sheet, at)).copied().unwrap_or(0);
             data.extend_from_slice(&index.to_le_bytes());
             record(out, 0x00FD, &data);
         }
@@ -1121,16 +1188,21 @@ fn pattern_code(pattern: Pattern) -> u8 {
 }
 
 /// The workbook's colours laid out in a palette, with the theme that resolves
-/// its theme colours.
+/// its theme colours, read once: every colour of every style asks it.
 struct Colors {
     builder: palette::Builder,
-    theme: Option<String>,
+    theme: Vec<u32>,
 }
 
 impl Colors {
-    /// Collects every colour the style table uses, in style order.
+    /// Collects every colour the style table uses, in style order, then the
+    /// colours of rich text runs.
     fn plan(book: &Spreadsheet) -> Self {
-        let theme = book.theme.clone();
+        let theme = book
+            .theme
+            .as_deref()
+            .map(palette::theme_colors)
+            .unwrap_or_default();
         let mut used = Vec::new();
         for style in book.styles.all() {
             let borders = &style.borders;
@@ -1152,8 +1224,17 @@ impl Colors {
             used.extend(
                 colors
                     .into_iter()
-                    .filter_map(|c| palette::rgb_of(c, theme.as_deref())),
+                    .filter_map(|c| palette::rgb_in(c, &theme)),
             );
+        }
+        // The runs of rich text draw in colours of their own.
+        for sheet in book.sheets() {
+            for (_, cell) in sheet.iter() {
+                if let CellValue::RichText(runs) = &cell.value {
+                    let colors = runs.iter().filter_map(|r| r.font.as_ref()?.color.as_ref());
+                    used.extend(colors.filter_map(|c| palette::rgb_in(c, &theme)));
+                }
+            }
         }
         Self {
             builder: palette::Builder::plan(&used),
@@ -1163,8 +1244,7 @@ impl Colors {
 
     /// The palette index for a colour, or `automatic` for one with no value.
     fn index(&self, color: &Color, automatic: u16) -> u16 {
-        palette::rgb_of(color, self.theme.as_deref())
-            .map_or(automatic, |rgb| self.builder.index_of(rgb))
+        palette::rgb_in(color, &self.theme).map_or(automatic, |rgb| self.builder.index_of(rgb))
     }
 }
 
@@ -1207,21 +1287,26 @@ fn push_units(out: &mut Vec<u8>, units: &[u16], wide: bool) {
 ///
 /// A record that runs out mid-string is continued by a `CONTINUE` whose first
 /// byte says the width of what follows - the same rule the reader takes apart.
-fn write_sst_string(chunks: &mut Vec<Vec<u8>>, text: &str) {
+fn write_sst_string(chunks: &mut Vec<Vec<u8>>, text: &str, runs: &[(u16, u16)]) {
     let units: Vec<u16> = text.encode_utf16().take(0xFFFF).collect();
     let wide = units.iter().any(|&u| u > 0xFF);
     let size = if wide { 2 } else { 1 };
+    let runs = &runs[..runs.len().min(0xFFFF)];
+    let header = if runs.is_empty() { 3 } else { 5 };
 
     // The header is never split: a chunk with no room for it starts a new one.
     if chunks
         .last()
-        .is_none_or(|chunk| chunk.len() + 3 + size > MAX_PAYLOAD)
+        .is_none_or(|chunk| chunk.len() + header + size > MAX_PAYLOAD)
     {
         chunks.push(Vec::new());
     }
     if let Some(chunk) = chunks.last_mut() {
         chunk.extend_from_slice(&u16::try_from(units.len()).unwrap_or(0).to_le_bytes());
-        chunk.push(u8::from(wide));
+        chunk.push(u8::from(wide) | if runs.is_empty() { 0 } else { 0x08 });
+        if !runs.is_empty() {
+            chunk.extend_from_slice(&u16::try_from(runs.len()).unwrap_or(0).to_le_bytes());
+        }
     }
 
     let mut written = 0;
@@ -1239,6 +1324,20 @@ fn write_sst_string(chunks: &mut Vec<Vec<u8>>, text: &str) {
             push_units(chunk, &units[written..written + take], wide);
         }
         written += take;
+    }
+    // The runs follow the characters. A `CONTINUE` inside them opens with no
+    // flag byte, and one run is never cut.
+    for &(first, font) in runs {
+        if chunks
+            .last()
+            .is_none_or(|chunk| chunk.len() + 4 > MAX_PAYLOAD)
+        {
+            chunks.push(Vec::new());
+        }
+        if let Some(chunk) = chunks.last_mut() {
+            chunk.extend_from_slice(&first.to_le_bytes());
+            chunk.extend_from_slice(&font.to_le_bytes());
+        }
     }
 }
 

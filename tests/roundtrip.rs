@@ -1185,6 +1185,7 @@ fn notes_on_cells_survive_the_cycle() {
                     font: None,
                 },
             ],
+            ..Comment::default()
         },
     );
     // A note on a cell that holds nothing is still a note.
@@ -1196,6 +1197,7 @@ fn notes_on_cells_survive_the_cycle() {
                 text: "без автора".into(),
                 font: None,
             }],
+            ..Comment::default()
         },
     );
     book.add_sheet(sheet).unwrap();
@@ -1243,6 +1245,7 @@ fn the_workbook_and_style_extension_lists_travel_too() {
 /// None of it is modelled, so it has to travel whole or be lost.
 #[test]
 fn the_sheet_extension_list_travels_whole() {
+    use excelerate::model::sparkline::{Sparkline, SparklineGroup, SparklineKind};
     let sparklines = concat!(
         r#"<extLst><ext uri="{05C60535-1F16-4fd2-B633-F4F36F0B64E0}" "#,
         r#"xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">"#,
@@ -1256,6 +1259,16 @@ fn the_sheet_extension_list_travels_whole() {
     let mut sheet = Worksheet::new("Лист1").unwrap();
     sheet.set(at("B1"), 1.0);
     sheet.extensions = Some(sparklines.to_owned());
+    // The model says what the extension says, as the reader leaves it; the
+    // writer keeps the bytes only while the two agree.
+    let mut group = SparklineGroup::new(SparklineKind::Column);
+    group.attributes.clear();
+    group.colors.clear();
+    group.sparklines.push(Sparkline {
+        data: Some("Лист1!B1:E1".into()),
+        location: at("F1"),
+    });
+    sheet.sparklines.push(group);
     book.add_sheet(sheet).unwrap();
 
     let back = cycle(&book);
@@ -1364,6 +1377,62 @@ fn a_workbook_with_macros_is_written_as_macro_enabled() {
     );
 }
 
+/// A template is told apart from a workbook only by the content type of its
+/// main part; Excel refuses an `.xltx` written as a plain workbook. The flag
+/// comes back from reading, so a template opened and saved stays one.
+#[test]
+fn a_template_is_written_and_read_back_as_a_template() {
+    use excelerate::model::{Attachment, OpaquePart};
+    let write = |book: &Spreadsheet| {
+        let mut bytes = Vec::new();
+        write_xlsx_to(book, Cursor::new(&mut bytes)).unwrap();
+        let mut zip = zip::ZipArchive::new(Cursor::new(bytes.clone())).unwrap();
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name("[Content_Types].xml").unwrap(), &mut text)
+            .unwrap();
+        (bytes, text)
+    };
+    let main = |kind: &str| format!(r#"PartName="/xl/workbook.xml" ContentType="{kind}""#);
+
+    let mut book = Spreadsheet::new();
+    assert!(!book.template);
+    let (_, text) = write(&book);
+    assert!(
+        text.contains(&main(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"
+        )),
+        "{text}"
+    );
+
+    book.template = true;
+    let (bytes, text) = write(&book);
+    assert!(
+        text.contains(&main(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.template.main+xml"
+        )),
+        "{text}"
+    );
+    assert!(read_xlsx_from(Cursor::new(bytes)).unwrap().template);
+
+    book.parts.push(OpaquePart {
+        path: "xl/vbaProject.bin".to_owned(),
+        content_type: Some("application/vnd.ms-office.vbaProject".to_owned()),
+        data: vec![0xD0, 0xCF, 0x11, 0xE0],
+    });
+    book.attachments.push(Attachment {
+        kind: "http://schemas.microsoft.com/office/2006/relationships/vbaProject".to_owned(),
+        target: "xl/vbaProject.bin".to_owned(),
+    });
+    let (bytes, text) = write(&book);
+    assert!(
+        text.contains(&main(
+            "application/vnd.ms-excel.template.macroEnabled.main+xml"
+        )),
+        "{text}"
+    );
+    assert!(read_xlsx_from(Cursor::new(bytes)).unwrap().template);
+}
+
 /// `chart1.xlsx` keeps 50 differential formats in `<dxfs>` and 48 more for its
 /// slicer styles in `<extLst>`. The extension travels whole; read as the
 /// part's own, its formats were added to the book's and written out again on
@@ -1389,6 +1458,7 @@ fn comment_boxes_follow_the_comments() {
             text: text.into(),
             font: None,
         }],
+        ..Comment::default()
     };
     let cycle = |book: &Spreadsheet| {
         let mut bytes = std::io::Cursor::new(Vec::new());
@@ -1499,4 +1569,166 @@ fn an_array_formula_keeps_its_area_in_every_format() {
         panic!("B1 is not a formula")
     };
     assert_eq!(formula, "TRANSPOSE(A1:A3)");
+}
+
+/// A data bar written by Excel 2010 and later keeps its negative colours and
+/// axis in the sheet's `<extLst>`, tied to the rule by an `x14:id` in the
+/// rule's own `<extLst>`. Losing the id leaves the bar drawn the 2007 way.
+/// The sheet's extensions hold an `x14:cfRule` too, with the same local name
+/// as the rule, and it must not be taken for one.
+#[test]
+fn a_data_bar_keeps_the_id_that_ties_it_to_its_extension() {
+    use std::io::{Read, Write};
+
+    const ID: &str = "{52C91D7A-ADD1-47EE-A175-500D6F9ACD3B}";
+    let x14 = r#"xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main""#;
+    let rule = format!(
+        r#"<conditionalFormatting sqref="A1:A3"><cfRule type="dataBar" priority="1"><dataBar><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar><extLst><ext uri="{{B025F937-C7B1-47D3-B67F-A62EFF666E3E}}" {x14}><x14:id>{ID}</x14:id></ext></extLst></cfRule></conditionalFormatting>"#
+    );
+    let sheet_ext = format!(
+        r#"<extLst><ext uri="{{78C0D931-6437-407d-A8EE-F0AAD7539E65}}" {x14}><x14:conditionalFormattings><x14:conditionalFormatting xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"><x14:cfRule type="dataBar" id="{ID}"><x14:dataBar minLength="0" maxLength="100"><x14:cfvo type="autoMin"/><x14:cfvo type="autoMax"/></x14:dataBar></x14:cfRule><xm:sqref>A1:A3</xm:sqref></x14:conditionalFormatting></x14:conditionalFormattings></ext></extLst>"#
+    );
+
+    let mut book = Spreadsheet::new();
+    book.sheet_mut(0).unwrap().entry(at("A1")).value = CellValue::Number(1.0);
+    let mut plain = Vec::new();
+    write_xlsx_to(&book, Cursor::new(&mut plain)).unwrap();
+    let mut source = zip::ZipArchive::new(Cursor::new(plain)).unwrap();
+    let mut out = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    for i in 0..source.len() {
+        let mut part = source.by_index(i).unwrap();
+        let name = part.name().to_owned();
+        let mut data = String::new();
+        part.read_to_string(&mut data).unwrap();
+        if name == "xl/worksheets/sheet1.xml" {
+            data = data.replace("</worksheet>", &format!("{rule}{sheet_ext}</worksheet>"));
+        }
+        out.start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        out.write_all(data.as_bytes()).unwrap();
+    }
+    let bytes = out.finish().unwrap().into_inner();
+
+    let book = read_xlsx_from(Cursor::new(bytes)).unwrap();
+    for book in [cycle(&book), book] {
+        let sheet = &book.sheets()[0];
+        assert_eq!(sheet.conditional_formats.len(), 1);
+        let rules = &sheet.conditional_formats[0].rules;
+        assert_eq!(rules.len(), 1);
+        assert!(
+            rules[0]
+                .extensions
+                .as_deref()
+                .is_some_and(|x| x.contains(ID))
+        );
+        assert!(
+            sheet
+                .extensions
+                .as_deref()
+                .is_some_and(|x| x.contains("x14:conditionalFormattings"))
+        );
+    }
+}
+
+#[test]
+fn sorts_colour_and_icon_filters_and_view_switches_survive() {
+    use excelerate::model::{AutoFilter, ColumnFilter, SortCondition, SortState};
+    let range = |s: &str| Range::parse(s).unwrap();
+    let mut sheet = Worksheet::new("S").unwrap();
+    sheet.set(at("A1"), CellValue::text("h"));
+    let mut filter = AutoFilter::new(range("A1:C9"));
+    filter.column_at(0).filter = Some(ColumnFilter::Color {
+        dxf: Some(0),
+        cell_color: false,
+    });
+    filter.column_at(2).filter = Some(ColumnFilter::Icon {
+        icon_set: "3Arrows".into(),
+        icon_id: Some(2),
+    });
+    let mut sort = SortState::new(range("A2:C9"));
+    let mut key = SortCondition::new(range("B2:B9"));
+    key.descending = true;
+    key.custom_list = Some("Mon,Tue".into());
+    sort.conditions.push(key);
+    filter.sort_state = Some(sort);
+    sheet.auto_filter = Some(filter);
+    // Across columns, beside the filter rather than inside it: COIN has one.
+    let mut across = SortState::new(range("E1:H4"));
+    across.column_sort = true;
+    across.conditions.push(SortCondition::new(range("E1:H1")));
+    sheet.sort_state = Some(across);
+    sheet.view.show_formulas = true;
+    sheet.view.show_outline_symbols = false;
+    sheet.view.show_white_space = false;
+    sheet.view.grid_color = Some(10);
+    let mut book = Spreadsheet::empty();
+    book.add_sheet(sheet).unwrap();
+
+    let after = cycle(&book);
+    let (before, after) = (&book.sheets()[0], &after.sheets()[0]);
+    assert_eq!(before.auto_filter, after.auto_filter);
+    assert_eq!(before.sort_state, after.sort_state);
+    assert_eq!(before.view, after.view);
+}
+
+#[test]
+fn sparklines_survive_beside_the_extensions_they_share_a_list_with() {
+    use excelerate::model::sparkline::{Sparkline, SparklineGroup, SparklineKind};
+    let mut sheet = Worksheet::new("S").unwrap();
+    sheet.set(at("A1"), CellValue::Number(1.0));
+    // An extension that is not ours, which must come back untouched.
+    let other = r#"<ext uri="{78C0D931-6437-407d-A8EE-F0AAD7539E65}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main"><x14:id>{1}</x14:id></ext>"#;
+    sheet.extensions = Some(format!("<extLst>{other}</extLst>"));
+    let mut group = SparklineGroup::new(SparklineKind::WinLoss);
+    group.negative = true;
+    group.sparklines.push(Sparkline {
+        data: Some("S!A1:D1".into()),
+        location: at("E1"),
+    });
+    sheet.sparklines.push(group);
+    let mut book = Spreadsheet::empty();
+    book.add_sheet(sheet).unwrap();
+
+    let once = cycle(&book);
+    assert_eq!(once.sheets()[0].sparklines, book.sheets()[0].sparklines);
+    assert!(
+        once.sheets()[0]
+            .extensions
+            .as_deref()
+            .unwrap()
+            .contains(other)
+    );
+
+    // Removing them leaves the other extension alone.
+    let mut none = once;
+    none.sheet_mut(0).unwrap().sparklines.clear();
+    let twice = cycle(&none);
+    assert!(twice.sheets()[0].sparklines.is_empty());
+    assert_eq!(
+        twice.sheets()[0].extensions.as_deref(),
+        Some(format!("<extLst>{other}</extLst>").as_str())
+    );
+}
+
+#[test]
+fn the_tab_bar_keeps_its_settings_but_not_a_first_tab_past_the_active_one() {
+    let mut book = Spreadsheet::empty();
+    for name in ["A", "B", "C"] {
+        book.add_sheet(Worksheet::new(name).unwrap()).unwrap();
+    }
+    book.set_active(1).unwrap();
+    book.workbook_view = vec![
+        ("firstSheet".into(), "2".into()),
+        ("tabRatio".into(), "750".into()),
+        ("showSheetTabs".into(), "0".into()),
+    ];
+    let back = cycle(&book);
+    assert_eq!(
+        back.workbook_view,
+        [
+            ("firstSheet".to_owned(), "1".to_owned()),
+            ("tabRatio".to_owned(), "750".to_owned()),
+            ("showSheetTabs".to_owned(), "0".to_owned()),
+        ]
+    );
 }

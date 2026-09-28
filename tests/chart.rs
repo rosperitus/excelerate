@@ -13,9 +13,11 @@ use excelerate::coordinate::{Col, Row};
 use excelerate::edit::insert_rows;
 use excelerate::model::Spreadsheet;
 use excelerate::model::chart::{
-    Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartEx, ChartText, DataSource, Dimension,
-    DimensionRole, ExSeries, Grouping, LegendPosition, Marker, Plot, PlotKind, Series,
-    SeriesLayout, Title,
+    Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartColor, ChartEx, ChartLines, ChartText,
+    ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint, DataSource, Dimension,
+    DimensionRole, ExSeries, Fill, GradientPath, GradientStop, Grouping, LabelPosition,
+    LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, Series, SeriesLayout,
+    SeriesMarker, ShapeFormat, Title, UpDownBars,
 };
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
@@ -96,8 +98,12 @@ fn a_combination_chart_is_read_whole() {
         panic!("dates are numbers");
     };
     assert_eq!(format_code.as_deref(), Some("m/d/yyyy"));
-    // The fill is not modelled, but it is carried in place.
-    assert!(total.markup.before_data.contains("00B150"));
+    // The fill is modelled; what the model does not name is carried in place.
+    assert_eq!(
+        total.format.as_ref().unwrap().fill,
+        Some(Fill::Solid(ChartColor::rgb(0x00_B150)))
+    );
+    assert!(total.markup.after_format.contains("invertIfNegative"));
 
     // Each plot has its own pair of axes, and each id a plot names exists.
     assert_eq!(chart.axes.len(), 4);
@@ -404,7 +410,7 @@ fn a_plot_with_no_axes_is_refused() {
 fn said(chart: &ChartEx) -> (String, Anchor, Option<ChartText>, Vec<ExSeries>) {
     let plain = |text: &ChartText| match text {
         ChartText::Text { text, .. } => ChartText::text(text),
-        other @ ChartText::Reference { .. } => other.clone(),
+        other => other.clone(),
     };
     (
         chart.name.clone(),
@@ -517,4 +523,758 @@ fn a_funnel_made_in_code_is_written() {
         again.sheet(0).unwrap().extended_charts,
         sheet.extended_charts
     );
+}
+
+/// The chart whose part is `path`.
+fn chart_at<'a>(book: &'a Spreadsheet, path: &str) -> &'a Chart {
+    book.sheets()
+        .iter()
+        .flat_map(|s| &s.charts)
+        .find(|c| c.origin.as_ref().is_some_and(|o| o.part() == path))
+        .unwrap_or_else(|| panic!("a chart in {path}"))
+}
+
+fn chart_at_mut<'a>(book: &'a mut Spreadsheet, path: &str) -> &'a mut Chart {
+    let sheet = (0..book.sheets().len())
+        .find(|&i| {
+            book.sheet(i)
+                .unwrap()
+                .charts
+                .iter()
+                .any(|c| chart_part(c) == path)
+        })
+        .unwrap_or_else(|| panic!("a chart in {path}"));
+    book.sheet_mut(sheet)
+        .unwrap()
+        .charts
+        .iter_mut()
+        .find(|c| chart_part(c) == path)
+        .unwrap()
+}
+
+fn text_of(book: &Spreadsheet, path: &str) -> String {
+    String::from_utf8(part(book, path).to_vec()).unwrap()
+}
+
+#[test]
+fn series_formatting_and_labels_are_read() {
+    let book = open("chart2.xlsx");
+    let chart = &book.sheet(0).unwrap().charts[0];
+    let series = &chart.plots[1].series;
+    assert_eq!(
+        series[0].format.as_ref().unwrap().fill,
+        Some(Fill::Solid(ChartColor::rgb(0xFF_C000)))
+    );
+    // The third series is an invisible spacer stacked on the second.
+    let spacer = &series[1];
+    assert_eq!(spacer.format.as_ref().unwrap().fill, Some(Fill::None));
+    assert!(spacer.labels.as_ref().unwrap().deleted);
+    let plot_labels = chart.plots[0].labels.as_ref().unwrap();
+    assert!(!plot_labels.deleted && !plot_labels.show_value && !plot_labels.show_percent);
+
+    let book = open("chart1.xlsx");
+    // A pie that gives each slice its colour.
+    let pie = &chart_at(&book, "xl/charts/chart4.xml").plots[0];
+    assert!(matches!(pie.kind, PlotKind::Pie { .. }));
+    let points = &pie.series[0].data_points;
+    assert_eq!(
+        points.iter().map(|p| p.index).collect::<Vec<_>>(),
+        [0, 1, 2, 3, 4]
+    );
+    let slice = points[1].format.as_ref().unwrap();
+    assert_eq!(slice.fill, Some(Fill::Solid(ChartColor::rgb(0x66_FFFF))));
+    assert_eq!(
+        slice.line,
+        Some(LineFormat {
+            fill: Some(Fill::None),
+            width: Some(19050)
+        })
+    );
+    // A linear gradient, its stops in the order the file lists them.
+    assert_eq!(
+        points[0].format.as_ref().unwrap().fill,
+        Some(Fill::Gradient {
+            stops: vec![
+                GradientStop {
+                    position: 100_000,
+                    color: ChartColor::rgb(0x89_40D9)
+                },
+                GradientStop {
+                    position: 0,
+                    color: ChartColor::rgb(0xB7_2CEE)
+                },
+            ],
+            angle: Some(7_200_000),
+            path: None,
+        })
+    );
+    assert!(pie.labels.is_some());
+
+    // A dashed line with no markers.
+    let line = &chart_at(&book, "xl/charts/chart2.xml").plots;
+    let planned = line
+        .iter()
+        .flat_map(|p| &p.series)
+        .find(|s| s.name.as_ref().and_then(ChartText::shown) == Some("Planned"))
+        .unwrap();
+    let stroke = planned.format.as_ref().unwrap().line.as_ref().unwrap();
+    assert_eq!(stroke.width, Some(19050));
+    assert_eq!(stroke.fill, Some(Fill::Solid(ChartColor::rgb(0xA5_14F6))));
+    assert_eq!(
+        planned.marker.as_ref().unwrap().symbol,
+        Some(MarkerSymbol::None)
+    );
+
+    // Labels above the points, and a theme colour with its transforms.
+    let chart = chart_at(&book, "xl/charts/chart102.xml");
+    let labels: Vec<&DataLabels> = chart
+        .plots
+        .iter()
+        .flat_map(|p| p.series.iter().filter_map(|s| s.labels.as_ref()))
+        .collect();
+    assert!(
+        labels
+            .iter()
+            .any(|l| l.show_value && l.position == Some(LabelPosition::Top)),
+        "{labels:?}"
+    );
+    let book = open("fixtures/chart.xlsx");
+    let labels = book.sheet(0).unwrap().charts[0].plots[0].series[0]
+        .labels
+        .clone()
+        .unwrap();
+    assert!(!labels.show_value && !labels.deleted);
+}
+
+#[test]
+fn a_theme_colour_resolves_through_its_transforms() {
+    let accent = |transforms| ChartColor {
+        base: ColorBase::Scheme("accent1".into()),
+        transforms,
+    };
+    // Office's accent 1 and Excel's own names for two of its shades.
+    assert_eq!(accent(vec![]).resolve(None), Some(0x44_72C4));
+    assert_eq!(
+        accent(vec![ColorTransform::LumMod(75000)]).resolve(None),
+        Some(0x2F_5597),
+        "darker 25%"
+    );
+    // Excel rounds through its own HSL; a unit per channel apart is the same
+    // colour.
+    let lighter = accent(vec![
+        ColorTransform::LumMod(60000),
+        ColorTransform::LumOff(40000),
+    ])
+    .resolve(None)
+    .unwrap();
+    let excel: u32 = 0x8F_AADC;
+    for shift in [16, 8, 0] {
+        let channel = |c: u32| i64::from((c >> shift) & 0xFF);
+        assert!(
+            (channel(lighter) - channel(excel)).abs() <= 1,
+            "lighter 40%: {lighter:06X}"
+        );
+    }
+    assert_eq!(ChartColor::scheme("phClr").resolve(None), None);
+}
+
+#[test]
+fn a_changed_series_colour_is_written_and_read_back() {
+    let mut book = open("chart2.xlsx");
+    let path = chart_part(&book.sheet(0).unwrap().charts[0]).to_owned();
+    let before = text_of(&book, &path);
+    let chart = &mut book.sheet_mut(0).unwrap().charts[0];
+    let red = Some(Fill::Solid(ChartColor::rgb(0xFF_0000)));
+    chart.plots[0].series[0].format.as_mut().unwrap().fill = red.clone();
+    let labels = chart.plots[0].labels.as_mut().unwrap();
+    labels.show_value = true;
+    labels.position = Some(LabelPosition::OutsideEnd);
+    let edited = chart.clone();
+
+    let back = cycle(&book);
+    let text = text_of(&back, &path);
+    let after = &back.sheet(0).unwrap().charts[0];
+    let total = &after.plots[0].series[0];
+    assert_eq!(total.format.as_ref().unwrap().fill, red);
+    assert!(!text.contains("00B150"), "the old colour is gone");
+    // What was not modelled around it stays.
+    assert_eq!(total.markup, edited.plots[0].series[0].markup);
+    assert!(total.labels.as_ref().unwrap().deleted);
+    let labels = after.plots[0].labels.as_ref().unwrap();
+    assert!(labels.show_value && !labels.show_category_name);
+    assert_eq!(labels.position, Some(LabelPosition::OutsideEnd));
+    assert!(text.contains(r#"<c:showBubbleSize val="0"/>"#));
+    // The series nobody touched keep their elements byte for byte.
+    let other = r#"<c:spPr><a:solidFill><a:srgbClr val="FFC000"/></a:solidFill></c:spPr>"#;
+    assert!(before.contains(other) && text.contains(other));
+    assert_eq!(after.plots[1], edited.plots[1]);
+}
+
+#[test]
+fn a_recoloured_slice_keeps_the_rest_of_its_formatting() {
+    let path = "xl/charts/chart4.xml";
+    let mut book = open("chart1.xlsx");
+    let chart = chart_at_mut(&mut book, path);
+    let theme = ChartColor {
+        base: ColorBase::Scheme("accent2".into()),
+        transforms: vec![ColorTransform::LumMod(50000)],
+    };
+    let points = &mut chart.plots[0].series[0].data_points;
+    points[1].format.as_mut().unwrap().fill = Some(Fill::Solid(theme.clone()));
+    // A line made thicker, and a point that had no formatting of its own.
+    points[2]
+        .format
+        .as_mut()
+        .unwrap()
+        .line
+        .as_mut()
+        .unwrap()
+        .width = Some(38100);
+    points.push(DataPoint {
+        index: 7,
+        format: Some(ShapeFormat::solid(ChartColor::rgb(0x12_3456))),
+        ..DataPoint::default()
+    });
+
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    let points = &chart_at(&back, path).plots[0].series[0].data_points;
+    assert_eq!(
+        points[1].format.as_ref().unwrap().fill,
+        Some(Fill::Solid(theme))
+    );
+    assert_eq!(
+        points[2].format.as_ref().unwrap().line,
+        Some(LineFormat {
+            fill: Some(Fill::None),
+            width: Some(38100)
+        })
+    );
+    assert_eq!(
+        (
+            points[5].index,
+            points[5].format.as_ref().unwrap().fill.clone()
+        ),
+        (7, Some(Fill::Solid(ChartColor::rgb(0x12_3456))))
+    );
+    // The slice kept its outline, effects and extension, and the gradient of
+    // the one before it is untouched.
+    let slice = &text[text.find(r#"<c:idx val="1"/>"#).unwrap()..];
+    let slice = &slice[..slice.find("</c:dPt>").unwrap()];
+    assert!(slice.contains(r#"<a:ln w="19050"><a:noFill/></a:ln><a:effectLst/>"#));
+    assert!(slice.contains("c16:uniqueId") && slice.contains("<c:bubble3D"));
+    assert!(text.contains(r#"<a:gs pos="100000"><a:srgbClr val="8940D9"/>"#));
+    assert!(
+        text.contains(r#"<a:ln w="38100"><a:noFill/></a:ln>"#),
+        "{text}"
+    );
+}
+
+/// A chart changed elsewhere writes its series formatting as it was read.
+#[test]
+fn formatting_the_model_did_not_change_is_written_as_read() {
+    for path in [
+        "xl/charts/chart2.xml",
+        "xl/charts/chart4.xml",
+        "xl/charts/chart102.xml",
+    ] {
+        let mut book = open("chart1.xlsx");
+        let before = text_of(&book, path);
+        let chart = chart_at_mut(&mut book, path);
+        chart.auto_title_deleted = !chart.auto_title_deleted;
+        let edited = chart.clone();
+        let back = cycle(&book);
+        let text = text_of(&back, path);
+        assert_ne!(before, text);
+        let series = edited.plots.iter().flat_map(|p| &p.series);
+        for s in series {
+            let sources = s
+                .format
+                .iter()
+                .filter_map(|f| f.source.as_deref())
+                .chain(s.marker.iter().filter_map(|m| m.source.as_deref()))
+                .chain(s.data_points.iter().filter_map(|p| p.source.as_deref()))
+                .chain(s.labels.iter().filter_map(|l| l.source.as_deref()));
+            for source in sources {
+                assert!(text.contains(source), "{path}: {source}");
+            }
+        }
+        let after = chart_at(&back, path);
+        assert_eq!(after.plots, edited.plots, "{path}");
+    }
+}
+
+/// A stock chart with an opening price, as Excel writes it: four series,
+/// high-low lines, and candles whose extension a rewrite must keep.
+const STOCK: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" "#,
+    r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+    r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+    r#"<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:stockChart>"#,
+    r#"<c:ser><c:idx val="0"/><c:order val="0"/><c:spPr><a:ln w="19050"><a:noFill/></a:ln></c:spPr>"#,
+    r#"<c:marker><c:symbol val="none"/></c:marker><c:val><c:numRef><c:f>Sheet1!$B$2:$B$3</c:f>"#,
+    r#"</c:numRef></c:val><c:smooth val="0"/></c:ser>"#,
+    r#"<c:hiLowLines><c:spPr><a:ln w="9525"><a:solidFill><a:schemeClr val="tx1"><a:lumMod val="75000"/>"#,
+    r#"<a:lumOff val="25000"/></a:schemeClr></a:solidFill></a:ln></c:spPr></c:hiLowLines>"#,
+    r#"<c:upDownBars><c:gapWidth val="150"/><c:upBars><c:spPr><a:solidFill><a:schemeClr val="lt1"/>"#,
+    r#"</a:solidFill></c:spPr></c:upBars><c:downBars><c:spPr><a:solidFill><a:schemeClr val="dk1"/>"#,
+    r#"</a:solidFill><a:effectLst/></c:spPr></c:downBars><c:extLst><c:ext uri="{X}"/></c:extLst>"#,
+    r#"</c:upDownBars><c:axId val="1"/><c:axId val="2"/></c:stockChart>"#,
+    r#"<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/>"#,
+    r#"<c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling>"#,
+    r#"<c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>"#,
+    r#"<c:crossAx val="1"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/></c:chart></c:chartSpace>"#,
+);
+
+/// `chart2.xlsx` with its one chart part replaced by `xml`, read back.
+fn with_chart_part(xml: &str) -> (Spreadsheet, String) {
+    let mut book = open("chart2.xlsx");
+    let path = chart_part(&book.sheet(0).unwrap().charts[0]).to_owned();
+    let part = book.parts.iter_mut().find(|p| p.path == path).unwrap();
+    part.data = xml.as_bytes().to_vec();
+    // The chart itself is untouched, so the part goes out as it now is.
+    (cycle(&book), path)
+}
+
+#[test]
+fn stock_lines_and_bars_are_read_and_rewritten() {
+    let (mut book, path) = with_chart_part(STOCK);
+    let plot = &book.sheet(0).unwrap().charts[0].plots[0];
+    assert_eq!(plot.kind, PlotKind::Stock);
+    let lines = plot
+        .high_low_lines
+        .as_ref()
+        .unwrap()
+        .format
+        .as_ref()
+        .unwrap();
+    assert_eq!(lines.line.as_ref().unwrap().width, Some(9525));
+    assert_eq!(plot.drop_lines, None);
+    let bars = plot.up_down_bars.as_ref().unwrap();
+    assert_eq!(bars.gap_width, Some(150));
+    let fill = |f: &Option<ShapeFormat>| f.as_ref().unwrap().fill.clone();
+    assert_eq!(fill(&bars.up), Some(Fill::Solid(ChartColor::scheme("lt1"))));
+    assert_eq!(
+        fill(&bars.down),
+        Some(Fill::Solid(ChartColor::scheme("dk1")))
+    );
+    assert!(!plot.markup.contains("hiLowLines") && !plot.markup.contains("upDownBars"));
+
+    // Narrower red candles going up; the down bars and the extension stay.
+    let plot = &mut book.sheet_mut(0).unwrap().charts[0].plots[0];
+    let bars = plot.up_down_bars.as_mut().unwrap();
+    bars.gap_width = Some(50);
+    bars.up = Some(ShapeFormat::solid(ChartColor::rgb(0xFF_0000)));
+    let edited = plot.clone();
+    let back = cycle(&book);
+    let text = text_of(&back, &path);
+    let after = &back.sheet(0).unwrap().charts[0].plots[0];
+    let bars = after.up_down_bars.as_ref().unwrap();
+    let wanted = edited.up_down_bars.as_ref().unwrap();
+    assert_eq!(bars.gap_width, Some(50));
+    assert_eq!(
+        fill(&bars.up),
+        Some(Fill::Solid(ChartColor::rgb(0xFF_0000)))
+    );
+    assert_eq!(bars.down, wanted.down);
+    assert_eq!(after.high_low_lines, edited.high_low_lines);
+    assert!(
+        text.contains(r#"<c:gapWidth val="50"/><c:upBars><c:spPr>"#),
+        "{text}"
+    );
+    assert!(text.contains(concat!(
+        r#"<c:downBars><c:spPr><a:solidFill><a:schemeClr val="dk1"/></a:solidFill>"#,
+        r#"<a:effectLst/></c:spPr></c:downBars><c:extLst><c:ext uri="{X}"/></c:extLst>"#,
+        r#"</c:upDownBars><c:axId val="1"/>"#
+    )));
+    assert!(text.contains("<c:hiLowLines><c:spPr><a:ln w=\"9525\">"));
+
+    // Made in code: plain lines and bars with nothing but the defaults.
+    let mut plot = Plot::new(PlotKind::Stock);
+    plot.axis_ids = vec![1, 2];
+    plot.high_low_lines = Some(ChartLines::default());
+    plot.up_down_bars = Some(UpDownBars::default());
+    let chart = &mut book.sheet_mut(0).unwrap().charts[0];
+    chart.plots = vec![plot];
+    let back = cycle(&book);
+    assert!(
+        text_of(&back, &path).contains(
+            "<c:hiLowLines/><c:upDownBars><c:upBars/><c:downBars/></c:upDownBars><c:axId"
+        )
+    );
+    let plot = &back.sheet(0).unwrap().charts[0].plots[0];
+    assert_eq!(plot.high_low_lines, Some(ChartLines::default()));
+    assert_eq!(plot.up_down_bars.as_ref().unwrap().up, None);
+}
+
+#[test]
+fn a_marker_keeps_its_own_fill_and_outline() {
+    let path = "xl/charts/chart102.xml";
+    let mut book = open("chart1.xlsx");
+    let chart = chart_at_mut(&mut book, path);
+    let marker = chart
+        .plots
+        .iter_mut()
+        .flat_map(|p| &mut p.series)
+        .filter_map(|s| s.marker.as_mut())
+        .find(|m| m.format.is_some())
+        .unwrap();
+    let format = marker.format.as_mut().unwrap();
+    assert_eq!(format.fill, Some(Fill::Solid(ChartColor::scheme("bg1"))));
+    let line = format.line.as_mut().unwrap();
+    assert_eq!(line.fill, Some(Fill::Solid(ChartColor::rgb(0x74_4BF3))));
+    line.fill = Some(Fill::Solid(ChartColor::rgb(0x00_FF00)));
+    format.fill = Some(Fill::None);
+
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    assert!(
+        text.contains(r#"<c:marker><c:symbol val="circle"/><c:size val="6"/><c:spPr><a:noFill"#),
+        "{text}"
+    );
+    assert!(text.contains(
+        r#"<a:srgbClr val="00FF00"/></a:solidFill></a:ln><a:effectLst/></c:spPr></c:marker>"#
+    ));
+    let marker = chart_at(&back, path)
+        .plots
+        .iter()
+        .flat_map(|p| &p.series)
+        .filter_map(|s| s.marker.as_ref())
+        .find(|m| {
+            m.format
+                .as_ref()
+                .is_some_and(|f| f.fill == Some(Fill::None))
+        })
+        .unwrap();
+    assert_eq!(marker.symbol, Some(MarkerSymbol::Circle));
+}
+
+/// Two labels of their own on a series: one showing a cell, with an
+/// extension, and one hidden.
+const POINT_LABELS: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" "#,
+    r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+    r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+    r#"<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:barChart>"#,
+    r#"<c:barDir val="col"/><c:grouping val="clustered"/><c:ser><c:idx val="0"/><c:order val="0"/>"#,
+    r#"<c:dLbls><c:dLbl><c:idx val="1"/><c:tx><c:strRef><c:f>Лист1!$A$1</c:f><c:strCache>"#,
+    r#"<c:ptCount val="1"/><c:pt idx="0"><c:v>Peak</c:v></c:pt></c:strCache></c:strRef></c:tx>"#,
+    r#"<c:dLblPos val="outEnd"/><c:showLegendKey val="0"/><c:showVal val="1"/>"#,
+    r#"<c:showCatName val="0"/><c:showSerName val="0"/><c:showPercent val="0"/>"#,
+    r#"<c:showBubbleSize val="0"/><c:extLst><c:ext uri="{Y}"/></c:extLst></c:dLbl>"#,
+    r#"<c:dLbl><c:idx val="2"/><c:delete val="1"/></c:dLbl>"#,
+    r#"<c:showLegendKey val="0"/><c:showVal val="0"/><c:showCatName val="0"/>"#,
+    r#"<c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/></c:dLbls>"#,
+    r#"<c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f></c:numRef></c:val></c:ser>"#,
+    r#"<c:gapWidth val="219"/><c:axId val="1"/><c:axId val="2"/></c:barChart>"#,
+    r#"<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/>"#,
+    r#"<c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling>"#,
+    r#"<c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>"#,
+    r#"<c:crossAx val="1"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/></c:chart></c:chartSpace>"#,
+);
+
+#[test]
+fn labels_of_single_points_are_read_and_rewritten() {
+    let (mut book, path) = with_chart_part(POINT_LABELS);
+    let labels = book.sheet(0).unwrap().charts[0].plots[0].series[0]
+        .labels
+        .clone()
+        .unwrap();
+    assert!(!labels.show_value);
+    let [peak, hidden] = labels.points.as_slice() else {
+        panic!("two point labels, got {:?}", labels.points);
+    };
+    assert_eq!(
+        (peak.index, peak.show_value, peak.position, peak.deleted),
+        (1, true, Some(LabelPosition::OutsideEnd), false)
+    );
+    assert_eq!((hidden.index, hidden.deleted), (2, true));
+
+    // The peak also shows its category, the hidden one comes back as a plain
+    // value, and a third is added.
+    let labels = book.sheet_mut(0).unwrap().charts[0].plots[0].series[0]
+        .labels
+        .as_mut()
+        .unwrap();
+    labels.points[0].show_category_name = true;
+    labels.points[1].deleted = false;
+    labels.points[1].show_value = true;
+    labels.points.push(DataLabel {
+        index: 0,
+        show_series_name: true,
+        ..DataLabel::default()
+    });
+    // Rows inserted above move the cell the label shows, inside the label.
+    insert_rows(&mut book, 0, Row::from_one_based(1).unwrap(), 2).unwrap();
+    let back = cycle(&book);
+    let text = text_of(&back, &path);
+    let points = &back.sheet(0).unwrap().charts[0].plots[0].series[0]
+        .labels
+        .as_ref()
+        .unwrap()
+        .points;
+    let said: Vec<_> = points
+        .iter()
+        .map(|l| {
+            (
+                l.index,
+                l.deleted,
+                l.show_value,
+                l.show_category_name,
+                l.show_series_name,
+            )
+        })
+        .collect();
+    assert_eq!(
+        said,
+        [
+            (1, false, true, true, false),
+            (2, false, true, false, false),
+            (0, false, false, false, true)
+        ]
+    );
+    // The cell and the extension stay with the label.
+    assert!(text.contains("<c:f>Лист1!$A$3</c:f><c:strCache>"), "{text}");
+    assert!(text.contains(r#"<c:showCatName val="1"/><c:showSerName val="0"/><c:showPercent val="0"/><c:showBubbleSize val="0"/><c:extLst><c:ext uri="{Y}"/></c:extLst></c:dLbl>"#), "{text}");
+    assert!(
+        text.contains(r#"<c:dLbl><c:idx val="2"/><c:showLegendKey val="0"/><c:showVal val="1"/>"#),
+        "{text}"
+    );
+}
+
+/// Excel's plain line chart: markers switched on for the plot, and each series
+/// turning its own off with `symbol none`.
+#[test]
+fn a_line_plot_switches_its_markers() {
+    let path = "xl/charts/chart102.xml";
+    let mut book = open("chart1.xlsx");
+    let chart = chart_at_mut(&mut book, path);
+    let plot = chart
+        .plots
+        .iter_mut()
+        .find(|p| matches!(p.kind, PlotKind::Line { .. }))
+        .unwrap();
+    assert_eq!(plot.show_markers, Some(true));
+    assert!(!plot.markup.contains("marker"), "{}", plot.markup);
+    plot.show_markers = Some(false);
+
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    assert!(
+        text.contains(r#"</c:dLbls><c:marker val="0"/><c:smooth val="0"/><c:axId"#),
+        "{text}"
+    );
+    let plot = chart_at(&back, path)
+        .plots
+        .iter()
+        .find(|p| matches!(p.kind, PlotKind::Line { .. }))
+        .unwrap();
+    assert_eq!(plot.show_markers, Some(false));
+}
+
+/// A line whose second point is marked apart, as Excel writes a point
+/// formatted on its own: the marker before the point's line, and an extension.
+const POINT_MARKER: &str = concat!(
+    r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+    r#"<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart" "#,
+    r#"xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+    r#"xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">"#,
+    r#"<c:chart><c:autoTitleDeleted val="1"/><c:plotArea><c:layout/><c:lineChart>"#,
+    r#"<c:grouping val="standard"/><c:ser><c:idx val="0"/><c:order val="0"/>"#,
+    r#"<c:marker><c:symbol val="none"/></c:marker>"#,
+    r#"<c:dPt><c:idx val="1"/><c:marker><c:symbol val="diamond"/><c:size val="9"/>"#,
+    r#"<c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr></c:marker>"#,
+    r#"<c:bubble3D val="0"/><c:spPr><a:ln w="28575"/></c:spPr>"#,
+    r#"<c:extLst><c:ext uri="{Z}"/></c:extLst></c:dPt>"#,
+    r#"<c:val><c:numRef><c:f>Sheet1!$B$2:$B$4</c:f></c:numRef></c:val><c:smooth val="0"/></c:ser>"#,
+    r#"<c:marker val="1"/><c:axId val="1"/><c:axId val="2"/></c:lineChart>"#,
+    r#"<c:catAx><c:axId val="1"/><c:scaling><c:orientation val="minMax"/></c:scaling><c:delete val="0"/>"#,
+    r#"<c:axPos val="b"/><c:crossAx val="2"/></c:catAx><c:valAx><c:axId val="2"/><c:scaling>"#,
+    r#"<c:orientation val="minMax"/></c:scaling><c:delete val="0"/><c:axPos val="l"/>"#,
+    r#"<c:crossAx val="1"/></c:valAx></c:plotArea><c:plotVisOnly val="1"/></c:chart></c:chartSpace>"#,
+);
+
+#[test]
+fn a_point_keeps_a_marker_of_its_own() {
+    let (mut book, path) = with_chart_part(POINT_MARKER);
+    let points = &mut book.sheet_mut(0).unwrap().charts[0].plots[0].series[0].data_points;
+    let marker = points[0].marker.as_mut().unwrap();
+    assert_eq!(
+        (marker.symbol, marker.size),
+        (Some(MarkerSymbol::Diamond), Some(9))
+    );
+    assert_eq!(
+        marker.format.as_ref().unwrap().fill,
+        Some(Fill::Solid(ChartColor::rgb(0xFF_0000)))
+    );
+    // The diamond grows, and a third point gets a square of its own.
+    marker.size = Some(12);
+    points.push(DataPoint {
+        index: 2,
+        marker: Some(SeriesMarker {
+            symbol: Some(MarkerSymbol::Square),
+            ..SeriesMarker::default()
+        }),
+        ..DataPoint::default()
+    });
+    let edited = points.clone();
+
+    let back = cycle(&book);
+    let text = text_of(&back, &path);
+    assert!(
+        text.contains(concat!(
+            r#"<c:dPt><c:idx val="1"/><c:marker><c:symbol val="diamond"/><c:size val="12"/>"#,
+            r#"<c:spPr><a:solidFill><a:srgbClr val="FF0000"/></a:solidFill></c:spPr></c:marker>"#,
+            r#"<c:bubble3D val="0"/><c:spPr><a:ln w="28575"/></c:spPr>"#,
+            r#"<c:extLst><c:ext uri="{Z}"/></c:extLst></c:dPt>"#,
+            r#"<c:dPt><c:idx val="2"/><c:marker><c:symbol val="square"/></c:marker></c:dPt>"#
+        )),
+        "{text}"
+    );
+    let points = &back.sheet(0).unwrap().charts[0].plots[0].series[0].data_points;
+    let said = |p: &[DataPoint]| {
+        p.iter()
+            .map(|p| (p.index, p.marker.as_ref().map(|m| (m.symbol, m.size))))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(said(points), said(&edited));
+}
+
+#[test]
+fn gradients_and_patterns_are_read_and_rewritten() {
+    // A filled radar series with a radial gradient whose stops fade.
+    let path = "xl/charts/chart110.xml";
+    let mut book = open("chart1.xlsx");
+    let format = chart_at_mut(&mut book, path).plots[0].series[0]
+        .format
+        .as_mut()
+        .unwrap();
+    let Some(Fill::Gradient {
+        stops,
+        angle,
+        path: shape,
+    }) = &mut format.fill
+    else {
+        panic!("a gradient, got {:?}", format.fill);
+    };
+    assert_eq!((*angle, *shape), (None, Some(GradientPath::Circle)));
+    assert_eq!(stops[0].position, 37_000);
+    assert_eq!(
+        stops[1].color,
+        ChartColor {
+            base: ColorBase::Rgb(0x00_66FF),
+            transforms: vec![ColorTransform::Alpha(40_000)],
+        }
+    );
+    // Now linear, and the first stop red: the flip, rotation and tile stay.
+    stops[0].color = ChartColor::rgb(0xFF_0000);
+    *shape = None;
+    *angle = Some(2_700_000);
+    let edited = format.fill.clone();
+
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    assert!(
+        text.contains(concat!(
+            r#"<a:gradFill flip="none" rotWithShape="1"><a:gsLst xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">"#,
+            r#"<a:gs pos="37000"><a:srgbClr val="FF0000"/></a:gs><a:gs pos="80000"><a:srgbClr val="0066FF">"#,
+            r#"<a:alpha val="40000"/></a:srgbClr></a:gs></a:gsLst><a:lin xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" "#,
+            r#"ang="2700000" scaled="0"/><a:tileRect l="-100000" t="-100000"/></a:gradFill>"#
+        )),
+        "{text}"
+    );
+    let series = &chart_at(&back, path).plots[0].series[0];
+    assert_eq!(series.format.as_ref().unwrap().fill, edited);
+
+    // Made in code: a pattern on the series, a radial gradient on its line.
+    let pattern = Fill::Pattern {
+        preset: Some("dkDnDiag".into()),
+        foreground: Some(ChartColor::scheme("accent1")),
+        background: Some(ChartColor::rgb(0xFF_FFFF)),
+    };
+    let radial = Fill::Gradient {
+        stops: vec![
+            GradientStop {
+                position: 0,
+                color: ChartColor::rgb(0x00_0000),
+            },
+            GradientStop {
+                position: 100_000,
+                color: ChartColor::rgb(0xFF_FFFF),
+            },
+        ],
+        angle: None,
+        path: Some(GradientPath::Rect),
+    };
+    let series = &mut chart_at_mut(&mut book, path).plots[0].series[0];
+    series.format = Some(ShapeFormat {
+        fill: Some(pattern.clone()),
+        line: Some(LineFormat {
+            fill: Some(radial.clone()),
+            width: None,
+        }),
+        source: None,
+    });
+    let back = cycle(&book);
+    let text = text_of(&back, path);
+    assert!(
+        text.contains(concat!(
+            r#"<a:pattFill xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" prst="dkDnDiag">"#,
+            r#"<a:fgClr><a:schemeClr val="accent1"/></a:fgClr><a:bgClr><a:srgbClr val="FFFFFF"/></a:bgClr></a:pattFill>"#
+        )),
+        "{text}"
+    );
+    assert!(text.contains(
+        r#"<a:path path="rect"><a:fillToRect l="50000" t="50000" r="50000" b="50000"/></a:path>"#
+    ));
+    let format = chart_at(&back, path).plots[0].series[0]
+        .format
+        .clone()
+        .unwrap();
+    assert_eq!(format.fill, Some(pattern));
+    assert_eq!(format.line.unwrap().fill, Some(radial));
+}
+
+/// Excel's own caches are what reading the cells again gives, so nothing
+/// changes until a cell does - and then only the series reading it.
+#[test]
+fn chart_caches_are_read_again_from_the_cells() {
+    use excelerate::CellRef;
+    use excelerate::formula::chart::refresh_caches;
+    for name in ["chart1.xlsx", "chart2.xlsx"] {
+        let mut book = open(name);
+        assert_eq!(refresh_caches(&mut book, None), 0, "{name}");
+        let charts = book.sheets().iter().flat_map(|s| &s.charts);
+        assert!(charts.clone().all(Chart::is_unchanged), "{name}");
+    }
+
+    let mut book = open("chart2.xlsx");
+    let b6 = CellRef::parse("B6").unwrap();
+    book.sheet_mut(0).unwrap().set(b6, 999.0);
+    let elsewhere = CellRef::parse("Z100").unwrap();
+    assert_eq!(refresh_caches(&mut book, Some(&[(0, elsewhere)])), 0);
+    assert_eq!(refresh_caches(&mut book, Some(&[(0, b6)])), 1);
+    let chart = &book.sheet(0).unwrap().charts[0];
+    let Some(DataSource::Numbers { points, .. }) = &chart.plots[0].series[0].values else {
+        panic!("numbers");
+    };
+    assert_eq!(points[0], (0, 999.0));
+    assert!(!chart.is_unchanged());
+    let back = cycle(&book);
+    assert_eq!(back.sheet(0).unwrap().charts[0].plots, chart.plots);
+
+    // A chart written without caches gets them.
+    let mut book = open("fixtures/chart.xlsx");
+    assert_eq!(refresh_caches(&mut book, None), 1);
+    let series = &book.sheet(0).unwrap().charts[0].plots[0].series[0];
+    assert_eq!(
+        series.name.as_ref().and_then(ChartText::shown),
+        Some("Sales")
+    );
+    let Some(DataSource::Strings { points, .. }) = &series.categories else {
+        panic!("labels");
+    };
+    assert_eq!(points[3], (3, "Q4".to_owned()));
 }
