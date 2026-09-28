@@ -9,6 +9,7 @@
 
 mod anchor;
 mod chart;
+mod extension;
 mod range;
 mod series;
 
@@ -359,6 +360,23 @@ fn apply(book: &mut Spreadsheet, sheet: usize, shift: Shift) -> Result<()> {
     rewrite_sparklines(book, |formula, on| {
         adjust(formula, shift, &title, on == title)
     });
+    // The carried extensions name cells too: their formulas on any sheet,
+    // their ranges on this one.
+    let range = |r: Range| shift.range(r);
+    for index in 0..book.sheets().len() {
+        let Some(target) = book.sheet_mut(index) else {
+            continue;
+        };
+        let own = target.title().eq_ignore_ascii_case(&title);
+        if let Some(ext) = target.extensions.take() {
+            let moved: Option<&dyn Fn(Range) -> Option<Range>> = own.then_some(&range);
+            target.extensions = Some(extension::rewrite(
+                &ext,
+                |f| adjust(f, shift, &title, own),
+                moved,
+            ));
+        }
+    }
 
     let Some(target) = book.sheet_mut(sheet) else {
         return Ok(());
@@ -799,6 +817,17 @@ fn rewrite_qualifiers(book: &mut Spreadsheet, rename: impl Fn(&[String]) -> Opti
     rewrite_sparklines(book, |formula, _| {
         scan_formula(formula, |_, _| None, &rename)
     });
+    for index in 0..book.sheets().len() {
+        if let Some(target) = book.sheet_mut(index)
+            && let Some(ext) = target.extensions.take()
+        {
+            target.extensions = Some(extension::rewrite(
+                &ext,
+                |f| scan_formula(f, |_, _| None, &rename),
+                None,
+            ));
+        }
+    }
 }
 
 /// Runs `rewrite` over what every sparkline of the workbook reads, with the

@@ -370,3 +370,32 @@ fn a_range_on_another_sheet_ignores_an_edit_to_this_one() {
     remove_rows(&mut book, 1, row(5), 1).unwrap();
     assert_eq!(text(&book, 1, "Z1"), "Data!B3:B10+SUM(B3:B9)");
 }
+
+#[test]
+fn the_newer_rules_in_the_extension_list_move_with_the_old_ones() {
+    use excelerate::edit::rename_sheet;
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    // A data bar's x14 half, and a validation reading another sheet.
+    sheet.extensions = Some(
+        concat!(
+            "<extLst><ext uri=\"{78C0D931-6437-407d-A8EE-F0AAD7539E65}\"><x14:conditionalFormattings>",
+            "<x14:conditionalFormatting><x14:cfRule/><xm:sqref>B4:E15</xm:sqref>",
+            "</x14:conditionalFormatting></x14:conditionalFormattings></ext>",
+            "<ext uri=\"{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}\"><x14:dataValidations>",
+            "<x14:dataValidation><x14:formula1><xm:f>Data!$A$1:$A$3</xm:f></x14:formula1>",
+            "<xm:sqref>C2</xm:sqref></x14:dataValidation></x14:dataValidations></ext></extLst>",
+        )
+        .to_owned(),
+    );
+    book.add_sheet(sheet).unwrap();
+    book.add_sheet(Worksheet::new("Data").unwrap()).unwrap();
+
+    insert_rows(&mut book, 0, row(1), 2).unwrap();
+    insert_rows(&mut book, 1, row(1), 1).unwrap();
+    rename_sheet(&mut book, 1, "Lists").unwrap();
+    let ext = book.sheets()[0].extensions.clone().unwrap();
+    assert!(ext.contains("<xm:sqref>B6:E17</xm:sqref>"), "{ext}");
+    assert!(ext.contains("<xm:sqref>C4</xm:sqref>"), "{ext}");
+    assert!(ext.contains("<xm:f>Lists!$A$2:$A$4</xm:f>"), "{ext}");
+}

@@ -42,6 +42,12 @@
 
 ### Fixed
 
+- A grid edit left the newer rules in the sheet's `<extLst>` where they were:
+  the `x14` half of a data bar kept its old range while the rule beside it
+  moved, and a validation list on another sheet kept its old rows and name.
+  `<xm:sqref>` now moves with the sheet's cells, `<xm:f>` is rewritten like
+  any formula, and a rule left with no cells goes.
+
 - ODS and HTML wrote theme and indexed colours as nothing; they are now the
   RGB they show, through the workbook's theme with the tint.
 - HTML reading lost the space between `a <b>b</b>`: each text node was trimmed
