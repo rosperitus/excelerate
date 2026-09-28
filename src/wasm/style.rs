@@ -55,6 +55,139 @@ impl Book {
     ) -> Result<JsValue, JsError> {
         self.styles_of(sheet, area_at(row, column, rows, columns)?)
     }
+
+    /// The runs of a cell's formatted text: `{ text, font }` each, `font`
+    /// naming only what the run changes about the cell's font, or `null` for
+    /// a run in the cell's own. `null` for a cell without formatted text.
+    #[wasm_bindgen(js_name = getRichText, unchecked_return_type = "TextRun[] | null")]
+    pub fn get_rich_text(&self, sheet: usize, address: &str) -> Result<JsValue, JsError> {
+        self.rich_at(sheet, CellRef::parse(address).map_err(js)?)
+    }
+
+    /// The same by 1-based row and column.
+    #[wasm_bindgen(js_name = getRichTextAt, unchecked_return_type = "TextRun[] | null")]
+    pub fn get_rich_text_at(
+        &self,
+        sheet: usize,
+        row: u32,
+        column: u32,
+    ) -> Result<JsValue, JsError> {
+        self.rich_at(sheet, at_index(row, column)?)
+    }
+}
+
+impl Book {
+    fn rich_at(&self, sheet: usize, at: CellRef) -> Result<JsValue, JsError> {
+        use crate::model::CellValue;
+        let value = self.sheet_of(sheet)?.get(at).map(|cell| &cell.value);
+        let runs = match value {
+            Some(CellValue::RichText(runs)) => runs,
+            Some(CellValue::Formula {
+                cached: Some(cached),
+                ..
+            }) => match cached.as_ref() {
+                CellValue::RichText(runs) => runs,
+                _ => return Ok(JsValue::NULL),
+            },
+            _ => return Ok(JsValue::NULL),
+        };
+        Ok(super::convert::list(runs, |run| {
+            object(&[
+                ("text", JsValue::from_str(&run.text)),
+                (
+                    "font",
+                    run.font.as_ref().map_or(JsValue::NULL, run_font_to_js),
+                ),
+            ])
+        }))
+    }
+}
+
+/// What a run changes about the font, only the parts it names.
+fn run_font_to_js(font: &crate::style::DiffFont) -> JsValue {
+    let mut fields: Vec<(&str, JsValue)> = Vec::new();
+    if let Some(name) = &font.name {
+        fields.push(("name", JsValue::from_str(name)));
+    }
+    if let Some(size) = font.size {
+        fields.push(("size", JsValue::from_f64(f64::from(size) / 100.0)));
+    }
+    for (key, flag) in [
+        ("bold", font.bold),
+        ("italic", font.italic),
+        ("strike", font.strike),
+    ] {
+        if let Some(on) = flag {
+            fields.push((key, JsValue::from_bool(on)));
+        }
+    }
+    if let Some(underline) = font.underline {
+        fields.push(("underline", JsValue::from_str(underline.as_str())));
+    }
+    if let Some(color) = &font.color {
+        fields.push(("color", color_to_js(color)));
+    }
+    if let Some(script) = font.script {
+        fields.push((
+            "script",
+            JsValue::from_str(match script {
+                crate::style::Script::Superscript => "superscript",
+                crate::style::Script::Subscript => "subscript",
+                crate::style::Script::Baseline => "baseline",
+            }),
+        ));
+    }
+    object(&fields)
+}
+
+#[cfg(feature = "write")]
+#[wasm_bindgen]
+impl Book {
+    /// Writes formatted text: runs as `getRichText` returns them, each with
+    /// its own text and the part of the font it changes (`font` may be left
+    /// out or `null` for the cell's own).
+    #[wasm_bindgen(js_name = setRichText)]
+    pub fn set_rich_text(
+        &mut self,
+        sheet: usize,
+        address: &str,
+        #[wasm_bindgen(unchecked_param_type = "TextRun[]")] runs: &JsValue,
+    ) -> Result<(), JsError> {
+        let at = CellRef::parse(address).map_err(js)?;
+        self.write_rich(sheet, at, runs)
+    }
+
+    /// The same by 1-based row and column.
+    #[wasm_bindgen(js_name = setRichTextAt)]
+    pub fn set_rich_text_at(
+        &mut self,
+        sheet: usize,
+        row: u32,
+        column: u32,
+        #[wasm_bindgen(unchecked_param_type = "TextRun[]")] runs: &JsValue,
+    ) -> Result<(), JsError> {
+        self.write_rich(sheet, at_index(row, column)?, runs)
+    }
+}
+
+#[cfg(feature = "write")]
+impl Book {
+    fn write_rich(&mut self, sheet: usize, at: CellRef, runs: &JsValue) -> Result<(), JsError> {
+        let runs = array(runs, "runs")?
+            .iter()
+            .map(|run| patch::text_run(&run))
+            .collect::<Result<Vec<_>, _>>()?;
+        let ws = self.sheet_mut(sheet)?;
+        let was_formula = matches!(
+            ws.get(at).map(|c| &c.value),
+            Some(crate::model::CellValue::Formula { .. })
+        );
+        ws.set(at, crate::model::CellValue::RichText(runs));
+        if was_formula {
+            self.note(sheet, &[at]);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(feature = "write")]
@@ -444,6 +577,64 @@ mod patch {
             }
         }
         Ok(())
+    }
+
+    /// One run as `setRichText` takes it: `{ text, font? }`.
+    pub(super) fn text_run(value: &JsValue) -> Result<crate::model::TextRun, JsError> {
+        let text = field(value, "text")
+            .ok_or_else(|| JsError::new("a run has text"))
+            .and_then(|t| text(&t, "a run's text"))?;
+        let font = match field(value, "font") {
+            Some(patch) if !patch.is_null() => Some(run_font(&patch)?),
+            _ => None,
+        };
+        Ok(crate::model::TextRun { text, font })
+    }
+
+    /// The part of a font a run changes: only the fields the object names.
+    fn run_font(patch: &JsValue) -> Result<crate::style::DiffFont, JsError> {
+        use crate::style::{DiffFont, Script};
+        let mut font = DiffFont::default();
+        if let Some(name) = field(patch, "name") {
+            font.name = Some(text(&name, "a font name")?);
+        }
+        if let Some(size) = field(patch, "size") {
+            let points = number(&size, "a font size")?;
+            if !(points > 0.0 && points < 4096.0) {
+                return Err(JsError::new("a font size is between 0 and 4096 points"));
+            }
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "bounded to a positive number of points above"
+            )]
+            {
+                font.size = Some((points * 100.0).round() as u32);
+            }
+        }
+        for (key, slot) in [
+            ("bold", &mut font.bold),
+            ("italic", &mut font.italic),
+            ("strike", &mut font.strike),
+        ] {
+            if let Some(value) = field(patch, key) {
+                *slot = Some(value.is_truthy());
+            }
+        }
+        if let Some(underline) = field(patch, "underline") {
+            font.underline = Some(Underline::parse(&text(&underline, "an underline")?));
+        }
+        if let Some(color) = field(patch, "color") {
+            font.color = Some(color_from_js(&color)?);
+        }
+        if let Some(script) = field(patch, "script") {
+            font.script = Some(match text(&script, "a script")?.as_str() {
+                "superscript" => Script::Superscript,
+                "subscript" => Script::Subscript,
+                _ => Script::Baseline,
+            });
+        }
+        Ok(font)
     }
 
     /// A colour as the JS side spells it: `#AARRGGBB` (or `#RRGGBB`),

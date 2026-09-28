@@ -1426,6 +1426,7 @@ fn apply_run_font(font: Option<&mut DiffFont>, name: &str, e: &quick_xml::events
         "color" => font.color = Some(read_color(e)),
         "rFont" => font.name = attr(e, "val"),
         "charset" => font.charset = attr(e, "val").and_then(|v| v.parse().ok()),
+        "family" => font.family = attr(e, "val").and_then(|v| v.parse().ok()),
         "scheme" => font.scheme = attr(e, "val").and_then(|v| FontScheme::parse(&v)),
         "vertAlign" => {
             font.script = Some(match attr(e, "val").as_deref() {

@@ -97,6 +97,8 @@ on Node 22.6+, no build step and no separate install.
 | `comments(sheet)` / `hyperlinks(sheet)` / `tables(sheet)` | what the sheet carries besides cells |
 | `charts(sheet)` / `shapes(sheet)` / `images(sheet)` | the drawing objects, each with its anchor; `imageData(sheet, i)` for a picture's bytes |
 | `cellStyle(sheet, address)` / `cellStyleAt` | the whole style: `numberFormat`, `font`, `fill`, `borders`, `alignment`; a colour is `#AARRGGBB`, `indexed:N`, `theme:N` or `null` |
+| `getRichText(sheet, address)` / `getRichTextAt` | formatted text as runs, `{ text, font }` each, `font` naming only what the run changes; `null` for a cell without it |
+| `setRichText(sheet, address, runs)` / `setRichTextAt` | write formatted text in the same shape |
 | `setCellStyle(sheet, address, patch)` / `setCellStyleAt` / `setRangeStyle` | paint a cell or a rectangle: number format, font, fill, borders, alignment. A patch is laid over what the cell had |
 | `setComment` / `removeComment` | put a note on a cell, take it off |
 | `setHyperlink` / `removeHyperlink` | link a cell or a block of them |

@@ -159,6 +159,22 @@ export interface SheetShape {
  * a theme colour carries its tint as `theme:4@-0.25`.
  */
 export type StyleColor = string | null;
+/**
+ * What a run of formatted text changes about the cell's font; a field left
+ * out is the cell's own. `size` in points.
+ */
+export interface RunFont {
+  name?: string;
+  size?: number;
+  bold?: boolean;
+  italic?: boolean;
+  underline?: string;
+  strike?: boolean;
+  color?: StyleColor;
+  script?: "superscript" | "subscript" | "baseline";
+}
+/** One run of formatted text, as `getRichText` returns it. */
+export interface TextRun { text: string; font?: RunFont | null }
 /** One side of a cell's border. */
 export interface BorderSide { style: string; color: StyleColor }
 /** How a cell is painted, as `cellStyle` returns it. */

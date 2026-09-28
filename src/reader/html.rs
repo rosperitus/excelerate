@@ -19,10 +19,10 @@
 //! the workbook rather than anything the sheet holds.
 
 use crate::error::{Error, Result};
-use crate::model::{CellValue, ColumnRun, Hyperlink, LinkTarget, Spreadsheet, Worksheet};
+use crate::model::{CellValue, ColumnRun, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet};
 use crate::style::{
-    Border, BorderStyle, Color, HorizontalAlign, NumberFormat, Pattern, Style, StyleTable,
-    Underline, VerticalAlign,
+    Border, BorderStyle, Color, DiffFont, HorizontalAlign, NumberFormat, Pattern, Script, Style,
+    StyleTable, Underline, VerticalAlign,
 };
 use crate::{CellError, CellRef, Col, Range, Row};
 use std::collections::HashMap;
@@ -382,6 +382,12 @@ struct Build {
     col: u32,
     /// Text collected since the last flush, the content of the cell to come.
     content: String,
+    /// The same text in runs, once an inline element inside a cell changes
+    /// the font; empty until then, so a plain cell pays nothing.
+    runs: Vec<TextRun>,
+    /// The fonts of the inline elements open around the text, innermost
+    /// last, each already laid over the one outside it.
+    fonts: Vec<DiffFont>,
     table_level: u32,
     /// The column each open table starts at, `nestedColumn` in the HTML reader's own terms.
     nested_column: Vec<u32>,
@@ -409,6 +415,8 @@ impl Build {
             row: 1,
             col: 1,
             content: String::new(),
+            runs: Vec::new(),
+            fonts: Vec::new(),
             table_level: 0,
             nested_column: vec![1],
             spanned: Vec::new(),
@@ -440,13 +448,55 @@ impl Build {
                     let text = collapse(text);
                     // A cell holding one non-breaking space is an empty cell:
                     // that is how a page spells "nothing here".
-                    if text != "\u{a0}" {
-                        self.content.push_str(&text);
+                    if text.trim() != "\u{a0}" {
+                        self.push_content(&text);
                     }
                 }
                 Node::Elem(elem) => self.element(elem),
             }
         }
+    }
+
+    /// Text of the cell to come: whole, and in runs by the font of the
+    /// inline elements around it. Whitespace collapses across elements, as a
+    /// browser lays it out: a space after a space, or at the start, is dropped.
+    fn push_content(&mut self, text: &str) {
+        let text = if self.content.is_empty() || self.content.ends_with([' ', '\n']) {
+            text.trim_start_matches(' ')
+        } else {
+            text
+        };
+        if text.is_empty() {
+            return;
+        }
+        let font = self.fonts.last().cloned();
+        if self.runs.is_empty() && font.is_some() && !self.content.is_empty() {
+            self.runs.push(TextRun {
+                text: self.content.clone(),
+                font: None,
+            });
+        }
+        self.content.push_str(text);
+        if self.runs.is_empty() && font.is_none() {
+            return;
+        }
+        match self.runs.last_mut() {
+            Some(run) if run.font == font => run.text.push_str(text),
+            _ => self.runs.push(TextRun {
+                text: text.to_owned(),
+                font,
+            }),
+        }
+    }
+
+    /// An inline element inside a cell: its text is a run in the font it
+    /// sets, laid over the font of the elements around it.
+    fn inline(&mut self, e: &Elem) {
+        let mut font = self.fonts.last().cloned().unwrap_or_default();
+        inline_font(&e.name, &self.declarations(e), e, &mut font);
+        self.fonts.push(font);
+        self.children(&e.children);
+        self.fonts.pop();
     }
 
     /// One element.
@@ -465,6 +515,12 @@ impl Build {
                 // A title too long, or holding a character Excel bans, leaves
                 // the sheet named as it was.
                 let _ = self.sheet.set_title(title);
+            }
+            "span" | "font" | "i" | "em" | "strong" | "b" | "u" | "ins" | "s" | "strike"
+            | "del" | "sup" | "sub"
+                if self.table_level > 0 =>
+            {
+                self.inline(e);
             }
             "span" | "div" | "font" | "i" | "em" | "strong" | "b" => {
                 self.children(&e.children);
@@ -501,7 +557,7 @@ impl Build {
 
     fn line_break(&mut self, e: &Elem) {
         if self.table_level > 0 {
-            self.content.push('\n');
+            self.push_content("\n");
             self.restyle_current(|style| style.alignment.wrap_text = true);
         } else {
             self.flush_cell(Some(e));
@@ -667,11 +723,35 @@ impl Build {
 
     fn flush_cell(&mut self, e: Option<&Elem>) {
         let content = std::mem::take(&mut self.content);
+        let mut runs = std::mem::take(&mut self.runs);
         if content.trim().is_empty() {
             return;
         }
         let Some(at) = self.at() else { return };
-        self.sheet.entry(at).value = value_of(&content, e);
+        let value = value_of(content.trim_end_matches(' '), e);
+        if !matches!(value, CellValue::Text(_)) || runs.is_empty() {
+            self.sheet.entry(at).value = value;
+            return;
+        }
+        if let Some(last) = runs.last_mut() {
+            let kept = last.text.trim_end_matches(' ').len();
+            last.text.truncate(kept);
+        }
+        runs.retain(|r| !r.text.is_empty());
+        match runs.as_slice() {
+            // One font over the whole text is the cell's font, which is how
+            // `<td><b>total</b></td>` has always read.
+            [
+                TextRun {
+                    font: Some(font), ..
+                },
+            ] => {
+                let font = font.clone();
+                self.sheet.entry(at).value = value;
+                self.restyle_current(|style| style.font = style.font.with(&font));
+            }
+            _ => self.sheet.entry(at).value = CellValue::RichText(runs),
+        }
     }
 
     /// The hyperlink of an `<a href>`, plus the blue underline browsers give
@@ -894,11 +974,13 @@ impl Build {
 }
 
 /// Collapses runs of whitespace the way a browser lays text out, so the markup's
-/// own indentation does not reach the cell.
+/// own indentation does not reach the cell. A run at either end becomes one
+/// space rather than nothing: `a <b>b</b>` is two words, and the cell trims
+/// what is left over at its own edges.
 fn collapse(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut space = false;
-    for c in text.trim_matches(|c: char| c.is_ascii_whitespace()).chars() {
+    for c in text.chars() {
         if c.is_ascii_whitespace() {
             space = true;
             continue;
@@ -909,7 +991,88 @@ fn collapse(text: &str) -> String {
         }
         out.push(c);
     }
+    if space {
+        out.push(' ');
+    }
     out
+}
+
+/// What an inline element sets about the font, laid over `font`: the tag's
+/// own meaning, the attributes of `<font>`, then its CSS.
+fn inline_font(name: &str, css: &str, e: &Elem, font: &mut DiffFont) {
+    match name {
+        "b" | "strong" => font.bold = Some(true),
+        "i" | "em" => font.italic = Some(true),
+        "u" | "ins" => font.underline = Some(Underline::Single),
+        "s" | "strike" | "del" => font.strike = Some(true),
+        "sup" => font.script = Some(Script::Superscript),
+        "sub" => font.script = Some(Script::Subscript),
+        "font" => {
+            if let Some(face) = e.attr("face") {
+                font.name = face
+                    .split(',')
+                    .next()
+                    .map(|f| f.trim().replace(['\'', '"'], ""));
+            }
+            if let Some(c) = e.attr("color").and_then(colour) {
+                font.color = Some(c);
+            }
+        }
+        _ => {}
+    }
+    for declaration in css.split(';') {
+        let Some((key, value)) = declaration.split_once(':') else {
+            continue;
+        };
+        let (key, value) = (key.trim().to_ascii_lowercase(), value.trim());
+        match key.as_str() {
+            "font-weight" => {
+                font.bold = Some(
+                    value == "bold" || length(value).is_some_and(|(weight, _)| weight >= 500.0),
+                );
+            }
+            "font-style" => font.italic = Some(value == "italic" || value == "oblique"),
+            "font-family" => {
+                font.name = value
+                    .split(',')
+                    .next()
+                    .map(|f| f.trim().replace(['\'', '"'], ""));
+            }
+            "font-size" => {
+                if let Some((points, _)) = length(value).filter(|(p, _)| *p > 0.0 && *p < 4096.0) {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "bounded to a positive number of points above"
+                    )]
+                    let hundredths = (points * 100.0).round() as u32;
+                    font.size = Some(hundredths);
+                }
+            }
+            "color" => {
+                if let Some(c) = colour(value) {
+                    font.color = Some(c);
+                }
+            }
+            "text-decoration" | "text-decoration-line" => {
+                font.underline = Some(if value.contains("underline") {
+                    Underline::Single
+                } else {
+                    Underline::None
+                });
+                font.strike = Some(value.contains("line-through"));
+            }
+            "vertical-align" => {
+                font.script = match value {
+                    "super" => Some(Script::Superscript),
+                    "sub" => Some(Script::Subscript),
+                    "baseline" => Some(Script::Baseline),
+                    _ => font.script,
+                };
+            }
+            _ => {}
+        }
+    }
 }
 
 /// What a cell's text means.

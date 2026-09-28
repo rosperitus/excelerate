@@ -18,7 +18,8 @@ use crate::error::{Error, Result};
 use crate::model::{CellValue, Hyperlink, Spreadsheet, Worksheet};
 use crate::shared::odf_formula;
 use crate::style::{
-    Border, BorderStyle, Color, HorizontalAlign, Pattern, Style, StyleId, Underline, VerticalAlign,
+    Border, BorderStyle, Color, DiffFont, HorizontalAlign, Pattern, Script, Style, StyleId,
+    Underline, VerticalAlign,
 };
 use crate::{CellRef, Col, Range, Row};
 use std::fmt::Write as _;
@@ -164,9 +165,18 @@ fn content(book: &Spreadsheet) -> String {
     let mut out = String::from(r#"<?xml version="1.0" encoding="UTF-8"?>"#);
     let _ = write!(out, "<office:document-content{NAMESPACES}>");
 
+    let theme = book
+        .theme
+        .as_deref()
+        .map(crate::shared::palette::theme_colors)
+        .unwrap_or_default();
+    let fonts = run_fonts(book);
     out.push_str("<office:automatic-styles>");
     for (index, style) in book.styles.all().iter().enumerate() {
-        cell_style(index, style, &mut out);
+        cell_style(index, style, &theme, &mut out);
+    }
+    for (index, font) in fonts.iter().enumerate() {
+        text_style(index, font, &theme, &mut out);
     }
     // Column and row styles carry the sizes; ODS has nowhere else to put them.
     for (index, sheet) in book.sheets().iter().enumerate() {
@@ -205,7 +215,7 @@ fn content(book: &Spreadsheet) -> String {
 
     out.push_str("<office:body><office:spreadsheet>");
     for (index, sheet) in book.sheets().iter().enumerate() {
-        table(book, sheet, index, &mut out);
+        table(book, sheet, index, &fonts, &mut out);
     }
     if !book.defined_names.is_empty() {
         out.push_str("<table:named-expressions>");
@@ -225,7 +235,7 @@ fn content(book: &Spreadsheet) -> String {
 }
 
 /// One cell style as an automatic style.
-fn cell_style(index: usize, style: &Style, out: &mut String) {
+fn cell_style(index: usize, style: &Style, theme: &[u32], out: &mut String) {
     let _ = write!(
         out,
         r#"<style:style style:name="ce{index}" style:family="table-cell" style:parent-style-name="Default">"#
@@ -233,7 +243,7 @@ fn cell_style(index: usize, style: &Style, out: &mut String) {
 
     let mut cell_properties = String::new();
     if style.fill.pattern != Pattern::None
-        && let Some(colour) = rgb(&style.fill.foreground)
+        && let Some(colour) = rgb(&style.fill.foreground, theme)
     {
         let _ = write!(cell_properties, r#" fo:background-color="{colour}""#);
     }
@@ -243,7 +253,7 @@ fn cell_style(index: usize, style: &Style, out: &mut String) {
         ("fo:border-bottom", &style.borders.bottom),
         ("fo:border-left", &style.borders.left),
     ] {
-        if let Some(rule) = border_rule(border) {
+        if let Some(rule) = border_rule(border, theme) {
             let _ = write!(cell_properties, r#" {side}="{rule}""#);
         }
     }
@@ -291,7 +301,7 @@ fn cell_style(index: usize, style: &Style, out: &mut String) {
     if style.font.strike {
         text.push_str(r#" style:text-line-through-style="solid""#);
     }
-    if let Some(colour) = rgb(&style.font.color) {
+    if let Some(colour) = rgb(&style.font.color, theme) {
         let _ = write!(text, r#" fo:color="{colour}""#);
     }
     let _ = write!(out, "<style:text-properties{text}/>");
@@ -300,7 +310,7 @@ fn cell_style(index: usize, style: &Style, out: &mut String) {
 }
 
 /// One border side as an `fo:border` value, or nothing for no line.
-fn border_rule(border: &Border) -> Option<String> {
+fn border_rule(border: &Border, theme: &[u32]) -> Option<String> {
     let width = match border.style {
         BorderStyle::None => return None,
         BorderStyle::Named(name) => match name {
@@ -315,20 +325,25 @@ fn border_rule(border: &Border) -> Option<String> {
         BorderStyle::Named("double") => "double",
         _ => "solid",
     };
-    let colour = rgb(&border.color).unwrap_or_else(|| "#000000".to_owned());
+    let colour = rgb(&border.color, theme).unwrap_or_else(|| "#000000".to_owned());
     Some(format!("{width} {kind} {colour}"))
 }
 
-/// A colour as `#rrggbb`, for the colours that state their own value.
-fn rgb(color: &Color) -> Option<String> {
-    match color {
-        Color::Argb(v) => Some(format!("#{:06X}", v & 0x00FF_FFFF)),
-        Color::Auto | Color::Indexed(_) | Color::Theme { .. } => None,
-    }
+/// A colour as `#rrggbb`. ODS has no theme and no palette, so a theme
+/// colour is resolved through the workbook's theme, tint included, and an
+/// indexed one through the default palette; only automatic has no value.
+fn rgb(color: &Color, theme: &[u32]) -> Option<String> {
+    crate::shared::palette::rgb_in(color, theme).map(|v| format!("#{v:06X}"))
 }
 
 /// One sheet as a `table:table`.
-fn table(book: &Spreadsheet, sheet: &Worksheet, index: usize, out: &mut String) {
+fn table(
+    book: &Spreadsheet,
+    sheet: &Worksheet,
+    index: usize,
+    fonts: &[DiffFont],
+    out: &mut String,
+) {
     let _ = write!(
         out,
         r#"<table:table table:name="{}">"#,
@@ -391,7 +406,7 @@ fn table(book: &Spreadsheet, sheet: &Worksheet, index: usize, out: &mut String) 
             } else {
                 "table:table-cell"
             };
-            cell(book, sheet, at, &names, tag, &mut element);
+            cell(book, sheet, at, &names, fonts, tag, &mut element);
             match &mut run {
                 Some((previous, count)) if *previous == element => *count += 1,
                 Some((previous, count)) => {
@@ -432,6 +447,7 @@ fn cell(
     sheet: &Worksheet,
     at: CellRef,
     names: &[String],
+    fonts: &[DiffFont],
     tag: &str,
     out: &mut String,
 ) {
@@ -509,15 +525,130 @@ fn cell(
                     escape(&text)
                 );
             }
-            // Several lines in one cell are several paragraphs.
-            None => {
-                for line in text.split('\n') {
-                    let _ = write!(out, "<text:p>{}</text:p>", escape(line));
+            None => match &shown {
+                CellValue::RichText(runs) => rich_paragraphs(runs, fonts, out),
+                _ => rich_paragraphs(&[crate::model::TextRun { text, font: None }], fonts, out),
+            },
+        }
+    }
+    let _ = write!(out, "</{tag}>");
+}
+
+/// Every distinct font a run of rich text changes, in the order first met:
+/// each becomes an automatic text style, `T0` onwards.
+fn run_fonts(book: &Spreadsheet) -> Vec<DiffFont> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for sheet in book.sheets() {
+        for (_, cell) in sheet.iter() {
+            let runs = match &cell.value {
+                CellValue::RichText(runs) => runs,
+                CellValue::Formula {
+                    cached: Some(v), ..
+                } => match v.as_ref() {
+                    CellValue::RichText(runs) => runs,
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            for font in runs.iter().filter_map(|r| r.font.as_ref()) {
+                if seen.insert(font) {
+                    out.push(font.clone());
                 }
             }
         }
     }
-    let _ = write!(out, "</{tag}>");
+    out
+}
+
+/// One run font as an automatic text style.
+fn text_style(index: usize, font: &DiffFont, theme: &[u32], out: &mut String) {
+    let mut props = String::new();
+    if let Some(name) = &font.name {
+        let _ = write!(props, r#" fo:font-family="{}""#, escape(name));
+    }
+    if let Some(size) = font.size {
+        let _ = write!(props, r#" fo:font-size="{}pt""#, f64::from(size) / 100.0);
+    }
+    if font.bold == Some(true) {
+        props.push_str(r#" fo:font-weight="bold""#);
+    }
+    if font.italic == Some(true) {
+        props.push_str(r#" fo:font-style="italic""#);
+    }
+    if let Some(underline) = font.underline.filter(|u| *u != Underline::None) {
+        let kind = match underline {
+            Underline::Double | Underline::DoubleAccounting => "double",
+            _ => "single",
+        };
+        let _ = write!(
+            props,
+            concat!(
+                r#" style:text-underline-style="solid" style:text-underline-type="{}""#,
+                r#" style:text-underline-color="font-color""#,
+            ),
+            kind
+        );
+    }
+    if font.strike == Some(true) {
+        props.push_str(
+            r#" style:text-line-through-style="solid" style:text-line-through-type="single""#,
+        );
+    }
+    if let Some(colour) = font.color.as_ref().and_then(|c| rgb(c, theme)) {
+        let _ = write!(props, r#" fo:color="{colour}""#);
+    }
+    match font.script {
+        Some(Script::Superscript) => props.push_str(r#" style:text-position="super 58%""#),
+        Some(Script::Subscript) => props.push_str(r#" style:text-position="sub 58%""#),
+        Some(Script::Baseline) | None => {}
+    }
+    let _ = write!(
+        out,
+        r#"<style:style style:name="T{index}" style:family="text"><style:text-properties{props}/></style:style>"#
+    );
+}
+
+/// The paragraphs of a cell: a line each, a span for each run that changes
+/// the font.
+fn rich_paragraphs(runs: &[crate::model::TextRun], fonts: &[DiffFont], out: &mut String) {
+    out.push_str("<text:p>");
+    // ODF collapses a space that follows another, or starts a paragraph;
+    // such a space is written as `<text:s/>`.
+    let mut after_space = true;
+    for run in runs {
+        let style = run
+            .font
+            .as_ref()
+            .and_then(|f| fonts.iter().position(|x| x == f));
+        for (i, piece) in run.text.split('\n').enumerate() {
+            if i > 0 {
+                out.push_str("</text:p><text:p>");
+                after_space = true;
+            }
+            if piece.is_empty() {
+                continue;
+            }
+            if let Some(style) = style {
+                let _ = write!(out, r#"<text:span text:style-name="T{style}">"#);
+            }
+            for c in piece.chars() {
+                match c {
+                    ' ' if after_space => out.push_str("<text:s/>"),
+                    '\t' => out.push_str("<text:tab/>"),
+                    '&' => out.push_str("&amp;"),
+                    '<' => out.push_str("&lt;"),
+                    '>' => out.push_str("&gt;"),
+                    c => out.push(c),
+                }
+                after_space = c == ' ';
+            }
+            if style.is_some() {
+                out.push_str("</text:span>");
+            }
+        }
+    }
+    out.push_str("</text:p>");
 }
 
 /// Writes the typed-value attributes of a cell and returns the text to show.

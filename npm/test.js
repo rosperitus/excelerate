@@ -741,3 +741,35 @@ test("document properties", () => {
   assert.strictEqual(Book.read(book.toOds()).documentProperties().company, null);
   assert.throws(() => book.setDocumentProperties({ title: 5 }), /string or null/);
 });
+
+test("formatted text", () => {
+  const book = new Book();
+  const runs = [
+    { text: "Итого: ", font: { bold: true, color: "#FFFF0000" } },
+    { text: "x", font: null },
+    { text: "2", font: { script: "superscript", size: 8 } },
+  ];
+  book.setRichText(0, "A1", runs);
+  assert.strictEqual(book.get(0, "A1"), "Итого: x2");
+  assert.strictEqual(book.getRichText(0, "B1"), null);
+  book.set(0, "B1", "plain");
+  assert.strictEqual(book.getRichTextAt(0, 1, 2), null);
+  // Every format that keeps runs gives them back.
+  for (const [format, bytes] of [
+    ["xlsx", book.toXlsx()],
+    ["ods", book.toOds()],
+    ["xls", book.toXls()],
+  ]) {
+    const back = Book.read(bytes).getRichText(0, "A1");
+    assert.deepStrictEqual(
+      back.map((r) => r.text),
+      ["Итого: ", "x", "2"],
+      format,
+    );
+    assert.strictEqual(back[0].font.bold, true, format);
+    assert.strictEqual(back[0].font.color, "#FFFF0000", format);
+    assert.strictEqual(back[2].font.script, "superscript", format);
+    assert.strictEqual(back[2].font.size, 8, format);
+  }
+  assert.throws(() => book.setRichText(0, "A1", [{ font: {} }]), /text/);
+});

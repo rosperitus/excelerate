@@ -110,8 +110,9 @@ records are the same ones in the same order, packed more narrowly. One byte per
 character in the workbook's code page rather than UTF-16, one byte per column,
 the relative flags of a reference on its row rather than its column, and an
 `XF` record of sixteen bytes rather than twenty. A 3D reference names its sheet
-inside the token, where BIFF8 points at an `EXTERNSHEET` entry. One thing it leaves behind: the formatting runs of an `RSTRING` cell, whose
-text is kept and whose runs are not.
+inside the token, where BIFF8 points at an `EXTERNSHEET` entry. Its formatted
+text lives on the cell (`RSTRING`) rather than in the string table, and is
+read into the same `RichText`.
 
 Its text is bytes rather than UTF-16, so it needs a code page. The workbook
 names one in a `CODEPAGE` record, and `shared::codepage` holds the pages such
@@ -190,7 +191,9 @@ same precision Excel shows.
 
 Writing gives you one table per sheet, workbook styles as `td.styleN` classes,
 values rendered through the number-format engine, `colspan`/`rowspan`, widths,
-heights, hyperlinks and rich text:
+heights, hyperlinks and rich text, one `<span style>` per run. Reading a page
+turns `<b>`, `<i>`, `<u>`, `<s>`, `<sup>`, `<sub>`, `<font>` and
+`<span style>` inside a cell into runs:
 
 ```rust
 use excelerate::writer::{HtmlOptions, write_html_to};

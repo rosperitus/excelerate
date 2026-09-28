@@ -209,6 +209,46 @@ impl FontScheme {
     }
 }
 
+impl Font {
+    /// This font with what a run changes about it laid over it.
+    #[must_use]
+    pub fn with(&self, run: &DiffFont) -> Self {
+        Self {
+            name: run.name.clone().unwrap_or_else(|| self.name.clone()),
+            size: run.size.unwrap_or(self.size),
+            bold: run.bold.unwrap_or(self.bold),
+            italic: run.italic.unwrap_or(self.italic),
+            underline: run.underline.unwrap_or(self.underline),
+            strike: run.strike.unwrap_or(self.strike),
+            color: run.color.clone().unwrap_or_else(|| self.color.clone()),
+            script: run.script.unwrap_or(self.script),
+            family: run.family.or(self.family),
+            charset: run.charset.or(self.charset),
+            scheme: run.scheme.or(self.scheme),
+        }
+    }
+}
+
+impl From<&Font> for DiffFont {
+    /// A whole font as a run states it: every part named. The binary formats
+    /// give a run a complete font record, not an override.
+    fn from(font: &Font) -> Self {
+        Self {
+            name: Some(font.name.clone()),
+            size: Some(font.size),
+            bold: Some(font.bold),
+            italic: Some(font.italic),
+            underline: Some(font.underline),
+            strike: Some(font.strike),
+            color: Some(font.color.clone()),
+            script: Some(font.script),
+            charset: font.charset,
+            family: font.family,
+            scheme: font.scheme,
+        }
+    }
+}
+
 impl Default for Font {
     /// Excel's default font.
     fn default() -> Self {
@@ -625,6 +665,9 @@ pub struct DiffFont {
     pub script: Option<Script>,
     /// Override the character set.
     pub charset: Option<u32>,
+    /// Override the font family class: 1 roman, 2 swiss, 3 modern... What a
+    /// reader without the named font falls back on.
+    pub family: Option<u32>,
     /// Override which half of the theme's font pair this run follows.
     pub scheme: Option<FontScheme>,
 }

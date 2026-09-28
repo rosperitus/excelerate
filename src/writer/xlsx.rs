@@ -230,6 +230,9 @@ fn run_font_xml(font: &crate::style::DiffFont) -> String {
         Some(crate::style::Script::Subscript) => s.push_str(r#"<vertAlign val="subscript"/>"#),
         Some(crate::style::Script::Baseline) | None => {}
     }
+    if let Some(family) = font.family {
+        let _ = write!(s, r#"<family val="{family}"/>"#);
+    }
     if let Some(charset) = font.charset {
         let _ = write!(s, r#"<charset val="{charset}"/>"#);
     }

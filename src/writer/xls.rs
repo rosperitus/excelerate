@@ -131,10 +131,16 @@ struct Plan {
     format_of: Vec<u16>,
     /// Format codes to spell out, with the index each takes.
     formats: Vec<(u16, String)>,
-    /// Every distinct string, in the order the table holds them.
-    strings: Vec<String>,
-    /// Where each string sits in the table.
+    /// Every distinct string, in the order the table holds them, with its
+    /// formatting runs: (first character, font index).
+    strings: Vec<(String, Vec<(u16, u16)>)>,
+    /// Where each plain string sits in the table.
     string_index: HashMap<String, u32>,
+    /// Where each rich string sits, keyed by its text and runs: the same text
+    /// in two cells of different fonts is two strings.
+    rich_index: HashMap<(String, Vec<(u16, u16)>), u32>,
+    /// The rich string of each rich cell.
+    rich_of: HashMap<(usize, CellRef), u32>,
     /// How many string cells there are altogether.
     string_uses: u32,
     /// What each formula cell works out to. A formula is written as its
@@ -163,6 +169,8 @@ impl Plan {
             formats: Vec::new(),
             strings: Vec::new(),
             string_index: HashMap::new(),
+            rich_index: HashMap::new(),
+            rich_of: HashMap::new(),
             string_uses: 0,
             resolved: HashMap::new(),
             compiled: HashMap::new(),
@@ -211,12 +219,26 @@ impl Plan {
                     }
                     other => other.clone(),
                 };
-                if let Some(text) = string_of(&value) {
+                if let CellValue::RichText(runs) = &value {
+                    let base = book
+                        .styles
+                        .get(cell.style)
+                        .map(|s| s.font.clone())
+                        .unwrap_or_default();
+                    let key = plan.rich_string(runs, &base);
+                    let next = u32::try_from(plan.strings.len()).unwrap_or(0);
+                    let slot = *plan.rich_index.entry(key.clone()).or_insert_with(|| {
+                        plan.strings.push(key);
+                        next
+                    });
+                    plan.rich_of.insert((index, at), slot);
+                    plan.string_uses += 1;
+                } else if let Some(text) = string_of(&value) {
                     plan.string_uses += 1;
                     if !plan.string_index.contains_key(&text) {
                         let index = u32::try_from(plan.strings.len()).unwrap_or(0);
                         plan.string_index.insert(text.clone(), index);
-                        plan.strings.push(text);
+                        plan.strings.push((text, Vec::new()));
                     }
                 }
             }
@@ -230,6 +252,34 @@ impl Plan {
             plan.names.push(compiled);
         }
         plan
+    }
+
+    /// A rich string as the table keeps it: the text, and where each run
+    /// starts in UTF-16 units with the font it is drawn in. A run's font is
+    /// the cell's own with what the run changes laid over it, since BIFF gives
+    /// a run a whole font record.
+    fn rich_string(
+        &mut self,
+        runs: &[crate::model::TextRun],
+        base: &crate::style::Font,
+    ) -> (String, Vec<(u16, u16)>) {
+        let mut text = String::new();
+        let mut starts = Vec::with_capacity(runs.len());
+        let mut units = 0usize;
+        for run in runs.iter().filter(|r| !r.text.is_empty()) {
+            let font = run
+                .font
+                .as_ref()
+                .map_or_else(|| base.clone(), |f| base.with(f));
+            // A string holds 65535 characters at most; a run past that has
+            // nothing left to format.
+            if let Ok(first) = u16::try_from(units) {
+                starts.push((first, plan_font(&mut self.fonts, &font)));
+            }
+            units += run.text.encode_utf16().count();
+            text.push_str(&run.text);
+        }
+        (text, starts)
     }
 
     /// The globals substream, up to but not including its `EOF`.
@@ -346,8 +396,8 @@ impl Plan {
             first.extend_from_slice(&self.string_uses.to_le_bytes());
             first.extend_from_slice(&unique.to_le_bytes());
         }
-        for text in &self.strings {
-            write_sst_string(&mut chunks, text);
+        for (text, runs) in &self.strings {
+            write_sst_string(&mut chunks, text, runs);
         }
         let mut chunks = chunks.into_iter();
         if let Some(first) = chunks.next() {
@@ -756,12 +806,10 @@ fn cell_record(
             data.push(1);
             record(out, 0x0205, &data);
         }
-        // Rich text keeps only its text; the old format holds the runs in the
-        // string table rather than on the cell.
+        // The runs live in the string table, not on the cell.
         CellValue::RichText(_) => {
-            let text = string_of(&value).unwrap_or_default();
             head(&mut data);
-            let index = plan.string_index.get(&text).copied().unwrap_or(0);
+            let index = plan.rich_of.get(&(sheet, at)).copied().unwrap_or(0);
             data.extend_from_slice(&index.to_le_bytes());
             record(out, 0x00FD, &data);
         }
@@ -1147,7 +1195,8 @@ struct Colors {
 }
 
 impl Colors {
-    /// Collects every colour the style table uses, in style order.
+    /// Collects every colour the style table uses, in style order, then the
+    /// colours of rich text runs.
     fn plan(book: &Spreadsheet) -> Self {
         let theme = book
             .theme
@@ -1177,6 +1226,15 @@ impl Colors {
                     .into_iter()
                     .filter_map(|c| palette::rgb_in(c, &theme)),
             );
+        }
+        // The runs of rich text draw in colours of their own.
+        for sheet in book.sheets() {
+            for (_, cell) in sheet.iter() {
+                if let CellValue::RichText(runs) = &cell.value {
+                    let colors = runs.iter().filter_map(|r| r.font.as_ref()?.color.as_ref());
+                    used.extend(colors.filter_map(|c| palette::rgb_in(c, &theme)));
+                }
+            }
         }
         Self {
             builder: palette::Builder::plan(&used),
@@ -1229,21 +1287,26 @@ fn push_units(out: &mut Vec<u8>, units: &[u16], wide: bool) {
 ///
 /// A record that runs out mid-string is continued by a `CONTINUE` whose first
 /// byte says the width of what follows - the same rule the reader takes apart.
-fn write_sst_string(chunks: &mut Vec<Vec<u8>>, text: &str) {
+fn write_sst_string(chunks: &mut Vec<Vec<u8>>, text: &str, runs: &[(u16, u16)]) {
     let units: Vec<u16> = text.encode_utf16().take(0xFFFF).collect();
     let wide = units.iter().any(|&u| u > 0xFF);
     let size = if wide { 2 } else { 1 };
+    let runs = &runs[..runs.len().min(0xFFFF)];
+    let header = if runs.is_empty() { 3 } else { 5 };
 
     // The header is never split: a chunk with no room for it starts a new one.
     if chunks
         .last()
-        .is_none_or(|chunk| chunk.len() + 3 + size > MAX_PAYLOAD)
+        .is_none_or(|chunk| chunk.len() + header + size > MAX_PAYLOAD)
     {
         chunks.push(Vec::new());
     }
     if let Some(chunk) = chunks.last_mut() {
         chunk.extend_from_slice(&u16::try_from(units.len()).unwrap_or(0).to_le_bytes());
-        chunk.push(u8::from(wide));
+        chunk.push(u8::from(wide) | if runs.is_empty() { 0 } else { 0x08 });
+        if !runs.is_empty() {
+            chunk.extend_from_slice(&u16::try_from(runs.len()).unwrap_or(0).to_le_bytes());
+        }
     }
 
     let mut written = 0;
@@ -1261,6 +1324,20 @@ fn write_sst_string(chunks: &mut Vec<Vec<u8>>, text: &str) {
             push_units(chunk, &units[written..written + take], wide);
         }
         written += take;
+    }
+    // The runs follow the characters. A `CONTINUE` inside them opens with no
+    // flag byte, and one run is never cut.
+    for &(first, font) in runs {
+        if chunks
+            .last()
+            .is_none_or(|chunk| chunk.len() + 4 > MAX_PAYLOAD)
+        {
+            chunks.push(Vec::new());
+        }
+        if let Some(chunk) = chunks.last_mut() {
+            chunk.extend_from_slice(&first.to_le_bytes());
+            chunk.extend_from_slice(&font.to_le_bytes());
+        }
     }
 }
 

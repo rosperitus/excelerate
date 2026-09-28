@@ -45,9 +45,9 @@ use crate::shared::codepage;
 use crate::shared::date::Epoch;
 use crate::shared::palette;
 use crate::style::{
-    Alignment, Border, BorderStyle, Borders, Color, DiagonalDirection, Fill, Font, HorizontalAlign,
-    NumberFormat, Pattern, Protection, ProtectionState, Script, Style, StyleId, StyleTable,
-    Underline, VerticalAlign,
+    Alignment, Border, BorderStyle, Borders, Color, DiagonalDirection, DiffFont, Fill, Font,
+    HorizontalAlign, NumberFormat, Pattern, Protection, ProtectionState, Script, Style, StyleId,
+    StyleTable, Underline, VerticalAlign,
 };
 use crate::{CellRef, Col, Range, Row};
 use std::collections::HashMap;
@@ -467,6 +467,29 @@ impl<'a> Reader<'a> {
 
     /// The shared string table, which is one record plus however many
     /// `CONTINUE` records it needs. Returns where the reader should carry on.
+    /// A string with its formatting runs, as the model keeps it.
+    fn rich_text(&self, text: String, runs: &[(usize, u16)]) -> CellValue {
+        let runs = runs
+            .iter()
+            .map(|&(at, index)| {
+                let font = self.font_record(index);
+                (at, font.map(|f| DiffFont::from(&f.font(&self.palette))))
+            })
+            .collect();
+        super::rich_text(text, runs)
+    }
+
+    /// A `FONT` record by the index an `XF` or a run gives. Font 4 does not
+    /// exist: the numbering skips it, so every index past it is one ahead of
+    /// its record.
+    fn font_record(&self, index: u16) -> Option<&FontRecord> {
+        match index {
+            0..4 => self.fonts.get(usize::from(index)),
+            4 => None,
+            _ => self.fonts.get(usize::from(index) - 1),
+        }
+    }
+
     fn shared_strings(&self, sst: &Record<'_>, mut at: usize) -> (Vec<CellValue>, usize) {
         let unique = u32_at(sst.data, 4) as usize;
         let mut data = sst.data[8.min(sst.data.len())..].to_vec();
@@ -488,10 +511,10 @@ impl<'a> Reader<'a> {
             if pos >= data.len() {
                 break;
             }
-            let Some((text, next)) = sst_string(&data, pos, &breaks) else {
+            let Some((text, runs, next)) = sst_string(&data, pos, &breaks) else {
                 break;
             };
-            strings.push(CellValue::text(text));
+            strings.push(self.rich_text(text, &runs));
             pos = next;
         }
         (strings, at)
@@ -646,11 +669,17 @@ impl<'a> Reader<'a> {
                     );
                 }
             }
-            // `RSTRING` is a `LABEL` with formatting runs after the text.
-            // The runs are not modelled here, and the text is the same.
-            record::LABEL | record::RSTRING => {
+            record::LABEL => {
                 let (text, _) = unicode_string(data, 6, self.biff, self.codepage);
                 self.put(sheet, r, c, u16_at(data, 4), CellValue::text(text));
+            }
+            // A `LABEL` with formatting runs after the text, which is how
+            // BIFF5 stores rich text: its strings are not shared.
+            record::RSTRING => {
+                let (text, end) = unicode_string(data, 6, self.biff, self.codepage);
+                let runs = rstring_runs(data, end, self.biff, &text);
+                let value = self.rich_text(text, &runs);
+                self.put(sheet, r, c, u16_at(data, 4), value);
             }
             record::LABELSST => {
                 let index = u32_at(data, 6) as usize;
@@ -846,13 +875,7 @@ impl<'a> Reader<'a> {
             None if xf.format == 0 => NumberFormat::General,
             None => NumberFormat::Builtin(xf.format),
         };
-        // Font 4 does not exist: the numbering skips it, so every index past
-        // it is one ahead of its record.
-        let font_record = match xf.font {
-            0..4 => self.fonts.get(usize::from(xf.font)),
-            4 => None,
-            _ => self.fonts.get(usize::from(xf.font) - 1),
-        };
+        let font_record = self.font_record(xf.font);
         let font = font_record.map_or_else(Font::default, |f| f.font(&self.palette));
         let color = |index| palette::resolve(&self.palette, index);
         let border = |style, index| Border {
@@ -1399,6 +1422,32 @@ fn unicode_string(data: &[u8], at: usize, biff: Biff, page: u16) -> (String, usi
     }
 }
 
+/// The formatting runs after the text of an `RSTRING`, as (byte offset into
+/// the text, font index). BIFF5 counts them in a byte and gives each two
+/// bytes; BIFF8 a word and four.
+fn rstring_runs(data: &[u8], at: usize, biff: Biff, text: &str) -> Vec<(usize, u16)> {
+    let (count, first, width) = match biff {
+        Biff::V5 => (usize::from(data.get(at).copied().unwrap_or(0)), at + 1, 2),
+        Biff::V8 => (usize::from(u16_at(data, at)), at + 2, 4),
+    };
+    let chars: Vec<usize> = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .chain([text.len()])
+        .collect();
+    (0..count)
+        .map_while(|i| {
+            let at = first + i * width;
+            data.get(at + width - 1)?;
+            let (ich, font) = match biff {
+                Biff::V5 => (usize::from(data[at]), u16::from(data[at + 1])),
+                Biff::V8 => (usize::from(u16_at(data, at)), u16_at(data, at + 2)),
+            };
+            Some((chars.get(ich).copied().unwrap_or(text.len()), font))
+        })
+        .collect()
+}
+
 /// Text one byte per character, the way BIFF5 writes it, in `page`.
 fn bytes_string(data: &[u8], at: usize, count: usize, page: u16) -> String {
     let end = at.saturating_add(count).min(data.len());
@@ -1432,14 +1481,15 @@ fn read_chars(data: &[u8], at: usize, count: usize, wide: bool) -> (String, usiz
 }
 
 /// One string of the shared table, which may be cut in half by a `CONTINUE`
-/// record and go on in the other width. Returns the text and where it ends.
+/// record and go on in the other width. Returns the text, its formatting
+/// runs as (byte offset into the text, font index), and where it ends.
 ///
 /// The cut lands anywhere, the middle of a character included: the byte after
 /// the break says how the rest is written, and a two-byte character whose
 /// first half sat in the previous record takes its second half after that
 /// byte. Reading a byte at a time rather than a character at a time is what
 /// keeps that case straight.
-fn sst_string(data: &[u8], at: usize, breaks: &[usize]) -> Option<(String, usize)> {
+fn sst_string(data: &[u8], at: usize, breaks: &[usize]) -> Option<(String, RunStarts, usize)> {
     let count = usize::from(u16_at(data, at));
     let flags = data.get(at + 2).copied()?;
     let mut pos = at + 3;
@@ -1476,14 +1526,28 @@ fn sst_string(data: &[u8], at: usize, breaks: &[usize]) -> Option<(String, usize
         };
         units.push(u16::from_le_bytes([low, high]));
     }
-    // The formatting runs and the far-eastern extras are skipped: the model
-    // keeps rich text on a cell, not on a shared string.
-    pos = pos.saturating_add(rich_runs * 4).saturating_add(extended);
-    let text = char::decode_utf16(units)
+    let text: String = char::decode_utf16(units)
         .map(|c| c.unwrap_or(char::REPLACEMENT_CHARACTER))
         .collect();
-    Some((text, pos))
+    // The runs follow the characters: where each starts, in characters, and
+    // its font. A `CONTINUE` inside them adds no flag byte, so they are read
+    // straight through. The far-eastern extras after them are skipped.
+    let byte_at = super::utf16_offsets(&text);
+    let runs = (0..rich_runs)
+        .map(|i| {
+            let at = pos + i * 4;
+            let ich = usize::from(u16_at(data, at));
+            let offset = byte_at.get(ich).copied().unwrap_or(text.len());
+            (offset, u16_at(data, at + 2))
+        })
+        .collect();
+    pos = pos.saturating_add(rich_runs * 4).saturating_add(extended);
+    Some((text, runs, pos))
 }
+
+/// Where the formatting runs of a string start - a byte offset into its text -
+/// and the font index of each.
+type RunStarts = Vec<(usize, u16)>;
 
 /// Steps over the flag byte a `CONTINUE` record opens with, taking the width
 /// from it. `next` is the first break not yet behind `pos`.
@@ -1579,7 +1643,7 @@ mod tests {
         let boundary = data.len();
         // The continuation opens with its own flags byte, then the high byte.
         data.extend_from_slice(&[0x01, 0x04]);
-        let (text, end) = sst_string(&data, 0, &[boundary]).expect("the string parses");
+        let (text, _, end) = sst_string(&data, 0, &[boundary]).expect("the string parses");
         assert_eq!(text, "абв");
         assert_eq!(end, data.len());
     }
@@ -1590,7 +1654,7 @@ mod tests {
         let mut data = vec![4, 0, 0x01, 0x30, 0x04, 0x31, 0x04, 0x32, 0x04];
         let boundary = data.len();
         data.extend_from_slice(&[0x00, b'x']);
-        let (text, _) = sst_string(&data, 0, &[boundary]).expect("the string parses");
+        let (text, _, _) = sst_string(&data, 0, &[boundary]).expect("the string parses");
         assert_eq!(text, "абвx");
     }
 
@@ -1605,7 +1669,7 @@ mod tests {
         let second = data.len();
         data.extend_from_slice(&[0x00, b'c']);
         let breaks = [first, first, second];
-        let (text, end) = sst_string(&data, 0, &breaks).expect("the string parses");
+        let (text, _, end) = sst_string(&data, 0, &breaks).expect("the string parses");
         assert_eq!(text, "abвc");
         assert_eq!(end, data.len());
     }

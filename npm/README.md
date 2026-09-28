@@ -174,6 +174,8 @@ class Book {
   setCellStyle(sheet: number, address: string, patch: CellStylePatch): void;
   setCellStyleAt(sheet: number, row: number, column: number, patch: CellStylePatch): void;
   setRangeStyle(sheet: number, range: string, patch: CellStylePatch): void;
+  getRichText(sheet: number, address: string): TextRun[] | null;   // [{ text, font }]
+  setRichText(sheet: number, address: string, runs: TextRun[]): void;
 
   // Notes, links, tables
   setComment(sheet: number, address: string, author: string, text: string): void;

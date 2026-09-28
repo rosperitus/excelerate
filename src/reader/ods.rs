@@ -23,12 +23,12 @@
 
 use super::zipxml::{MAX_UNCOMPRESSED_SIZE, attr, read_part, uncompressed_size};
 use crate::error::{Error, Result};
-use crate::model::{CellValue, ColumnRun, Hyperlink, LinkTarget, Spreadsheet, Worksheet};
+use crate::model::{CellValue, ColumnRun, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet};
 use crate::shared::date::{DateTime, Epoch, to_serial};
 use crate::shared::odf_formula;
 use crate::style::{
-    Border, BorderStyle, Color, HorizontalAlign, NumberFormat, Pattern, Style, StyleId, Underline,
-    VerticalAlign,
+    Border, BorderStyle, Color, DiffFont, HorizontalAlign, NumberFormat, Pattern, Script, Style,
+    StyleId, Underline, VerticalAlign,
 };
 use crate::{CellRef, Col, Range, Row};
 use quick_xml::Reader;
@@ -105,11 +105,13 @@ fn read_content(xml: &str) -> Result<Spreadsheet> {
                 }
             }
             Ok(Event::GeneralRef(r)) if state.in_text > 0 => {
-                super::zipxml::push_entity(&mut state.cell.text, &r);
+                let mut text = String::new();
+                super::zipxml::push_entity(&mut text, &r);
+                state.push_text(&text);
             }
             Ok(Event::Text(t)) => {
                 if state.in_text > 0 {
-                    state.cell.text.push_str(&t.xml10_content());
+                    state.push_text(&t.xml10_content());
                 }
             }
             Ok(Event::End(e)) => state.end(e.local_name().as_ref()),
@@ -148,6 +150,13 @@ struct ContentReader {
     /// a cell names its style, the style has been read.
     styles: HashMap<String, StyleId>,
     building: Option<(String, Style)>,
+    /// The automatic text styles a `text:span` names, as the part of a font
+    /// they change; read before the body, like the cell styles.
+    text_styles: HashMap<String, DiffFont>,
+    building_text: Option<(String, DiffFont)>,
+    /// The fonts of the `text:span` elements open around the text being read,
+    /// innermost last; `None` for a span that names no style.
+    spans: Vec<Option<DiffFont>>,
     /// Empty cells that carry only a style. The tail of every row is a run of
     /// them reaching the last column of the sheet, and materialising that would
     /// be thousands of cells saying nothing; they are held back until a cell
@@ -168,12 +177,39 @@ impl Default for ContentReader {
             names: Vec::new(),
             styles: HashMap::new(),
             building: None,
+            text_styles: HashMap::new(),
+            building_text: None,
+            spans: Vec::new(),
             pending: Vec::new(),
         }
     }
 }
 
 impl ContentReader {
+    /// Text of the cell being read: whole, and in runs by the font of the
+    /// spans around it once a span changes the font. Plain cells, nearly all
+    /// of them, never pay for the runs.
+    fn push_text(&mut self, text: &str) {
+        let font = self.spans.iter().rev().find_map(Clone::clone);
+        if self.cell.runs.is_empty() && font.is_some() && !self.cell.text.is_empty() {
+            self.cell.runs.push(TextRun {
+                text: self.cell.text.clone(),
+                font: None,
+            });
+        }
+        self.cell.text.push_str(text);
+        if self.cell.runs.is_empty() && font.is_none() {
+            return;
+        }
+        match self.cell.runs.last_mut() {
+            Some(run) if run.font == font => run.text.push_str(text),
+            _ => self.cell.runs.push(TextRun {
+                text: text.to_owned(),
+                font,
+            }),
+        }
+    }
+
     fn start(&mut self, name: &str, e: &quick_xml::events::BytesStart<'_>) {
         let _ = self.start_grid(name, e) || self.start_style(name, e) || self.start_text(name, e);
     }
@@ -236,13 +272,15 @@ impl ContentReader {
     /// An automatic cell style and the property elements inside it.
     fn start_style(&mut self, name: &str, e: &quick_xml::events::BytesStart<'_>) -> bool {
         match name {
-            "style" => {
-                if attr(e, "family").as_deref() == Some("table-cell")
-                    && let Some(named) = attr(e, "name")
-                {
+            "style" => match (attr(e, "family").as_deref(), attr(e, "name")) {
+                (Some("table-cell"), Some(named)) => {
                     self.building = Some((named, Style::default()));
                 }
-            }
+                (Some("text"), Some(named)) => {
+                    self.building_text = Some((named, DiffFont::default()));
+                }
+                _ => {}
+            },
             "table-cell-properties" => {
                 if let Some((_, style)) = self.building.as_mut() {
                     cell_properties(style, e);
@@ -256,6 +294,8 @@ impl ContentReader {
             "text-properties" => {
                 if let Some((_, style)) = self.building.as_mut() {
                     text_properties(style, e);
+                } else if let Some((_, font)) = self.building_text.as_mut() {
+                    *font = run_font(e);
                 }
             }
             _ => return false,
@@ -267,17 +307,29 @@ impl ContentReader {
     /// characters, and the named expressions that sit beside the sheets.
     fn start_text(&mut self, name: &str, e: &quick_xml::events::BytesStart<'_>) -> bool {
         match name {
-            "p" | "span" => self.in_text += 1,
+            "p" => self.in_text += 1,
+            "span" => {
+                let font = attr(e, "style-name").and_then(|n| self.text_styles.get(&n).cloned());
+                self.spans.push(font);
+                self.in_text += 1;
+            }
             "a" => {
                 if let Some(href) = attr(e, "href") {
                     self.cell.link = Some(href);
                 }
                 self.in_text += 1;
             }
-            // <text:s/> is a space, <text:tab/> a tab, <text:line-break/> a newline.
-            "s" if self.in_text > 0 => self.cell.text.push(' '),
-            "tab" if self.in_text > 0 => self.cell.text.push('\t'),
-            "line-break" if self.in_text > 0 => self.cell.text.push('\n'),
+            // <text:s text:c="3"/> is three spaces, <text:tab/> a tab,
+            // <text:line-break/> a newline. The count is capped: it is a
+            // number in the file, and a cell holds 32767 characters.
+            "s" if self.in_text > 0 => {
+                let count = attr(e, "c")
+                    .and_then(|c| c.parse::<usize>().ok())
+                    .unwrap_or(1);
+                self.push_text(&" ".repeat(count.clamp(1, 32_767)));
+            }
+            "tab" if self.in_text > 0 => self.push_text("\t"),
+            "line-break" if self.in_text > 0 => self.push_text("\n"),
             "named-range" | "named-expression" => {
                 let target = attr(e, "cell-range-address")
                     .or_else(|| attr(e, "expression"))
@@ -323,15 +375,23 @@ impl ContentReader {
                     let id = self.book.styles.intern(style);
                     self.styles.insert(named, id);
                 }
+                if let Some((named, font)) = self.building_text.take() {
+                    self.text_styles.insert(named, font);
+                }
             }
             "p" => {
                 // Several paragraphs in one cell are separate lines.
                 self.in_text = self.in_text.saturating_sub(1);
                 if self.in_text == 0 {
-                    self.cell.text.push('\n');
+                    self.spans.clear();
+                    self.push_text("\n");
                 }
             }
-            "span" | "a" => self.in_text = self.in_text.saturating_sub(1),
+            "span" => {
+                self.spans.pop();
+                self.in_text = self.in_text.saturating_sub(1);
+            }
+            "a" => self.in_text = self.in_text.saturating_sub(1),
             _ => {}
         }
     }
@@ -382,6 +442,9 @@ struct CellState {
     matrix: Option<(u64, u64)>,
     style: Option<StyleId>,
     text: String,
+    /// The same text in runs, by the font of the spans it sat in; empty until
+    /// a span changes the font.
+    runs: Vec<TextRun>,
     link: Option<String>,
 }
 
@@ -538,10 +601,10 @@ fn value_of(cell: &CellState) -> (CellValue, Option<String>) {
             ),
             None => (CellValue::text(shown), None),
         },
-        "string" => (
-            CellValue::text(cell.string.as_deref().unwrap_or(shown)),
-            None,
-        ),
+        "string" => match (&cell.string, rich(&cell.runs)) {
+            (None, Some(runs)) => (CellValue::RichText(runs), None),
+            (string, _) => (CellValue::text(string.as_deref().unwrap_or(shown)), None),
+        },
         // No type and no text is an empty cell; text without a type is text,
         // which is what a formula's string result looks like.
         _ if shown.is_empty() => (CellValue::Empty, None),
@@ -781,6 +844,77 @@ fn text_properties(style: &mut Style, e: &quick_xml::events::BytesStart<'_>) {
     if let Some(colour) = attr(e, "color").as_deref().and_then(colour_of) {
         style.font.color = colour;
     }
+}
+
+/// The runs of a cell as rich text: `None` when no run changes the font,
+/// which is plain text. The newline the last paragraph ended with is not
+/// part of the text.
+fn rich(runs: &[TextRun]) -> Option<Vec<TextRun>> {
+    if runs.is_empty() {
+        return None;
+    }
+    let mut runs = runs.to_vec();
+    if let Some(last) = runs.last_mut() {
+        let kept = last.text.trim_end_matches('\n').len();
+        last.text.truncate(kept);
+    }
+    runs.retain(|r| !r.text.is_empty());
+    Some(runs)
+}
+
+/// Reads `style:text-properties` of a text style: what a span changes about
+/// the cell's font. Only what is switched on is kept - writers state
+/// `underline none` on every span, and an explicit "off" would tell a reader
+/// of the model something the author never chose.
+fn run_font(e: &quick_xml::events::BytesStart<'_>) -> DiffFont {
+    let on = |name: &str| attr(e, name).is_some_and(|v| v != "none");
+    let mut font = DiffFont {
+        name: attr(e, "font-name").or_else(|| attr(e, "font-family")),
+        ..DiffFont::default()
+    };
+    if let Some(size) = attr(e, "font-size")
+        .and_then(|s| s.trim_end_matches("pt").parse::<f64>().ok())
+        .filter(|s| (0.0..=4096.0).contains(s) && *s > 0.0)
+    {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "bounded to a positive number of points above"
+        )]
+        let hundredths = (size * 100.0).round() as u32;
+        font.size = Some(hundredths);
+    }
+    font.bold = (attr(e, "font-weight").as_deref() == Some("bold")).then_some(true);
+    font.italic = (attr(e, "font-style").as_deref() == Some("italic")).then_some(true);
+    if on("text-underline-style") || on("text-underline-type") {
+        font.underline = Some(
+            if attr(e, "text-underline-type").as_deref() == Some("double") {
+                Underline::Double
+            } else {
+                Underline::Single
+            },
+        );
+    }
+    font.strike = (on("text-line-through-style") || on("text-line-through-type")).then_some(true);
+    font.color = attr(e, "color").as_deref().and_then(colour_of);
+    // `super 58%`, `sub 58%`, or a signed percentage of raise.
+    font.script = attr(e, "text-position").and_then(|p| {
+        let first = p
+            .split_whitespace()
+            .next()?
+            .trim_end_matches('%')
+            .to_owned();
+        match first.as_str() {
+            "super" => Some(Script::Superscript),
+            "sub" => Some(Script::Subscript),
+            n => match n.parse::<f64>().ok()? {
+                raise if raise > 0.0 => Some(Script::Superscript),
+                raise if raise < 0.0 => Some(Script::Subscript),
+                _ => None,
+            },
+        }
+    });
+    font
 }
 
 /// Reads `fo:text-align` off `style:paragraph-properties`.

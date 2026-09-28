@@ -4,6 +4,7 @@
 
 ### Changed
 
+- `DiffFont` gains `family`: a literal needs it (or `..Default::default()`).
 - `AutoFilter` gains `sort_state`, `Table` gains `sort_state`, `Worksheet`
   gains `sort_state` and `sparklines`, `Comment` gains `visible` and `size`
   and no longer derives `Eq`: literals need the new fields (or
@@ -41,6 +42,15 @@
 
 ### Fixed
 
+- ODS and HTML wrote theme and indexed colours as nothing; they are now the
+  RGB they show, through the workbook's theme with the tint.
+- HTML reading lost the space between `a <b>b</b>`: each text node was trimmed
+  on its own. Whitespace now collapses across elements, as a browser does.
+- ODS writing let a reader collapse a leading space or a run of spaces;
+  they go out as `<text:s/>`, and reading honours `text:c`.
+- An xlsb whose `workbook.bin` holds the book twice (one converter writes it
+  so) failed with a duplicate sheet name; reading stops at `BrtEndBook`.
+
 - A grid edit on one sheet moved the second half of a range on another:
   removing a row of `Shown` turned `Data!B3:B10` into `Data!B3:B9`, because
   `B10` was read without the qualifier of `B3`.
@@ -66,6 +76,15 @@
   the 2007 way.
 
 ### Added
+
+- Formatted text in every format that holds it: xls reads and writes the runs
+  of the string table and reads `RSTRING` (BIFF5), xlsb reads `RichStr`, ODS
+  reads and writes `text:span` with text styles, HTML reads `<b>`, `<i>`,
+  `<u>`, `<s>`, `<sup>`, `<sub>`, `<font>` and `<span style>` inside a cell and
+  writes every part of a run's font. In wasm: `getRichText`, `setRichText` and
+  their `…At` twins.
+- `Font::with(&DiffFont)` and `From<&Font> for DiffFont`. `DiffFont` gains
+  `family`, which a rewrite of xlsx used to drop from `<rPr>`.
 
 - Sparklines are modelled: `Worksheet::sparklines` (`model::sparkline`) reads
   the groups out of the sheet's `<extLst>`, the writer puts back only their
