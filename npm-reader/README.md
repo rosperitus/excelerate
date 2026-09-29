@@ -53,8 +53,9 @@ book.sheetNames();   // the workbook still comes back - every sheet is in it,
                      // the streamed one with everything except its cells
 ```
 
-On a million-row file of 70 MB that is 612 MB peak and 11.5 s, against
-882 MB and 14.6 s for `read` plus `getRowAt` on every row. A callback that
+On a million-row file of 70 MB that is 588 MB peak and 13.9 s, against
+863 MB and 14.4 s for `read` plus `getRowAt` on every row; on 882 thousand
+rows of 39 MB, 344 MB and 7.1 s against 547 MB and 8.4 s. A callback that
 throws is not called again, and its error comes out of `forEachRow`. Only
 xlsx streams; any other format is read whole and the callback never fires.
 
