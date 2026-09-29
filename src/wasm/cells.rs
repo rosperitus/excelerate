@@ -147,43 +147,64 @@ impl Book {
         row: u32,
         formatted: Option<bool>,
     ) -> Result<JsValue, JsError> {
-        let ws = self.sheet_of(sheet)?;
-        let at = row_at(row)?;
-        let width = ws
-            .row_cells(at)
-            .last()
-            .map_or(0, |(col, _)| col.index() + 1);
-        let values = js_sys::Array::new();
-        let shown = js_sys::Array::new();
-        let mut bold = Vec::with_capacity(width as usize);
-        let mut indent = Vec::with_capacity(width as usize);
+        Ok(row_object(
+            self.sheet_of(sheet)?,
+            &self.workbook.styles,
+            self.workbook.epoch,
+            row_at(row)?,
+            formatted.unwrap_or(true),
+        ))
+    }
+
+    /// Reads a workbook and hands sheet `sheet` over row by row, without
+    /// building its grid: `callback(row, data)` gets the 1-based row number
+    /// and what `getRowAt` would answer for it, and the row is dropped once
+    /// the callback returns.
+    ///
+    /// The workbook comes back whole but for that sheet's cells. Only xlsx
+    /// streams; any other format is read whole and the callback never fires.
+    /// A callback that throws is not called again, and what it threw comes
+    /// out of `forEachRow` once the read is over.
+    #[wasm_bindgen(js_name = forEachRow)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "an optional string crosses the wasm boundary owned"
+    )]
+    pub fn for_each_row(
+        bytes: &[u8],
+        name: Option<String>,
+        sheet: usize,
+        callback: &js_sys::Function,
+        formatted: Option<bool>,
+    ) -> Result<Self, JsError> {
         let wanted = formatted.unwrap_or(true);
-        for cell_at in (0..width)
-            .filter_map(Col::new)
-            .map(|col| CellRef::new(col, at))
-        {
-            let cell = ws.get(cell_at);
-            values.push(&cell.map_or(JsValue::NULL, |cell| cell_to_js(&cell.value)));
-            if wanted {
-                shown.push(&JsValue::from_str(&self.workbook.formatted(sheet, cell_at)));
+        let failed: std::cell::RefCell<Option<JsValue>> = std::cell::RefCell::new(None);
+        let sink = |batch: &crate::progress::RowBatch<'_>| {
+            if failed.borrow().is_some() {
+                return;
             }
-            let style = cell.and_then(|cell| self.workbook.styles.get(cell.style));
-            bold.push(u8::from(style.is_some_and(|s| s.font.bold)));
-            indent.push(style.map_or(0, |s| s.alignment.indent));
+            let data = row_object(batch.sheet, batch.styles, batch.epoch, batch.row, wanted);
+            let row = JsValue::from(batch.row.index() + 1);
+            if let Err(e) = callback.call2(&JsValue::NULL, &row, &data) {
+                *failed.borrow_mut() = Some(e);
+            }
+        };
+        let options = crate::progress::Options::new().streaming(sheet, &sink);
+        let book = crate::reader::read_bytes_limited_with(
+            bytes,
+            name.as_deref(),
+            crate::reader::xlsx::MAX_UNCOMPRESSED_SIZE,
+            &options,
+        )
+        .map_err(js)?;
+        if let Some(e) = failed.into_inner() {
+            return Err(JsError::new(
+                &e.as_string()
+                    .or_else(|| js_sys::Error::from(e).message().as_string())
+                    .unwrap_or_else(|| "row callback failed".into()),
+            ));
         }
-        Ok(object(&[
-            ("values", values.into()),
-            (
-                "formatted",
-                if wanted { shown.into() } else { JsValue::NULL },
-            ),
-            ("bold", js_sys::Uint8Array::from(&bold[..]).into()),
-            ("indent", js_sys::Uint32Array::from(&indent[..]).into()),
-            (
-                "hidden",
-                JsValue::from_bool(ws.rows.get(&at).is_some_and(|props| props.hidden)),
-            ),
-        ]))
+        Ok(Self::wrap(book))
     }
 
     /// A rectangle of cells, row by row. One call across the boundary instead
@@ -316,4 +337,54 @@ impl Book {
         self.note(sheet, &[at]);
         Ok(())
     }
+}
+
+/// A row as `getRowAt` and `forEachRow` answer it: values, displayed text,
+/// bold, indent, and whether the row is hidden. The arrays run from column 1
+/// to the last column the row has a cell in.
+fn row_object(
+    ws: &crate::model::Worksheet,
+    styles: &crate::style::StyleTable,
+    epoch: crate::shared::date::Epoch,
+    at: crate::coordinate::Row,
+    wanted: bool,
+) -> JsValue {
+    let width = ws
+        .row_cells(at)
+        .last()
+        .map_or(0, |(col, _)| col.index() + 1);
+    let values = js_sys::Array::new();
+    let shown = js_sys::Array::new();
+    let mut bold = Vec::with_capacity(width as usize);
+    let mut indent = Vec::with_capacity(width as usize);
+    for cell_at in (0..width)
+        .filter_map(Col::new)
+        .map(|col| CellRef::new(col, at))
+    {
+        let cell = ws.get(cell_at);
+        values.push(&cell.map_or(JsValue::NULL, |cell| cell_to_js(&cell.value)));
+        let style = cell.and_then(|cell| styles.get(cell.style));
+        if wanted {
+            // What `Spreadsheet::formatted` does, without the workbook: a
+            // streamed row is shown before there is one.
+            let code = style.map_or(crate::style::format::GENERAL, |s| s.number_format.code());
+            let text = cell.map_or_else(String::new, |cell| cell.value.display(code, epoch));
+            shown.push(&JsValue::from_str(&text));
+        }
+        bold.push(u8::from(style.is_some_and(|s| s.font.bold)));
+        indent.push(style.map_or(0, |s| s.alignment.indent));
+    }
+    object(&[
+        ("values", values.into()),
+        (
+            "formatted",
+            if wanted { shown.into() } else { JsValue::NULL },
+        ),
+        ("bold", js_sys::Uint8Array::from(&bold[..]).into()),
+        ("indent", js_sys::Uint32Array::from(&indent[..]).into()),
+        (
+            "hidden",
+            JsValue::from_bool(ws.rows.get(&at).is_some_and(|props| props.hidden)),
+        ),
+    ])
 }

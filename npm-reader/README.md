@@ -38,6 +38,26 @@ book.getRowAt(0, 3, false);   // the same without the displayed text, which is
                               // a string per cell nobody asked for
 ```
 
+## Reading a big sheet without holding it
+
+`forEachRow` reads the file and hands one sheet over row by row instead of
+building its grid: each row goes to the callback and is then dropped.
+
+```js
+const book = Book.forEachRow(bytes, "report.xlsx", 0, (row, data) => {
+  // data is what getRowAt returns: values, formatted, bold, indent, hidden
+  if (data.bold[0]) console.log(row, data.values[0]);
+}, false);   // false: skip the displayed text, a string per cell
+
+book.sheetNames();   // the workbook still comes back - every sheet is in it,
+                     // the streamed one with everything except its cells
+```
+
+On a million-row file of 70 MB that is 612 MB peak and 11.5 s, against
+882 MB and 14.6 s for `read` plus `getRowAt` on every row. A callback that
+throws is not called again, and its error comes out of `forEachRow`. Only
+xlsx streams; any other format is read whole and the callback never fires.
+
 ## Layout
 
 Reading a sheet usually means asking the same few things of every row, so each

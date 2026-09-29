@@ -1844,6 +1844,19 @@ impl Worksheet {
         Some(cell)
     }
 
+    /// Drops every cell, keeping the rest of the sheet.
+    ///
+    /// What a streaming read does once it has handed a row over: the row is
+    /// the caller's now, and holding it is what makes a big sheet expensive.
+    pub fn clear_cells(&mut self) {
+        if self.count > 0 {
+            Arc::make_mut(&mut self.cells).clear();
+        }
+        self.count = 0;
+        self.col_span = None;
+        self.span_stale = false;
+    }
+
     /// Number of cells stored.
     #[must_use]
     pub const fn len(&self) -> usize {

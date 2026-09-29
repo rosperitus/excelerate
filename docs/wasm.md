@@ -75,6 +75,7 @@ on Node 22.6+, no build step and no separate install.
 | `cellIndent(sheet, address)` | the cell's indent steps, 0 when it has none |
 | `rowLevel(sheet, row)` / `columnLevel(sheet, "C")` | outline depth of a row or column, 0 when ungrouped |
 | `cellBold(sheet, address)` / `cellBoldAt(sheet, row, col)` | whether the cell is bold, without building the rest of its style |
+| `Book.forEachRow(bytes, name, sheet, callback, formatted?)` | reads a workbook and hands one sheet over row by row, `callback(row, data)` with `data` as `getRowAt` gives it, without keeping that sheet's cells; xlsx only |
 | `getRowAt(sheet, row, formatted?)` | a whole row in one crossing: `{ values, formatted, bold, indent, hidden }`; `formatted: false` skips the displayed text and its string per cell |
 | `rowHidden(sheet, row)` | whether the row is hidden |
 | `sheetVisibility(sheet)` | `"visible"`, `"hidden"` or `"veryHidden"` |

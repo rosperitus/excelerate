@@ -34,7 +34,7 @@ use crate::model::{
     SortCondition, SortState, Spreadsheet, TextRun, ValidationErrorStyle, ValidationOperator,
     ValidationType, WorkbookProtection, Worksheet,
 };
-use crate::progress::{Options, Stage};
+use crate::progress::{Options, RowBatch, Stage};
 use crate::shared::date::Epoch;
 use crate::style::{
     Alignment, Border, BorderStyle, Borders, Color, DiagonalDirection, DiffBorders, DiffFill,
@@ -153,7 +153,12 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
         // address there rather than in the sheet part, and a drawing or a
         // comment is reached only through them.
         let links = read_relationships(&mut zip, &rels_path_for(&path)).unwrap_or_default();
-        let mut sheet = read_sheet(&mut zip, &path, &name, &shared, &links)?;
+        let stream = options.row_sink(done).map(|sink| RowStream {
+            sink,
+            styles: &book.styles,
+            epoch: book.epoch,
+        });
+        let mut sheet = read_sheet(&mut zip, &path, &name, &shared, &links, stream)?;
         sheet.shrink_to_fit();
         sheet.visibility = visibility;
         let sheet_base = path.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -2019,11 +2024,11 @@ fn read_sheet<R: Read + Seek>(
     name: &str,
     shared: &[CellValue],
     links: &HashMap<String, Relationship>,
+    stream: Option<RowStream<'_>>,
 ) -> Result<Worksheet> {
     let part = super::zipxml::open_part(zip, path).map_err(Error::Xlsx)?;
-    let sheet = Worksheet::new(name)?;
     let mut state = SheetReader {
-        sheet,
+        sheet: Worksheet::new(name)?,
         sheet_dir: path.rsplit_once('/').map_or("", |(dir, _)| dir),
         shared,
         links,
@@ -2048,6 +2053,8 @@ fn read_sheet<R: Read + Seek>(
         in_filter: false,
         root_namespaces: Vec::new(),
         ext_depth: 0,
+        stream,
+        row: None,
     };
 
     // The part is parsed as it is inflated rather than read into memory
@@ -2178,6 +2185,14 @@ impl<R: Read> Read for Recorder<R> {
     }
 }
 
+/// Where a streamed sheet's rows go, and what they need to be understood.
+#[derive(Clone, Copy)]
+struct RowStream<'a> {
+    sink: crate::progress::RowSink<'a>,
+    styles: &'a crate::style::StyleTable,
+    epoch: Epoch,
+}
+
 /// The sheet being built and everything the event loop threads through it.
 ///
 /// A sheet part is one flat stream of elements whose meaning depends on what is
@@ -2242,9 +2257,37 @@ struct SheetReader<'a> {
     /// `<x14:conditionalFormatting>` read as a `<conditionalFormatting>`
     /// becomes a rule with no range that the writer then puts in the sheet.
     ext_depth: u32,
+
+    /// Where finished rows go, when the caller asked for them one at a time.
+    stream: Option<RowStream<'a>>,
+    /// The row the cells now being read belong to, as `<row r>` names it.
+    row: Option<Row>,
 }
 
 impl SheetReader<'_> {
+    /// Hands a finished row to the stream, if there is one, and forgets its
+    /// cells: keeping them is what a streaming read exists to avoid.
+    fn flush_row(&mut self) {
+        let Some(stream) = self.stream else {
+            return;
+        };
+        // A `<row>` without `r` takes its number from its cells; with neither
+        // there is nothing to name it by, and nothing in it to hand over.
+        let row = self
+            .row
+            .take()
+            .or_else(|| self.sheet.iter().next().map(|(at, _)| at.row));
+        if let Some(row) = row {
+            (stream.sink)(&RowBatch {
+                row,
+                sheet: &self.sheet,
+                styles: stream.styles,
+                epoch: stream.epoch,
+            });
+        }
+        self.sheet.clear_cells();
+    }
+
     /// Dispatches an opening element to whichever group of the sheet vocabulary
     /// claims it. Each handler answers whether the name was its own.
     fn start(&mut self, e: &quick_xml::events::BytesStart<'_>, empty: bool) {
@@ -2264,6 +2307,11 @@ impl SheetReader<'_> {
             || self.start_conditional(name, e)
             || self.start_validation(name, e, empty)
             || self.start_filter(name, e, empty);
+        // `<row/>` never yields an End event, and a streaming read is still
+        // owed it: no cells, but maybe a height or a hidden flag.
+        if empty && name == "row" {
+            self.flush_row();
+        }
     }
 
     /// `<c>` and the elements that live inside one.
@@ -2353,6 +2401,11 @@ impl SheetReader<'_> {
                 }
             }
             "row" => {
+                // Kept whether or not the row has properties worth storing:
+                // it is what a streaming read hands the caller.
+                self.row = attr(e, "r")
+                    .and_then(|v| v.parse().ok())
+                    .and_then(|n| Row::from_one_based(n).ok());
                 if let Some((row, props)) = read_row_properties(e) {
                     self.sheet.rows.insert(row, props);
                 }
@@ -2594,6 +2647,7 @@ impl SheetReader<'_> {
             "formula2" => self.in_formula2 = false,
             "filterColumn" => self.filter_col = None,
             "autoFilter" => self.in_filter = false,
+            "row" => self.flush_row(),
             "dataValidation" => {
                 if let Some(dv) = self.validation.take() {
                     self.sheet.data_validations.push(dv);
@@ -3529,6 +3583,43 @@ mod tests {
                 .and_then(|c| c.value.plain_text()),
             Some("one\r\ntwo".to_owned()),
             "the CR of a CRLF is the author's, not the XML's"
+        );
+    }
+
+    #[test]
+    fn a_streamed_sheet_hands_over_every_row_and_keeps_none() {
+        use crate::progress::{Options, RowBatch};
+        use std::cell::RefCell;
+
+        let seen: RefCell<Vec<(u32, usize)>> = RefCell::new(Vec::new());
+        let sink = |batch: &RowBatch<'_>| {
+            seen.borrow_mut().push((
+                batch.row.index() + 1,
+                batch.sheet.row_cells(batch.row).count(),
+            ));
+        };
+        let book = super::read_xlsx_from_with(
+            Cursor::new(package(concat!(
+                r#"<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="C1"><v>3</v></c></row>"#,
+                r#"<row r="2" hidden="1"/>"#,
+                r#"<row><c r="B3"><v>5</v></c></row>"#,
+                "</sheetData>"
+            ))),
+            u64::MAX,
+            &Options::new().streaming(0, &sink),
+        )
+        .expect("package reads");
+        assert_eq!(
+            seen.into_inner(),
+            vec![(1, 2), (2, 0), (3, 1)],
+            "an empty row is still a row, and one without `r` is named by its cells"
+        );
+        let sheet = book.sheet(0).expect("one sheet");
+        assert_eq!(sheet.len(), 0, "nothing of the grid is kept");
+        assert_eq!(sheet.dimension(), None);
+        assert!(
+            sheet.rows.values().any(|props| props.hidden),
+            "row properties stay"
         );
     }
 

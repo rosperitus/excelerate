@@ -4,6 +4,13 @@
 
 ### Added
 
+- A sheet read row by row without building its grid:
+  `progress::Options::streaming(sheet, sink)` hands each row of an xlsx sheet
+  to the sink as a `RowBatch` (the row, the sheet so far, styles, epoch) and
+  drops its cells; the workbook comes back with everything but that sheet's
+  cells. In JS, `Book.forEachRow(bytes, name, sheet, callback, formatted?)`,
+  in both packages; a callback that throws stops the calls and its error
+  comes out of `forEachRow`.
 - Shapes carry their look: `Shape::format` (fill and outline from
   `xdr:spPr`, the chart's `ShapeFormat`), `Shape::font` (the first run's
   family, size, bold, italic and colour as a `DiffFont`) and the turn of
