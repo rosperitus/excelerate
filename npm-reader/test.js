@@ -145,3 +145,11 @@ test("a callback that throws stops forEachRow with its error", () => {
   );
   assert.strictEqual(calls, 1);
 });
+
+test("forEachRow on a format that cannot stream hands over the same rows", () => {
+  const csv = new TextEncoder().encode("a,b\n\n1,2,3\n");
+  const seen = [];
+  const book = Book.forEachRow(csv, "rows.csv", 0, (row, data) => seen.push([row, data.values]));
+  assert.deepStrictEqual(seen, [[1, ["a", "b"]], [3, [1, 2, 3]]]);
+  assert.strictEqual(book.getAt(0, 1, 1), null);
+});

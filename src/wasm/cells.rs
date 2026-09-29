@@ -162,7 +162,8 @@ impl Book {
     /// the callback returns.
     ///
     /// The workbook comes back whole but for that sheet's cells. Only xlsx
-    /// streams; any other format is read whole and the callback never fires.
+    /// streams; any other format is read whole and then handed over the same
+    /// way, so the callback sees the same rows but nothing is saved.
     /// A callback that throws is not called again, and what it threw comes
     /// out of `forEachRow` once the read is over.
     #[wasm_bindgen(js_name = forEachRow)]

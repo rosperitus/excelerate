@@ -60,6 +60,7 @@ impl Progress<'_> {
 /// and then dropped, so a sheet of half a million rows costs what one row
 /// costs. The styles and the epoch come along because a cell alone says
 /// nothing about how it is shown.
+#[non_exhaustive]
 pub struct RowBatch<'a> {
     /// Which row this is.
     pub row: crate::coordinate::Row,
@@ -135,13 +136,20 @@ impl<'a> Options<'a> {
     /// returns, so what a read costs stops depending on how many rows the
     /// sheet has. The sheet still comes back in the workbook with everything
     /// but its cells; the other sheets are read whole. Only xlsx streams: the
-    /// other readers build their model whole and never call the sink.
+    /// other formats are read whole and their rows are then handed over the
+    /// same way, so the sink sees the same thing and only the saving is lost.
     #[must_use]
     pub fn streaming(self, sheet: usize, sink: RowSink<'a>) -> Self {
         Self {
             rows: Some((sheet, sink)),
             ..self
         }
+    }
+
+    /// The sheet being streamed and its sink, if any.
+    #[must_use]
+    pub fn streamed(&self) -> Option<(usize, RowSink<'a>)> {
+        self.rows
     }
 
     /// The sink for `sheet`, when that is the sheet being streamed.

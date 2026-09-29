@@ -2402,10 +2402,13 @@ impl SheetReader<'_> {
             }
             "row" => {
                 // Kept whether or not the row has properties worth storing:
-                // it is what a streaming read hands the caller.
-                self.row = attr(e, "r")
-                    .and_then(|v| v.parse().ok())
-                    .and_then(|n| Row::from_one_based(n).ok());
+                // it is what a streaming read hands the caller. Nobody else
+                // wants it, so an ordinary read does not parse it.
+                if self.stream.is_some() {
+                    self.row = attr(e, "r")
+                        .and_then(|v| v.parse().ok())
+                        .and_then(|n| Row::from_one_based(n).ok());
+                }
                 if let Some((row, props)) = read_row_properties(e) {
                     self.sheet.rows.insert(row, props);
                 }
