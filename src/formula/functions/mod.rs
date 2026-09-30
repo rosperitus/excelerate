@@ -19,6 +19,7 @@
     reason = "a `#[must_use]` on each of hundreds of table entries says nothing"
 )]
 
+pub mod data;
 pub mod database;
 pub mod date;
 pub mod distributions;
@@ -27,7 +28,9 @@ pub mod ets;
 pub mod financial;
 pub mod group;
 pub mod info;
+pub mod json;
 pub mod lambda;
+pub mod lists;
 pub mod logical;
 pub mod lookup;
 pub mod math;
@@ -360,6 +363,7 @@ fn lazy(name: &str) -> Option<Lazy> {
         "INFO" => info::info,
         "GROUPBY" => group::groupby,
         "PIVOTBY" => group::pivotby,
+        "ROLLING" => group::rolling,
         "ANCHORARRAY" => lookup::anchorarray,
         "INDIRECT" => lookup::indirect,
         "SINGLE" => lookup::single,
@@ -877,6 +881,17 @@ fn eager_lookup(name: &str) -> Option<Eager> {
         "HYPERLINK" => lookup::hyperlink,
         "TRIMRANGE" => group::trimrange,
         "PERCENTOF" => group::percentof,
+        // Lists and nested arrays (Excel, Beta Channel, September 2026).
+        "FLATTEN" => lists::flatten,
+        "HAS" => lists::has,
+        "HASANY" => lists::hasany,
+        "HASALL" => lists::hasall,
+        // Proposed in the 2026 specification; not in Excel.
+        "FILLDOWN" => lists::filldown,
+        "PARSEJSON" => json::parsejson,
+        "BINS" => data::bins,
+        "TABLEJOIN" => data::tablejoin,
+        "FUZZYLOOKUP" => data::fuzzylookup,
         "PHONETIC" => text::phonetic,
         "REGEXTEST" => pattern::regextest,
         "REGEXEXTRACT" => pattern::regexextract,

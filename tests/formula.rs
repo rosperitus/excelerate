@@ -1932,3 +1932,111 @@ fn a_defined_name_holding_a_lambda_is_a_function() {
         assert_eq!(show(&engine.eval(origin, formula)), expected, "{formula}");
     }
 }
+
+/// The acceptance table of the 2026 specification (`docs/Excel_2026.md`):
+/// four functions from Microsoft's Beta Channel announcement and six the
+/// specification proposes. No other engine has any of them, so these are the
+/// specification's own answers, not Excel's.
+#[test]
+fn functions_of_the_2026_specification() {
+    let json = r#""{""a"":{""b"":[1,2,3]},""rows"":[{""id"":1,""n"":""x""},{""id"":2}]}""#;
+    let orders = r#"{"id","customer";1,"a";2,"b";3,"c"}"#;
+    let customers = r#"{"customer","name";"a","Ann";"b","Bob";"b","Ben";"d","Dan"}"#;
+    check(&[
+        // Nested arrays.
+        (r#"FLATTEN({{1,2,3};{4,5}},"")"#, r#"{1 2 3; 4 5 ""}"#),
+        ("FLATTEN({{1,2,3};{4,5}})", "{1 2 3; 4 5 #N/A}"),
+        ("FLATTEN({{1,{2,3}};{4}},,1)", "{1 {2 3}; 4 #N/A}"),
+        ("FLATTEN(7)", "7"),
+        (r#"HAS({"a";"b"},"a")"#, "TRUE"),
+        (r#"HAS({"a";"b"},"A")"#, "TRUE"),
+        ("HAS({{1,2};{3}},3)", "TRUE"),
+        (r#"HAS({"a";"b"},"c")"#, "FALSE"),
+        (r#"HASANY({"a";"b"},{"x","b"})"#, "TRUE"),
+        (r#"HASALL({"a";"b"},{"a","x"})"#, "FALSE"),
+        (r#"HASALL({"a";"b"},{"b","a"})"#, "TRUE"),
+        // FILLDOWN.
+        (
+            r#"FILLDOWN({"A";"";"";"B";""})"#,
+            r#"{"A"; "A"; "A"; "B"; "B"}"#,
+        ),
+        (r#"FILLDOWN({"";"A"})"#, r#"{""; "A"}"#),
+        (r#"FILLDOWN({"";"A";""},2)"#, r#"{"A"; "A"; ""}"#),
+        (r#"FILLDOWN({1,"",2,""},3)"#, "{1 1 2 2}"),
+        (r#"FILLDOWN({1,"n/a",2},4,"n/a")"#, "{1 2 2}"),
+        ("FILLDOWN({1;2},5)", "#VALUE!"),
+        // PARSEJSON.
+        (&format!(r#"PARSEJSON({json},"$.a.b[1]")"#), "2"),
+        (&format!(r#"PARSEJSON({json},"a.b")"#), "{1; 2; 3}"),
+        (&format!(r#"PARSEJSON({json},"$.a.c")"#), "#N/A"),
+        (
+            &format!(r#"PARSEJSON({json},"$.rows",TRUE)"#),
+            r#"{"id" "n"; 1 "x"; 2 (blank)}"#,
+        ),
+        (r#"PARSEJSON("{""a"":")"#, "#VALUE!"),
+        (r#"PARSEJSON("[null,1]")"#, "{(blank); 1}"),
+        // ROLLING.
+        ("ROLLING({1;2;3;4},2,SUM)", "{#N/A; 3; 5; 7}"),
+        ("ROLLING({1;2;3},5,SUM)", "#VALUE!"),
+        ("ROLLING({1;2;3;4},2,AVERAGE,1)", "{1; 1.5; 2.5; 3.5}"),
+        (
+            "ROLLING({1,10;2,20;3,30},2,LAMBDA(w,MAX(w)))",
+            "{#N/A #N/A; 2 20; 3 30}",
+        ),
+        ("ROLLING({1;2},0,SUM)", "#VALUE!"),
+        // BINS.
+        ("BINS({1;5;9;10},{0,5,10})", "{0 5 1; 5 10 2}"),
+        ("BINS({1;5;9;10},{0,5,10},TRUE)", "{0 5 2; 5 10 2}"),
+        (
+            "BINS({-1;1;5;9;10},{0,5,10},,TRUE)",
+            "{(blank) 0 1; 0 5 1; 5 10 2; 10 (blank) 1}",
+        ),
+        ("BINS({0;1;2;3;4},2)", "{0 2 2; 2 4 3}"),
+        ("BINS({1;2},{5,0})", "#VALUE!"),
+        // TABLEJOIN: two customers under "b", one missing, one unmatched.
+        (
+            &format!(r#"TABLEJOIN({orders},{customers},"customer","customer")"#),
+            r#"{"id" "customer" "name"; 1 "a" "Ann"; 2 "b" "Bob"; 2 "b" "Ben"}"#,
+        ),
+        (
+            &format!(r#"TABLEJOIN({orders},{customers},2,1,"left")"#),
+            r#"{"id" "customer" "name"; 1 "a" "Ann"; 2 "b" "Bob"; 2 "b" "Ben"; 3 "c" (blank)}"#,
+        ),
+        (
+            &format!(r#"TABLEJOIN({orders},{customers},"customer","customer","full")"#),
+            r#"{"id" "customer" "name"; 1 "a" "Ann"; 2 "b" "Bob"; 2 "b" "Ben"; 3 "c" (blank); (blank) "d" "Dan"}"#,
+        ),
+        (
+            r#"TABLEJOIN({"k","v";1,2},{"k","v";1,3},"k","k")"#,
+            r#"{"k" "v" "v_2"; 1 2 3}"#,
+        ),
+        (
+            &format!(r#"TABLEJOIN({orders},{customers},"nope","customer")"#),
+            "#N/A",
+        ),
+        (
+            &format!(r#"TABLEJOIN({orders},{customers},1,1,"cross")"#),
+            "#VALUE!",
+        ),
+        // FUZZYLOOKUP.
+        (
+            r#"FUZZYLOOKUP("Microsfot",{"Apple";"Microsoft"},,0.8)"#,
+            r#""Microsoft""#,
+        ),
+        (
+            r#"FUZZYLOOKUP("microsfot",{"Apple";"Microsoft"},{1;2})"#,
+            "2",
+        ),
+        (r#"FUZZYLOOKUP("Apple",{"Microsoft"})"#, "#N/A"),
+        (r#"FUZZYLOOKUP("Apple",{"Microsoft"},,,"-")"#, r#""-""#),
+        (r#"FUZZYLOOKUP("Apple",{"Microsoft"},,2)"#, "#VALUE!"),
+        // Every one of them spills inside LET, LAMBDA, MAP and BYROW.
+        ("LET(x,{1;2;3;4},ROLLING(x,2,SUM))", "{#N/A; 3; 5; 7}"),
+        (r#"LAMBDA(a,FILLDOWN(a))({"A";""})"#, r#"{"A"; "A"}"#),
+        (
+            r#"MAP({"Microsfot";"Aple"},LAMBDA(v,FUZZYLOOKUP(v,{"Microsoft";"Apple"})))"#,
+            r#"{"Microsoft"; "Apple"}"#,
+        ),
+        ("BYROW({1,2;3,4},LAMBDA(r,HAS(r,3)))", "{FALSE; TRUE}"),
+    ]);
+}

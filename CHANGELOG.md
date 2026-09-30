@@ -4,6 +4,12 @@
 
 ### Added
 
+- Ten functions from the 2026 specification (`docs/Excel_2026.md`):
+  `FLATTEN`, `HAS`, `HASANY` and `HASALL` for nested arrays, from
+  Microsoft's Beta Channel announcement, and six the specification proposes
+  and Excel does not have: `FILLDOWN`, `PARSEJSON`, `ROLLING`, `BINS`,
+  `TABLEJOIN`, `FUZZYLOOKUP`. A workbook that registered a custom function
+  under one of these names now gets the built-in one.
 - Shapes carry their look: `Shape::format` (fill and outline from
   `xdr:spPr`, the chart's `ShapeFormat`), `Shape::font` (the first run's
   family, size, bold, italic and colour as a `DiffFont`) and the turn of

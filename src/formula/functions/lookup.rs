@@ -555,7 +555,7 @@ pub fn sort(args: &[Arg]) -> Value {
 }
 
 /// A one-based index into an axis of `len` cells, as a position from zero.
-fn index_within(n: f64, len: usize) -> Option<usize> {
+pub(crate) fn index_within(n: f64, len: usize) -> Option<usize> {
     let n = n.trunc();
     if !(1.0..=1.0e7).contains(&n) {
         return None;
