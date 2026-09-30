@@ -1714,3 +1714,221 @@ fn gcd_and_lcm_stop_where_f64_stops_being_exact() {
         ),
     ]);
 }
+
+#[test]
+fn nested_calls_compute_from_the_inside_out() {
+    check(&[
+        (
+            "IF(A1>0,IF(A2>1,IF(A3>2,\"all\",\"two\"),\"one\"),\"none\")",
+            "\"all\"",
+        ),
+        (
+            "IF(A1>5,\"a\",IF(A2>5,\"b\",IF(A3>5,\"c\",\"d\")))",
+            "\"d\"",
+        ),
+        (
+            "IFS(A1>2,\"big\",A1>0,\"small\",TRUE,\"none\")",
+            "\"small\"",
+        ),
+        ("SWITCH(A2,1,\"one\",2,\"two\",\"many\")", "\"two\""),
+        ("CHOOSE(A3,\"x\",\"y\",\"z\")", "\"z\""),
+        ("ROUND(SQRT(SUM(A1:A3)^2+MAX(D1:D3)),2)", "8.12"),
+        ("INDEX(D1:D3,MATCH(MAX(A1:A3),A1:A3,0))", "30"),
+        ("VLOOKUP(2,A1:D3,COLUMNS(A1:D1),FALSE)", "20"),
+        ("UPPER(LEFT(MID(\"abcdef\",2,4),2))", "\"BC\""),
+        ("LEN(SUBSTITUTE(REPT(\"ab\",3),\"a\",\"\"))", "3"),
+        (
+            "TEXTJOIN(\"-\",TRUE,A1:A3,IF(A1=1,\"end\",\"\"))",
+            "\"1-2-3-end\"",
+        ),
+        (
+            "IFERROR(INDEX(A1:A3,MATCH(9,A1:A3,0)),\"missing\")",
+            "\"missing\"",
+        ),
+        (
+            "IFERROR(1/(A1-1),IFERROR(1/(A2-2),\"both zero\"))",
+            "\"both zero\"",
+        ),
+        // An error deep inside travels all the way out unless caught.
+        ("ROUND(ABS(SQRT(1/(A1-1))),2)", "#DIV/0!"),
+        ("ISERROR(ROUND(ABS(SQRT(1/(A1-1))),2))", "TRUE"),
+        ("SUM(A1:A3)+SUM(D1:D3)*AVERAGE(A1:A3)/COUNT(D1:D3)", "46"),
+        ("LET(s,SUM(A1:A3),n,COUNT(A1:A3),IF(n=0,0,s/n))", "2"),
+        // A name bound to a lambda is called like a function.
+        ("LET(f,LAMBDA(x,x*2),f(3))", "6"),
+        ("LET(f,LAMBDA(x,x*2),g,LAMBDA(x,f(x)+1),g(f(3)))", "13"),
+        ("LET(k,2,g,LAMBDA(x,x*k),g(3))", "6"),
+        ("LET(f,5,f(3))", "#CALC!"),
+    ]);
+}
+
+#[test]
+fn arrays_broadcast_across_shapes() {
+    check(&[
+        // A row against a column fills the whole rectangle.
+        ("{1,2,3}+{10;20}", "{11 12 13; 21 22 23}"),
+        ("{1;2}*{1,2,3}", "{1 2 3; 2 4 6}"),
+        // A single row or column is stretched; anything else that does not
+        // fit is #N/A where there is no partner.
+        ("{1,2,3}+{10,20}", "{11 22 #N/A}"),
+        ("{1,2;3,4}+{10,20}", "{11 22; 13 24}"),
+        ("{1,2;3,4}*{1;10}", "{1 2; 30 40}"),
+        ("{1,2}&{\"a\",\"b\"}", "{\"1a\" \"2b\"}"),
+        ("{1,2,3}>2", "{FALSE FALSE TRUE}"),
+        ("-{1,-2}", "{-1 2}"),
+        ("{1,2}^2", "{1 4}"),
+        ("{10,20}%", "{0.1 0.2}"),
+        // Errors stay in their own element.
+        ("{1,2,3}/{1,0,3}", "{1 #DIV/0! 1}"),
+        ("SUM(IFERROR({1,2,3}/{1,0,3},0))", "2"),
+        ("A1:A3+D1:D3", "{11; 22; 33}"),
+        ("A1:A3*{1,10}", "{1 10; 2 20; 3 30}"),
+        ("ROWS(A1:A3+{1,2})", "3"),
+        ("COLUMNS(A1:A3+{1,2})", "2"),
+    ]);
+}
+
+#[test]
+fn conditions_over_arrays_count_and_sum() {
+    check(&[
+        ("SUMPRODUCT((A1:A3>1)*D1:D3)", "50"),
+        ("SUMPRODUCT(--(A1:A3>=2))", "2"),
+        ("SUMPRODUCT((A1:A3>1)*(D1:D3<30))", "1"),
+        ("SUM((A1:A3>1)*(D1:D3))", "50"),
+        ("SUM(IF(A1:A3>1,D1:D3,0))", "50"),
+        ("MAX(IF(A1:A3<3,D1:D3))", "20"),
+        ("MIN(IF(A1:A3>1,D1:D3))", "20"),
+        ("AVERAGE(IF(A1:A3<>2,D1:D3))", "20"),
+        ("COUNT(IF(A1:A3>5,A1:A3))", "0"),
+        // `N` and double negation turn logicals into numbers.
+        ("SUM(--{TRUE,FALSE,TRUE})", "2"),
+        ("SUM({TRUE,FALSE,TRUE}*1)", "2"),
+        ("SUMPRODUCT({1,2,3},{4,5,6},{1,0,1})", "22"),
+        // SUMPRODUCT wants arrays of one size.
+        ("SUMPRODUCT({1,2},{1,2,3})", "#VALUE!"),
+        ("OR(A1:A3=2)", "TRUE"),
+        ("AND(A1:A3>0)", "TRUE"),
+    ]);
+}
+
+#[test]
+fn array_functions_nest_into_each_other() {
+    check(&[
+        ("SEQUENCE(3)", "{1; 2; 3}"),
+        ("SEQUENCE(2,3,10,5)", "{10 15 20; 25 30 35}"),
+        ("SUM(SEQUENCE(10))", "55"),
+        ("TRANSPOSE({1,2,3})", "{1; 2; 3}"),
+        ("TRANSPOSE(TRANSPOSE({1,2;3,4}))", "{1 2; 3 4}"),
+        ("MMULT({1,2;3,4},{5;6})", "{17; 39}"),
+        ("MMULT({1,2},{3,4})", "#VALUE!"),
+        ("MDETERM({1,2;3,4})", "-2"),
+        // The fourth argument sorts columns by a row instead.
+        ("SORT({3,1,2},,,TRUE)", "{1 2 3}"),
+        ("SORT({3,1;4,2},2,-1,TRUE)", "{3 1; 4 2}"),
+        ("SORT({1,3;4,2},2,1,TRUE)", "{3 1; 2 4}"),
+        ("SORT({3;1;2},1,-1)", "{3; 2; 1}"),
+        ("UNIQUE({1;2;2;3;1})", "{1; 2; 3}"),
+        ("UNIQUE({1;2;2;3;1},,TRUE)", "3"),
+        ("SUM(UNIQUE({5;5;7}))", "12"),
+        ("FILTER(A1:A3,D1:D3>15)", "{2; 3}"),
+        ("SUM(FILTER(D1:D3,A1:A3<>2))", "40"),
+        ("ROWS(FILTER(SEQUENCE(20),MOD(SEQUENCE(20),3)=0))", "6"),
+        ("SORT(FILTER({5;2;8;1},{5;2;8;1}>1))", "{2; 5; 8}"),
+        ("TAKE(SEQUENCE(5),2)", "{1; 2}"),
+        ("TAKE(SEQUENCE(5),-2)", "{4; 5}"),
+        ("DROP(SEQUENCE(5),3)", "{4; 5}"),
+        ("CHOOSECOLS({1,2,3;4,5,6},3,1)", "{3 1; 6 4}"),
+        ("CHOOSEROWS({1,2;3,4;5,6},-1)", "{5 6}"),
+        ("HSTACK({1;2},{3;4})", "{1 3; 2 4}"),
+        ("VSTACK({1,2},SEQUENCE(1,2,3))", "{1 2; 3 4}"),
+        ("WRAPROWS(SEQUENCE(5),2)", "{1 2; 3 4; 5 #N/A}"),
+        ("WRAPCOLS(SEQUENCE(4),2)", "{1 3; 2 4}"),
+        ("INDEX(SORT(SEQUENCE(4),,-1),1)", "4"),
+        ("XLOOKUP(20,D1:D3,A1:A3)", "2"),
+        ("XLOOKUP(25,D1:D3,A1:A3,\"none\")", "\"none\""),
+        ("XLOOKUP(25,D1:D3,A1:A3,,-1)", "2"),
+        ("XLOOKUP(25,D1:D3,A1:A3,,1)", "3"),
+        // The row comes back as cells, so the TRUE in it is not counted.
+        ("SUM(XLOOKUP(2,A1:A3,A1:D3))", "22"),
+    ]);
+}
+
+#[test]
+fn array_literals_hold_every_kind_of_value() {
+    check(&[
+        ("{1,\"a\",TRUE,#N/A}", "{1 \"a\" TRUE #N/A}"),
+        ("ROWS({1;2;3;4})", "4"),
+        ("COLUMNS({1,2,3,4})", "4"),
+        ("INDEX({1,2;3,4},2,1)", "3"),
+        ("INDEX({1,2;3,4},0,2)", "{2; 4}"),
+        ("INDEX({1,2;3,4},2,0)", "{3 4}"),
+        ("INDEX({1,2;3,4},3,1)", "#REF!"),
+        ("COUNTA({1,\"\",TRUE})", "3"),
+        // Inside an array, as inside a reference, only numbers count.
+        ("COUNT({1,\"2\",TRUE})", "1"),
+        ("COUNT(1,\"2\",TRUE)", "3"),
+        ("ISTEXT({1,\"a\"})", "{FALSE TRUE}"),
+        ("{-1,2.5E+2}", "{-1 250}"),
+    ]);
+}
+
+#[test]
+fn deep_nesting_is_computed_and_too_deep_is_refused() {
+    let wb = book();
+    let mut engine = Engine::new(&wb);
+    let origin = Origin::new(0, at("Z100"));
+
+    // Excel allows 64 levels of nested functions.
+    let mut formula = "1".to_owned();
+    for _ in 0..64 {
+        formula = format!("ABS({formula})");
+    }
+    assert_eq!(show(&engine.eval(origin, &formula)), "1");
+
+    let mut formula = "0".to_owned();
+    for _ in 0..64 {
+        formula = format!("({formula}+1)");
+    }
+    assert_eq!(show(&engine.eval(origin, &formula)), "64");
+
+    // Past the parser's ceiling the formula is refused, not a stack overflow
+    // (this runs on a test thread's 2 MB stack, in a debug build).
+    let mut formula = "1".to_owned();
+    for _ in 0..10_000 {
+        formula = format!("ABS({formula})");
+    }
+    assert!(matches!(engine.eval(origin, &formula), Value::Error(_)));
+}
+
+#[test]
+fn a_defined_name_holding_a_lambda_is_a_function() {
+    let mut wb = book();
+    // How Excel writes a name made in the Name Manager, prefixes and all.
+    for (name, formula) in [
+        ("Удвоить", "_xlfn.LAMBDA(_xlpm.x,_xlpm.x*2)"),
+        ("Hyp", "LAMBDA(a,b,SQRT(a^2+b^2))"),
+        // A name may call itself: the recursion ends where the lambda says.
+        ("Fact", "LAMBDA(n,IF(n<=1,1,n*Fact(n-1)))"),
+    ] {
+        wb.defined_names.push(DefinedName {
+            name: name.into(),
+            sheet: None,
+            formula: formula.into(),
+            hidden: false,
+        });
+    }
+    let mut engine = Engine::new(&wb);
+    let origin = Origin::new(0, at("Z100"));
+    for (formula, expected) in [
+        ("Удвоить(21)", "42"),
+        ("удвоить(A3)", "6"),
+        ("Hyp(3,4)", "5"),
+        ("Fact(5)", "120"),
+        ("SUM(MAP({1,2,3},Удвоить))", "12"),
+        ("Удвоить(Удвоить(Fact(3)))", "24"),
+        ("Hyp(3)", "#VALUE!"),
+        ("НетТакого(1)", "#NAME?"),
+    ] {
+        assert_eq!(show(&engine.eval(origin, formula)), expected, "{formula}");
+    }
+}

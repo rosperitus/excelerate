@@ -681,7 +681,7 @@ const INTERSECT_BP: u8 = 80;
 /// untrusted input and `((((...1...))))` a hundred thousand deep would overflow it.
 /// Excel itself refuses more than 64 levels, so this is not a limit a formula
 /// written by anyone can reach.
-const MAX_DEPTH: u32 = 256;
+const MAX_DEPTH: u32 = 128;
 
 /// Binding power of a leading `-` or `+`. Above `^`, which is why `-2^2` is 4
 /// in Excel and not -4.

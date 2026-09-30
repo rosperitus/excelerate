@@ -161,7 +161,7 @@ pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) 
     let custom = if eager.is_none() && dated.is_none() {
         match engine.custom().and_then(|set| set.get(name)) {
             Some(f) => Some(f),
-            None => return Value::Error(CellError::Name),
+            None => return engine.call_defined(origin, name, args),
         }
     } else {
         None

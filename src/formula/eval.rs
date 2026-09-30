@@ -610,8 +610,16 @@ impl<'a> Engine<'a> {
                 unary(*op, &v)
             }
             Expr::Binary(op, a, b) => self.binary(origin, *op, a, b),
-            Expr::Call { name, args } => functions::call(self, origin, name, args),
-            Expr::Apply { callee, args } => self.apply_expr(origin, callee, args),
+            // A name bound by `LET` or a lambda's parameter is called before
+            // the library is asked, as it is read before the workbook's names.
+            Expr::Call { name, args } => match self.bound(name) {
+                Some(callee) => self.apply_args(origin, &callee, args),
+                None => functions::call(self, origin, name, args),
+            },
+            Expr::Apply { callee, args } => {
+                let callee = self.eval_expr(origin, callee);
+                self.apply_args(origin, &callee, args)
+            }
             Expr::Array(rows) => Value::array(
                 rows.iter()
                     .map(|r| r.iter().map(|e| self.eval_expr(origin, e)).collect())
@@ -677,12 +685,20 @@ impl<'a> Engine<'a> {
         self.scope.clone()
     }
 
-    /// Computes a call written on an expression rather than a name, as
-    /// `LAMBDA(x,x+1)(5)` is.
-    fn apply_expr(&mut self, origin: Origin, callee: &Expr, args: &[Expr]) -> Value {
-        let callee = self.eval_expr(origin, callee);
+    /// Calls `callee` with arguments still to be computed: `LAMBDA(x,x+1)(5)`,
+    /// or `f(5)` where `f` is bound to a lambda.
+    fn apply_args(&mut self, origin: Origin, callee: &Value, args: &[Expr]) -> Value {
         let args: Vec<Value> = args.iter().map(|a| self.eval_expr(origin, a)).collect();
-        self.apply(origin, &callee, args)
+        self.apply(origin, callee, args)
+    }
+
+    /// Calls a name the library does not know: a defined name holding a
+    /// `LAMBDA` is a function the workbook defined. Anything else is `#NAME?`.
+    pub(crate) fn call_defined(&mut self, origin: Origin, name: &str, args: &[Expr]) -> Value {
+        match self.name(origin, name) {
+            callee @ Value::Lambda(_) => self.apply_args(origin, &callee, args),
+            _ => Value::Error(CellError::Name),
+        }
     }
 
     /// The sheet a name is looked up in, and the name without its sheet.

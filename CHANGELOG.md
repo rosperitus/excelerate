@@ -74,6 +74,15 @@
 
 ### Fixed
 
+- A name bound by `LET` or held by a defined name calls the lambda it
+  stands for: `LET(f,LAMBDA(x,x*2),f(3))` is 6 and a Name Manager
+  `LAMBDA` (recursive ones too) works as a function; both were `#NAME?`.
+- `COUNT` counts only numbers inside an array constant, as inside a
+  reference: `COUNT({1,"2",TRUE})` is 1, not 3.
+- `SORT` honours its fourth argument and sorts columns.
+- Expressions nest at most 128 deep (was 256): a formula nested past about
+  245 levels overflowed a 2 MB stack in a debug build before the parser
+  refused it. Excel allows 64.
 - A grid edit left the newer rules in the sheet's `<extLst>` where they were:
   the `x14` half of a data bar kept its old range while the rule beside it
   moved, and a validation list on another sheet kept its old rows and name.

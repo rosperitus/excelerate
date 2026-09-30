@@ -395,12 +395,15 @@ pub fn transpose(args: &[Arg]) -> Value {
     let [arg] = args else {
         return Value::Error(CellError::Value);
     };
-    let grid = owned_grid(&arg.value);
+    Value::array(flip(&owned_grid(&arg.value)))
+}
+
+/// Rows as columns.
+fn flip(grid: &[Vec<Value>]) -> Vec<Vec<Value>> {
     let width = grid.first().map_or(0, Vec::len);
-    let flipped = (0..width)
+    (0..width)
         .map(|c| grid.iter().map(|row| row[c].clone()).collect())
-        .collect();
-    Value::array(flipped)
+        .collect()
 }
 
 /// `AREAS(reference)` - how many separate rectangles a reference names.
@@ -525,10 +528,16 @@ pub fn sort(args: &[Arg]) -> Value {
             .filter(|a| !a.missing())
             .map_or(Ok(default), Arg::number)
     };
-    let (Ok(index), Ok(order)) = (number(0, 1.0), number(1, 1.0)) else {
+    let (Ok(index), Ok(order), Ok(by_column)) = (number(0, 1.0), number(1, 1.0), number(2, 0.0))
+    else {
         return Value::Error(CellError::Value);
     };
+    // Sorting columns is sorting the rows of the flipped array.
+    let by_column = by_column != 0.0;
     let mut grid = owned_grid(&array.value);
+    if by_column {
+        grid = flip(&grid);
+    }
     let width = grid.first().map_or(0, Vec::len);
     let Some(column) = index_within(index, width) else {
         return Value::Error(CellError::Value);
@@ -542,7 +551,7 @@ pub fn sort(args: &[Arg]) -> Value {
             ordering
         }
     });
-    Value::array(grid)
+    Value::array(if by_column { flip(&grid) } else { grid })
 }
 
 /// A one-based index into an axis of `len` cells, as a position from zero.
