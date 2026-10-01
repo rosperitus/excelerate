@@ -34,6 +34,12 @@ pub enum Error {
     #[error("no sheet at index {0}")]
     SheetIndexOutOfRange(usize),
 
+    /// An insertion would push cells that hold something, or a merged area,
+    /// past the last row or column of the sheet. Excel refuses the same
+    /// edit; nothing has been changed.
+    #[error("the insertion would push non-empty cells off the sheet")]
+    WouldPushOffSheet,
+
     /// A sheet name that breaks Excel's naming rules.
     #[error("invalid sheet name {0:?}")]
     InvalidSheetName(String),

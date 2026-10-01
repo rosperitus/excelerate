@@ -117,7 +117,9 @@ pub fn move_range(
 ///
 /// # Errors
 /// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
-/// [`Error::Xlsx`] if the cells pushed along would leave the sheet.
+/// [`Error::WouldPushOffSheet`] if cells that hold something, or a merged
+/// area, would be pushed past the edge of the sheet; the book is left as it
+/// was.
 pub fn insert_cells(book: &mut Spreadsheet, sheet: usize, area: Range, axis: Axis) -> Result<()> {
     insert_cells_with(book, sheet, area, axis, super::CopyOrigin::Blank)
 }
@@ -248,18 +250,31 @@ fn slide(book: &mut Spreadsheet, sheet: usize, block: Range, d_col: i64, d_row: 
     // at the far end of the block have nowhere to go. Blank ones there are no
     // loss, which is how Excel decides it too.
     if d_col > 0 || d_row > 0 {
+        // The last `d` lines of the block on the axis it moves along; across
+        // it, the block's own width - not one line more.
+        let first = |end: u32, start: u32, d: i64| {
+            if d > 0 {
+                shifted(end, 1 - d).max(start)
+            } else {
+                start
+            }
+        };
         let edge = Range::new(
             CellRef::new(
-                Col::new(shifted(block.end.col.index(), 1 - d_col)).unwrap_or(block.start.col),
-                Row::new(shifted(block.end.row.index(), 1 - d_row)).unwrap_or(block.start.row),
+                Col::new(first(block.end.col.index(), block.start.col.index(), d_col))
+                    .unwrap_or(block.start.col),
+                Row::new(first(block.end.row.index(), block.start.row.index(), d_row))
+                    .unwrap_or(block.start.row),
             ),
             block.end,
         );
-        let occupied = book
-            .sheet(sheet)
-            .is_some_and(|ws| ws.iter().any(|(at, _)| edge.contains(at)));
+        // A merged area at the edge is content too, as it is to Excel.
+        let occupied = book.sheet(sheet).is_some_and(|ws| {
+            ws.iter().any(|(at, _)| edge.contains(at))
+                || ws.merges.iter().any(|m| edge.intersects(m))
+        });
         if occupied {
-            return Err(off_the_sheet());
+            return Err(Error::WouldPushOffSheet);
         }
     }
     let name = book

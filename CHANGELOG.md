@@ -4,6 +4,15 @@
 
 ### Added
 
+- Rows and columns inserted or removed at many places in one pass:
+  `edit::{insert_rows_many, remove_rows_many, insert_columns_many,
+  remove_columns_many}`. Places are given as the sheet is before the call,
+  in any order, and the result is that of the single edits made from the
+  far end; removed blocks that overlap are merged. Insertions take a
+  `CopyOrigin` for each block. Every pass of an edit walked the whole
+  workbook, so subtotals over 40 000 rows and 4 000 groups took 75 seconds
+  one row at a time; the batch does it in 30 ms. The single edits are now
+  a batch of one.
 - Ten functions from the 2026 specification (`docs/Excel_2026.md`):
   `FLATTEN`, `HAS`, `HASANY` and `HASALL` for nested arrays, from
   Microsoft's Beta Channel announcement, and six the specification proposes
@@ -31,12 +40,25 @@
 
 ### Changed
 
+- An insertion of rows or columns that would push a stored cell or a merged
+  area past the last row or column is refused with the new
+  `Error::WouldPushOffSheet`, and the workbook is left as it was, the way
+  Excel refuses it. Those cells used to vanish without a word. Row heights,
+  styles and column widths at the edge are still cut off silently, as Excel
+  does. `edit::insert_cells` reports the same error instead of
+  `Error::Xlsx`, and counts a merged area at the edge too.
 - `Shape` gains `rotation`, `flip_h`, `flip_v`, `format` and `font`: a
   `Shape { .. }` literal needs them (or `Shape::new`).
 - `Title` and `Legend` gain `layout`: a literal needs it (or
   `..Default::default()`).
 - `Chart` gains `format` and `plot_format`; `ChartMarkup::after_chart` and
   `after_axes` no longer hold those `c:spPr` elements.
+
+### Fixed
+
+- `edit::insert_cells` refused to push cells down when the column just right
+  of the area (or the row just below, pushing right) had something at the
+  edge of the sheet: the edge it checked was one line too wide.
 
 ## 0.14.0
 
