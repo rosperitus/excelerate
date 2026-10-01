@@ -3,7 +3,7 @@
 //! these rewrites formulas across the workbook, so each drops the dependency
 //! index when it succeeds.
 
-use super::convert::array;
+use super::convert::{array, col_at, row_at};
 use super::{Book, js};
 use crate::coordinate::{CellRef, Col, Range, Row};
 use crate::edit::{Axis, CopyOrigin, SortBy, SortKey, SortOptions};
@@ -79,6 +79,83 @@ impl Book {
     pub fn remove_columns(&mut self, sheet: usize, at: u32, count: u32) -> Result<(), JsError> {
         let col = Col::from_one_based(u64::from(at)).map_err(js)?;
         let done = crate::edit::remove_columns(&mut self.workbook, sheet, col, count);
+        self.edited(done)
+    }
+
+    /// Inserts rows at many places in one pass: `places` is `[at, count]`
+    /// pairs, numbered as the sheet is before the call, in any order.
+    /// `book.insertRowsMany(0, [[5, 1], [9, 1]])` puts a row above each of
+    /// rows 5 and 9 - the old row 9, now row 10. Each new block takes its
+    /// formatting from its own neighbour, as `copyOrigin` says.
+    ///
+    /// The result is that of the single inserts made from the bottom up, but
+    /// the workbook is walked once rather than once per place: four thousand
+    /// subtotal rows into forty thousand take milliseconds, not a minute.
+    #[wasm_bindgen(js_name = insertRowsMany)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "an optional string crosses the wasm boundary owned"
+    )]
+    pub fn insert_rows_many(
+        &mut self,
+        sheet: usize,
+        #[wasm_bindgen(unchecked_param_type = "[number, number][]")] places: &JsValue,
+        #[wasm_bindgen(
+            js_name = "copyOrigin",
+            unchecked_optional_param_type = "\"before\" | \"after\" | \"none\""
+        )]
+        copy_origin: Option<String>,
+    ) -> Result<(), JsError> {
+        let at = places_of(places, row_at)?;
+        let origin = copy_origin_of(copy_origin.as_deref())?;
+        let done = crate::edit::insert_rows_many(&mut self.workbook, sheet, &at, origin);
+        self.edited(done)
+    }
+
+    /// Removes rows at many places in one pass: `[at, count]` pairs, numbered
+    /// as the sheet is before the call. Blocks that overlap are merged.
+    #[wasm_bindgen(js_name = removeRowsMany)]
+    pub fn remove_rows_many(
+        &mut self,
+        sheet: usize,
+        #[wasm_bindgen(unchecked_param_type = "[number, number][]")] places: &JsValue,
+    ) -> Result<(), JsError> {
+        let spans = places_of(places, row_at)?;
+        let done = crate::edit::remove_rows_many(&mut self.workbook, sheet, &spans);
+        self.edited(done)
+    }
+
+    /// `insertRowsMany` for columns.
+    #[wasm_bindgen(js_name = insertColumnsMany)]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "an optional string crosses the wasm boundary owned"
+    )]
+    pub fn insert_columns_many(
+        &mut self,
+        sheet: usize,
+        #[wasm_bindgen(unchecked_param_type = "[number, number][]")] places: &JsValue,
+        #[wasm_bindgen(
+            js_name = "copyOrigin",
+            unchecked_optional_param_type = "\"before\" | \"after\" | \"none\""
+        )]
+        copy_origin: Option<String>,
+    ) -> Result<(), JsError> {
+        let at = places_of(places, col_at)?;
+        let origin = copy_origin_of(copy_origin.as_deref())?;
+        let done = crate::edit::insert_columns_many(&mut self.workbook, sheet, &at, origin);
+        self.edited(done)
+    }
+
+    /// `removeRowsMany` for columns.
+    #[wasm_bindgen(js_name = removeColumnsMany)]
+    pub fn remove_columns_many(
+        &mut self,
+        sheet: usize,
+        #[wasm_bindgen(unchecked_param_type = "[number, number][]")] places: &JsValue,
+    ) -> Result<(), JsError> {
+        let spans = places_of(places, col_at)?;
+        let done = crate::edit::remove_columns_many(&mut self.workbook, sheet, &spans);
         self.edited(done)
     }
 
@@ -309,6 +386,31 @@ fn axis_of(direction: &str) -> Result<Axis, JsError> {
             r#"a shift is "down", "up", "right" or "left""#,
         )),
     }
+}
+
+/// Reads the `[at, count]` pairs of the batch edits, `at` 1-based.
+fn places_of<T>(
+    places: &JsValue,
+    line: fn(u32) -> Result<T, JsError>,
+) -> Result<Vec<(T, u32)>, JsError> {
+    let number = |v: JsValue| {
+        v.as_f64()
+            .filter(|n| n.fract() == 0.0 && (0.0..=f64::from(u32::MAX)).contains(n))
+            .ok_or_else(|| JsError::new("a place is [at, count], two whole numbers"))
+    };
+    array(places, "places")?
+        .iter()
+        .map(|pair| {
+            let pair = array(&pair, "a place")?;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "checked whole and in range just above"
+            )]
+            let (at, count) = (number(pair.get(0))? as u32, number(pair.get(1))? as u32);
+            Ok((line(at)?, count))
+        })
+        .collect()
 }
 
 /// Reads the `copyOrigin` argument of the inserts.

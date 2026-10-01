@@ -146,6 +146,11 @@ class Book {
   removeRows(sheet: number, at: number, count: number): void;
   insertColumns(sheet: number, at: number, count: number, copyOrigin?: CopyOrigin): void;  // 1-based
   removeColumns(sheet: number, at: number, count: number): void;
+  // Many places in one pass: [at, count] pairs, numbered as before the call
+  insertRowsMany(sheet: number, places: [number, number][], copyOrigin?: CopyOrigin): void;
+  removeRowsMany(sheet: number, places: [number, number][]): void;
+  insertColumnsMany(sheet: number, places: [number, number][], copyOrigin?: CopyOrigin): void;
+  removeColumnsMany(sheet: number, places: [number, number][]): void;
   copyRange(sheet: number, range: string, to: string, toSheet?: number): void;   // formulas rewritten
   moveRange(sheet: number, range: string, to: string, toSheet?: number): void;   // formulas kept, references follow
   insertCells(sheet: number, range: string, shift: "down" | "right", copyOrigin?: CopyOrigin): void;
@@ -163,10 +168,12 @@ class Book {
   comments(sheet: number): SheetComment[];
   hyperlinks(sheet: number): SheetHyperlink[];
   tables(sheet: number): SheetTable[];
-  charts(sheet: number): SheetChart[];
+  charts(sheet: number): SheetChart[];          // with the chart and plot area fill and outline
   images(sheet: number): SheetImage[];          // without the bytes
   imageData(sheet: number, index: number): Uint8Array;
-  shapes(sheet: number): SheetShape[];
+  shapes(sheet: number): SheetShape[];          // rotation, flips, fill, line, font as Excel shows them
+  setShapeFormat(sheet: number, index: number, patch: ShapeFormatPatch): void;   // fill, line, font, rotation, flips
+  setChartFormat(sheet: number, index: number, patch: ChartFormatPatch): void;   // chart and plot area fill and outline
 
   // Style: read whole, written as a patch over what the cell has
   cellStyle(sheet: number, address: string): CellStyle;   // numberFormat, font, fill, borders, alignment
@@ -261,6 +268,14 @@ missing sheet, a truncated package.
   workbook, not one sheet: `$A$5` becomes `$A$6`, a range that lost cells
   narrows, a deleted cell reads `#REF!`, and drawings and tables follow. The
   cached result of a rewritten formula is dropped, so recalculate after.
+  An insert that would push a filled cell or a merge off the last row or
+  column throws and leaves the book as it was, as Excel refuses it.
+- **Many rows at once.** Every edit walks the whole workbook, so a loop of
+  `insertRows` costs a walk per row. `insertRowsMany(0, [[5, 1], [9, 1],
+  [14, 1]])` does it in one: places are numbered as the sheet was before the
+  call, in any order. Subtotal rows under 4 000 groups of 40 000 rows took
+  73 s one at a time and take 29 ms this way. `removeRowsMany` and the column
+  pair work the same.
 - **Style is a patch.** `setCellStyle(0, "A1", { font: { bold: true } })` keeps
   the number format the cell had. Equal styles share one entry in the
   workbook's table, so painting a column costs one style, not one per cell -
@@ -280,9 +295,18 @@ missing sheet, a truncated package.
 - **Read and write formatting by the block.** `getRangeStyles` returns each
   distinct style once and a grid of indexes into them; `setRangeStyles` takes
   the same shape back, so copying a block's look is two calls.
-- **Charts, pictures and shapes are read-only here.** `charts`, `images` and
-  `shapes` describe what a sheet carries; the parts themselves travel through
-  a write byte for byte.
+- **Charts, pictures and shapes travel byte for byte; their look is a patch.**
+  `charts`, `images` and `shapes` describe what a sheet carries, and an
+  untouched object goes back into the file as it came. A shape's `fill`,
+  `line` and `font` are what Excel shows, its style filling in what the shape
+  leaves out, and a colour comes resolved through the theme:
+  `{ type: "solid", color: "#FF4472C4" }`. `setShapeFormat(0, 2, { fill: {
+  type: "solid", color: "accent2" }, line: { width: 2 }, rotation: 15 })`
+  changes only what it names - `null` gives a fill or line back to the style -
+  and only those elements are rewritten; effects, other runs and dashes stay.
+  A colour to write is `#RRGGBB`, `#AARRGGBB` or a theme name (`accent1`,
+  `tx1`, `bg2`) that follows the theme. `setChartFormat` does the same for a
+  chart's chart area (`format`) and plot area (`plotFormat`).
 - **Functions of your own.** `book.registerFunction("MYTOTAL", (range) =>
   range.flat().reduce((a, b) => a + (b ?? 0), 0))` - arguments arrive
   evaluated, a range as a grid. A built-in name stays the built-in's, an

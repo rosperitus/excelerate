@@ -104,7 +104,7 @@ impl Book {
 }
 
 /// What a run changes about the font, only the parts it names.
-fn run_font_to_js(font: &crate::style::DiffFont) -> JsValue {
+pub(super) fn run_font_to_js(font: &crate::style::DiffFont) -> JsValue {
     let mut fields: Vec<(&str, JsValue)> = Vec::new();
     if let Some(name) = &font.name {
         fields.push(("name", JsValue::from_str(name)));
@@ -457,7 +457,7 @@ fn style_to_js(style: &Style) -> JsValue {
 /// Reading a `CellStylePatch`: every field is optional, and one left out
 /// keeps what the cell had.
 #[cfg(feature = "write")]
-mod patch {
+pub(super) mod patch {
     use super::super::convert::field;
     use crate::style::{
         Alignment, BorderStyle, Borders, Color, Fill, Font, HorizontalAlign, NumberFormat, Pattern,
@@ -592,7 +592,7 @@ mod patch {
     }
 
     /// The part of a font a run changes: only the fields the object names.
-    fn run_font(patch: &JsValue) -> Result<crate::style::DiffFont, JsError> {
+    pub(in crate::wasm) fn run_font(patch: &JsValue) -> Result<crate::style::DiffFont, JsError> {
         use crate::style::{DiffFont, Script};
         let mut font = DiffFont::default();
         if let Some(name) = field(patch, "name") {
@@ -686,14 +686,14 @@ mod patch {
     }
 
     /// A string a patch states, rejected if it is not one.
-    fn text(value: &JsValue, what: &str) -> Result<String, JsError> {
+    pub(in crate::wasm) fn text(value: &JsValue, what: &str) -> Result<String, JsError> {
         value
             .as_string()
             .ok_or_else(|| JsError::new(&format!("{what} is a string")))
     }
 
     /// A number a patch states, rejected if it is not one.
-    fn number(value: &JsValue, what: &str) -> Result<f64, JsError> {
+    pub(in crate::wasm) fn number(value: &JsValue, what: &str) -> Result<f64, JsError> {
         value
             .as_f64()
             .ok_or_else(|| JsError::new(&format!("{what} is a number")))

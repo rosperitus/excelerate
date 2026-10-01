@@ -417,6 +417,29 @@ test("inserting and removing rows moves the formulas with them", () => {
   assert.strictEqual(book.get(0, "A1"), 1);
 });
 
+test("batch edits take places as the sheet was before the call", () => {
+  const book = new Book();
+  for (let r = 1; r <= 6; r++) book.set(0, `A${r}`, r);
+  book.set(0, "B1", "=SUM(A1:A6)");
+
+  book.insertRowsMany(0, [[5, 1], [3, 2]]);
+  assert.deepStrictEqual(
+    [3, 4, 5, 6, 7, 8, 9].map((r) => book.get(0, `A${r}`)),
+    [null, null, 3, 4, null, 5, 6],
+  );
+  assert.strictEqual(book.getFormula(0, "B1"), "SUM(A1:A9)");
+
+  book.removeRowsMany(0, [[7, 1], [3, 2]]);
+  assert.strictEqual(book.getFormula(0, "B1"), "SUM(A1:A6)");
+  assert.strictEqual(book.get(0, "A6"), 6);
+
+  book.insertColumnsMany(0, [[1, 1]], "none");
+  assert.strictEqual(book.getFormula(0, "C1"), "SUM(B1:B6)");
+  book.removeColumnsMany(0, [[1, 1]]);
+  assert.strictEqual(book.get(0, "A1"), 1);
+  assert.throws(() => book.insertRowsMany(0, [[1]]));
+});
+
 test("a removed sheet leaves #REF! behind", () => {
   const book = new Book();
   const second = book.addSheet("Данные");
@@ -468,11 +491,59 @@ test("pictures, shapes and charts", () => {
   const shapes = Book.read(fixture("shapes.xlsx"), "shapes.xlsx").shapes(0);
   assert.ok(shapes.length > 0);
   assert.strictEqual(typeof shapes[0].text, "string");
+  // A text box from excelize: no fill of its own and a style that adds none,
+  // a bold white first run.
+  assert.deepStrictEqual(shapes[0].fill, { type: "none" });
+  assert.strictEqual(shapes[0].rotation, 0);
+  assert.strictEqual(shapes[0].flipH, false);
+  assert.strictEqual(shapes[0].font.bold, true);
+  assert.strictEqual(shapes[0].font.color, "#FFFFFFFF");
 
   const charts = Book.read(fixture("chart.xlsx"), "chart.xlsx").charts(0);
   assert.ok(charts.length > 0);
   assert.ok(charts[0].kinds.every((k) => k.endsWith("Chart")));
   assert.ok(charts[0].seriesCount >= 1);
+  assert.deepStrictEqual(charts[0].format.fill, { type: "solid", color: "#FFFFFFFF" });
+  assert.strictEqual(charts[0].plotFormat, null);
+});
+
+test("a shape's and a chart's look survive a write", () => {
+  const book = Book.read(fixture("shapes.xlsx"), "shapes.xlsx");
+  book.setShapeFormat(0, 0, {
+    fill: { type: "solid", color: "accent2" },
+    line: { fill: { type: "solid", color: "#80112233" }, width: 2.5 },
+    font: { size: 14, italic: true, color: "#FF0000FF" },
+    rotation: -90,
+    flipH: true,
+  });
+  book.setShapeFormat(0, 1, {
+    fill: { type: "gradient", stops: [{ position: 0, color: "#FF0000" }, { position: 100, color: "bg1" }], angle: 90 },
+  });
+  const shapes = Book.read(book.toXlsx(), "out.xlsx").shapes(0);
+  // accent2 of Office's theme, which excelize's file carries.
+  assert.deepStrictEqual(shapes[0].fill, { type: "solid", color: "#FFED7D31" });
+  assert.deepStrictEqual(shapes[0].line, { fill: { type: "solid", color: "#80112233" }, width: 2.5 });
+  assert.strictEqual(shapes[0].rotation, 270);
+  assert.strictEqual(shapes[0].flipH, true);
+  assert.strictEqual(shapes[0].font.size, 14);
+  assert.strictEqual(shapes[0].font.italic, true);
+  assert.strictEqual(shapes[0].font.bold, true, "a field the patch left out stays");
+  assert.strictEqual(shapes[0].font.color, "#FF0000FF");
+  assert.strictEqual(shapes[0].text, "Итого за квартал");
+  assert.deepStrictEqual(shapes[1].fill, {
+    type: "gradient",
+    stops: [{ position: 0, color: "#FFFF0000" }, { position: 100, color: "#FFFFFFFF" }],
+    angle: 90,
+    path: null,
+  });
+  assert.throws(() => book.setShapeFormat(0, 0, { fill: { type: "solid", color: "accent9" } }), /theme colour/);
+  assert.throws(() => book.setShapeFormat(0, 99, {}), /no such shape/);
+
+  const charts = Book.read(fixture("chart.xlsx"), "chart.xlsx");
+  charts.setChartFormat(0, 0, { format: { fill: { type: "none" } }, plotFormat: { fill: { type: "solid", color: "#EEEEEE" } } });
+  const chart = Book.read(charts.toXlsx(), "out.xlsx").charts(0)[0];
+  assert.deepStrictEqual(chart.format.fill, { type: "none" });
+  assert.deepStrictEqual(chart.plotFormat, { fill: { type: "solid", color: "#FFEEEEEE" }, line: null });
 });
 
 test("column widths, row heights and a hidden sheet survive a round trip", () => {

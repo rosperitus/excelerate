@@ -12,7 +12,17 @@
   `CopyOrigin` for each block. Every pass of an edit walked the whole
   workbook, so subtotals over 40 000 rows and 4 000 groups took 75 seconds
   one row at a time; the batch does it in 30 ms. The single edits are now
-  a batch of one.
+  a batch of one. In JS: `insertRowsMany`, `removeRowsMany`,
+  `insertColumnsMany` and `removeColumnsMany`, places as `[at, count]`
+  pairs, 1-based.
+- In JS, `shapes` gives each shape's `rotation` (degrees), `flipH`, `flipV`
+  and the `fill`, `line` and `font` Excel shows, and `charts` the
+  `format` and `plotFormat` of the chart and plot area. Drawing colours come
+  resolved through the workbook theme as `#AARRGGBB`.
+- In JS, `setShapeFormat` and `setChartFormat` change that look with a patch
+  in the same shape: a field left out stays, `null` gives a fill or outline
+  back to the style, and a colour is `#RRGGBB`, `#AARRGGBB` or a theme name
+  such as `accent1`.
 - Ten functions from the 2026 specification (`docs/Excel_2026.md`):
   `FLATTEN`, `HAS`, `HASANY` and `HASALL` for nested arrays, from
   Microsoft's Beta Channel announcement, and six the specification proposes

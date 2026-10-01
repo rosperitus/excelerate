@@ -86,6 +86,7 @@ on Node 22.6+, no build step and no separate install.
 | `setSheetVisibility(sheet, state)` | `"visible"`, `"hidden"` or `"veryHidden"` |
 | `merge(sheet, "A1:C1")` / `unmerge(sheet, range)` | merge a block of cells, or take the merge back out |
 | `insertRows` / `removeRows` / `insertColumns` / `removeColumns` | edit the grid; formulas across the workbook follow. An insert takes `copyOrigin` last: `"before"` (the default, as in Excel), `"after"` or `"none"` |
+| `insertRowsMany(sheet, [[at, count], ...], copyOrigin?)` / `removeRowsMany` / `insertColumnsMany` / `removeColumnsMany` | the same at many places in one walk of the workbook; places are numbered as before the call, in any order |
 | `copyRange(sheet, range, to, toSheet?)` / `moveRange(...)` | a block of cells: a copy rewrites its formulas, a move keeps them and drags the references to it along |
 | `insertCells(sheet, range, "down" \| "right", copyOrigin?)` / `removeCells(sheet, range, "up" \| "left")` | Excel's "Insert Cells": part of a row moves, the rest of the sheet stays |
 | `sortRange(sheet, range, keys, { header?, byColumns? })` | Data - Sort. A key is a column number (`2`) or a header (`"Amount"`); a minus sorts largest first |
@@ -95,7 +96,8 @@ on Node 22.6+, no build step and no separate install.
 | `moveSheet(from, to)` | reorder the tabs; every sheet index moves with them |
 | `removeSheet(sheet)` | drop a sheet - references to it become `#REF!` |
 | `comments(sheet)` / `hyperlinks(sheet)` / `tables(sheet)` | what the sheet carries besides cells |
-| `charts(sheet)` / `shapes(sheet)` / `images(sheet)` | the drawing objects, each with its anchor; `imageData(sheet, i)` for a picture's bytes |
+| `charts(sheet)` / `shapes(sheet)` / `images(sheet)` | the drawing objects, each with its anchor; `imageData(sheet, i)` for a picture's bytes. A shape carries `rotation` (degrees), `flipH`, `flipV` and the `fill`, `line` and `font` Excel shows, its style filling in what it leaves out; a chart carries `format` and `plotFormat`, the fill and outline of its chart and plot area. A drawing colour comes resolved through the workbook theme as `#AARRGGBB` |
+| `setShapeFormat(sheet, i, { fill?, line?, font?, rotation?, flipH?, flipV? })` / `setChartFormat(sheet, i, { format?, plotFormat? })` | change that look; a field left out stays, `null` gives a fill or line back to the style. A colour to write is `#RRGGBB`, `#AARRGGBB` or a theme name such as `accent1`, which follows the theme |
 | `cellStyle(sheet, address)` / `cellStyleAt` | the whole style: `numberFormat`, `font`, `fill`, `borders`, `alignment`; a colour is `#AARRGGBB`, `indexed:N`, `theme:N` or `null` |
 | `getRichText(sheet, address)` / `getRichTextAt` | formatted text as runs, `{ text, font }` each, `font` naming only what the run changes; `null` for a cell without it |
 | `setRichText(sheet, address, runs)` / `setRichTextAt` | write formatted text in the same shape |

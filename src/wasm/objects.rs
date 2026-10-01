@@ -5,8 +5,12 @@ use super::Book;
 use super::convert::{count, list, object, opt_count, opt_str, ranges_to_js};
 #[cfg(feature = "write")]
 use super::js;
+use super::style::run_font_to_js;
 #[cfg(feature = "write")]
 use crate::coordinate::{CellRef, Col, Range};
+use crate::model::chart::{
+    ChartColor, ColorTransform, Fill, GradientPath, LineFormat, ShapeFormat,
+};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -84,6 +88,8 @@ impl Book {
                     count(chart.plots.iter().map(|p| p.series.len()).sum()),
                 ),
                 ("anchor", anchor_to_js(&chart.anchor)),
+                ("format", self.format_to_js(chart.format.as_ref())),
+                ("plotFormat", self.format_to_js(chart.plot_format.as_ref())),
             ])
         }))
     }
@@ -113,7 +119,9 @@ impl Book {
             .ok_or_else(|| JsError::new("no such image"))
     }
 
-    /// The drawn shapes of a sheet, text and all.
+    /// The drawn shapes of a sheet, text and all, with the look Excel shows:
+    /// fill, outline and font are the shape's own with its style filling in
+    /// the rest, colours resolved through the workbook theme.
     #[wasm_bindgen(unchecked_return_type = "SheetShape[]")]
     pub fn shapes(&self, sheet: usize) -> Result<JsValue, JsError> {
         Ok(list(&self.sheet_of(sheet)?.shapes, |shape| {
@@ -123,6 +131,15 @@ impl Book {
                 ("geometry", opt_str(shape.geometry.as_deref())),
                 ("text", JsValue::from_str(&shape.text)),
                 ("anchor", anchor_to_js(&shape.anchor)),
+                (
+                    "rotation",
+                    JsValue::from_f64(f64::from(shape.rotation) / 60_000.0),
+                ),
+                ("flipH", JsValue::from_bool(shape.flip_h)),
+                ("flipV", JsValue::from_bool(shape.flip_v)),
+                ("fill", self.fill_to_js(&shape.effective_fill())),
+                ("line", self.line_to_js(&shape.effective_line())),
+                ("font", run_font_to_js(&shape.effective_font())),
             ])
         }))
     }
@@ -462,4 +479,115 @@ fn anchor_to_js(anchor: &crate::model::chart::Anchor) -> JsValue {
         ("row", opt_count(at.map(|m| m.row.one_based()))),
         ("column", opt_count(at.map(|m| m.col.one_based()))),
     ])
+}
+
+/// The look of drawing objects in JS terms. A `DrawingML` colour is resolved
+/// to `#AARRGGBB` through the workbook theme, since outside the file a theme
+/// colour with its transforms means nothing; `null` for one no theme defines.
+impl Book {
+    fn chart_color_to_js(&self, color: &ChartColor) -> JsValue {
+        color
+            .resolve(self.workbook.theme.as_deref())
+            .map_or(JsValue::NULL, |rgb| {
+                // The opacity, the one transform `resolve` leaves alone.
+                let alpha = color.transforms.iter().rev().find_map(|t| match t {
+                    ColorTransform::Alpha(a) => {
+                        Some((a.clamp(&0, &100_000) * 255 + 50_000) / 100_000)
+                    }
+                    _ => None,
+                });
+                JsValue::from_str(&format!("#{:02X}{rgb:06X}", alpha.unwrap_or(0xFF)))
+            })
+    }
+
+    fn opt_color(&self, color: Option<&ChartColor>) -> JsValue {
+        color.map_or(JsValue::NULL, |c| self.chart_color_to_js(c))
+    }
+
+    /// `{ type, ... }`: `none`, `solid` with `color`, `gradient` with `stops`
+    /// (`position` in percent), `angle` in degrees and `path`, `pattern` with
+    /// `preset`, `foreground` and `background`, or `other` for a picture.
+    fn fill_to_js(&self, fill: &Fill) -> JsValue {
+        let kind = |name: &str| ("type", JsValue::from_str(name));
+        match fill {
+            Fill::None => object(&[kind("none")]),
+            Fill::Solid(color) => {
+                object(&[kind("solid"), ("color", self.chart_color_to_js(color))])
+            }
+            Fill::Gradient { stops, angle, path } => object(&[
+                kind("gradient"),
+                (
+                    "stops",
+                    list(stops, |stop| {
+                        object(&[
+                            (
+                                "position",
+                                JsValue::from_f64(f64::from(stop.position) / 1000.0),
+                            ),
+                            ("color", self.chart_color_to_js(&stop.color)),
+                        ])
+                    }),
+                ),
+                (
+                    "angle",
+                    angle.map_or(JsValue::NULL, |a| {
+                        JsValue::from_f64(f64::from(a) / 60_000.0)
+                    }),
+                ),
+                ("path", opt_str(path.map(GradientPath::as_str))),
+            ]),
+            Fill::Pattern {
+                preset,
+                foreground,
+                background,
+            } => object(&[
+                kind("pattern"),
+                ("preset", opt_str(preset.as_deref())),
+                ("foreground", self.opt_color(foreground.as_ref())),
+                ("background", self.opt_color(background.as_ref())),
+            ]),
+            Fill::Other => object(&[kind("other")]),
+        }
+    }
+
+    /// `{ fill, width }`, `width` in points; `null` where the file is silent.
+    fn line_to_js(&self, line: &LineFormat) -> JsValue {
+        object(&[
+            (
+                "fill",
+                line.fill
+                    .as_ref()
+                    .map_or(JsValue::NULL, |f| self.fill_to_js(f)),
+            ),
+            (
+                "width",
+                line.width.map_or(JsValue::NULL, |w| {
+                    JsValue::from_f64(f64::from(w) / 12_700.0)
+                }),
+            ),
+        ])
+    }
+
+    /// `{ fill, line }` as the element states them, or `null` for an area
+    /// that leaves its look to the chart style.
+    fn format_to_js(&self, format: Option<&ShapeFormat>) -> JsValue {
+        format.map_or(JsValue::NULL, |format| {
+            object(&[
+                (
+                    "fill",
+                    format
+                        .fill
+                        .as_ref()
+                        .map_or(JsValue::NULL, |f| self.fill_to_js(f)),
+                ),
+                (
+                    "line",
+                    format
+                        .line
+                        .as_ref()
+                        .map_or(JsValue::NULL, |l| self.line_to_js(l)),
+                ),
+            ])
+        })
+    }
 }

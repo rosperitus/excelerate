@@ -16,6 +16,8 @@
 mod cells;
 mod convert;
 #[cfg(feature = "write")]
+mod drawing;
+#[cfg(feature = "write")]
 mod edit;
 #[cfg(feature = "formulas")]
 mod formulas;
