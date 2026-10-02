@@ -8,6 +8,42 @@
 // the browser and bundlers); it defines `build` and nothing else.
 
 function build(Book) {
+  const SHEET_ACTIONS = [
+    "clear", "clearAt", "copyRange", "fillDown", "fillRight", "fillSeries",
+    "freezePanes", "insertCells", "insertColumns", "insertColumnsMany",
+    "insertRows", "insertRowsMany", "merge", "moveRange", "protectSheet",
+    "removeCells", "removeColumns", "removeColumnsMany", "removeRows",
+    "removeRowsMany", "set", "setAt", "setCellStyle", "setCellStyleAt",
+    "setChartFormat", "setColumnHidden", "setColumnWidth", "setComment",
+    "setHyperlink", "setRange", "setRangeAt", "setRangeStyle", "setRangeStyles",
+    "setRangeStylesAt", "setRichText", "setRichTextAt", "setRowHeight",
+    "setRowHidden", "setShapeFormat", "setSheetVisibility", "setShowGridLines",
+    "setZoom", "sortRange", "unprotectSheet",
+  ];
+  const SHEET_QUERIES = [
+    "arrayFormulas", "autoFilter", "cellBold", "cellBoldAt", "cellCount",
+    "cellIndent", "cellIndentAt", "cellStyle", "cellStyleAt", "charts",
+    "columnLevel", "columnWidth", "comments", "conditionalFormats",
+    "dataValidations", "evaluate", "get", "getAt", "getFormatted", "getFormattedAt",
+    "getFormula", "getFormulaAt", "getRange", "getRangeAt", "getRangeStyles",
+    "getRangeStylesAt", "getRichText", "getRichTextAt", "getRowAt", "hyperlinks",
+    "imageData", "images", "mergedRanges", "mergedRangesAt", "pivotTables",
+    "recalculateCell", "recalculateCellAt", "recalculateFrom", "recalculateFromAt",
+    "recalculateFromMany", "removeComment", "removeHyperlink", "removeTable",
+    "rowHeight", "rowHidden", "rowLevel", "shapes", "sheetProtection", "sheetView",
+    "sheetVisibility", "toCsv", "toHtml", "unmerge", "usedRange", "usedRangeHint",
+    "verifySheetPassword",
+  ];
+  const BOOK_ACTIONS = [
+    "moveSheet", "protectWorkbook", "registerFunction", "setDefinedName",
+    "setDocumentProperties", "setTableFilter", "sortTable", "unprotectWorkbook",
+  ];
+  const BOOK_QUERIES = [
+    "activeSheet", "definedNames", "documentProperties", "externalBooks",
+    "registeredFunctions", "removeDefinedName", "sheetIndex", "sheetNames",
+    "toOds", "toXls", "unregisterFunction", "workbookProtection",
+  ];
+
   /** "A" -> 1, "AB" -> 28. */
   const columnNumber = (letters) =>
     [...letters.toUpperCase()].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
@@ -42,6 +78,11 @@ function build(Book) {
     /** Reads xlsx, xls, xlsb, ods, csv and the rest, as `Book.read` does. */
     static read(bytes, name, maxExpanded, onProgress) {
       return new Workbook(Book.read(bytes, name, maxExpanded, onProgress));
+    }
+
+    /** Reads CSV in a stated shape, as `Book.readCsv` does. */
+    static readCsv(bytes, options) {
+      return new Workbook(Book.readCsv(bytes, options));
     }
 
     /** A sheet by position or by name. */
@@ -79,14 +120,6 @@ function build(Book) {
       return this.book.toXlsx(onProgress);
     }
 
-    toOds() {
-      return this.book.toOds();
-    }
-
-    toXls() {
-      return this.book.toXls();
-    }
-
     /** Frees the wasm memory behind the workbook. */
     free() {
       this.book.free();
@@ -110,16 +143,6 @@ function build(Book) {
     rename(name) {
       this.book.renameSheet(this.index, name);
       return this;
-    }
-
-    /** One cell; a string starting with `=` is a formula. */
-    set(address, value) {
-      this.book.set(this.index, address, value);
-      return this;
-    }
-
-    get(address) {
-      return this.book.get(this.index, address);
     }
 
     /** What the cell shows, through its number format. */
@@ -187,8 +210,26 @@ function build(Book) {
       return this.book.tables(this.index).map((t) => new Table(this, t.displayName));
     }
 
-    rowHidden(row) {
-      return this.book.rowHidden(this.index, row);
+    /** Makes this the sheet a workbook opens on. */
+    activate() {
+      this.book.setActiveSheet(this.index);
+      return this;
+    }
+
+    /** Recalculates the formulas of this sheet. */
+    recalculate(onProgress) {
+      this.book.recalculate(this.index, onProgress);
+      return this;
+    }
+
+    /**
+     * Removes the sheet; references to it become `#REF!`. The sheets after
+     * it move down an index, so handles to them are stale. Returns the
+     * workbook.
+     */
+    remove() {
+      this.book.removeSheet(this.index);
+      return this.workbook;
     }
   }
 
@@ -321,6 +362,34 @@ function build(Book) {
       return this;
     }
   }
+
+  // Every Book method that takes the sheet first is a Sheet method without
+  // it, and every one that takes no sheet a Workbook method. What Book
+  // answers with nothing returns the object, so it chains; the rest return
+  // the answer. The lists follow Book's declarations; a test in npm/test.js
+  // fails when Book gains a method neither covers.
+  const delegate = (target, names, chain, args) => {
+    for (const name of names) {
+      Object.defineProperty(target.prototype, name, {
+        configurable: true,
+        writable: true,
+        value: chain
+          ? function (...rest) {
+              this.book[name](...args(this), ...rest);
+              return this;
+            }
+          : function (...rest) {
+              return this.book[name](...args(this), ...rest);
+            },
+      });
+    }
+  };
+  const onSheet = (sheet) => [sheet.index];
+  const onBook = () => [];
+  delegate(Sheet, SHEET_ACTIONS, true, onSheet);
+  delegate(Sheet, SHEET_QUERIES, false, onSheet);
+  delegate(Workbook, BOOK_ACTIONS, true, onBook);
+  delegate(Workbook, BOOK_QUERIES, false, onBook);
 
   return { Workbook, Sheet, Table, SheetRange };
 }

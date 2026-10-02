@@ -55,8 +55,11 @@
 - In JS, objects over `Book` whose changing calls chain: `Workbook`, `Sheet`,
   `Table`, `SheetRange` - `new Workbook().addSheet("Sales")
   .addTableFromData(...).set(1, "Amount", 125).addFilter("Region", ...)
-  .records({ visible: true })`. The package's entry point is now `index.js`,
-  which is the generated module plus these four.
+  .records({ visible: true })`. Every `Book` method that takes the sheet
+  first is a `Sheet` method without it, every other a `Workbook` method;
+  what `Book` answers with nothing returns the object, so it chains. The
+  package's entry point is now `index.js`, which is the generated module
+  plus these four.
 
 ### Changed
 

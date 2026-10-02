@@ -11,7 +11,11 @@ npm install @rosperitus/excelerate
 
 TypeScript declarations ship with the package. Only need to read? The
 `@rosperitus/excelerate-reader` package has the reading half of the API in a
-wasm file of 1.0 MB instead of 2.3 MB.
+wasm file of 1.4 MB instead of 3.9 MB (0.6 MB against 1.5 MB gzipped).
+
+The examples use `import`: a project needs `"type": "module"` in its
+`package.json` for that (`npm init -y` writes `"commonjs"`), or `require`
+works the same - `const { Book } = require("@rosperitus/excelerate")`.
 
 ## Quick start
 
@@ -63,6 +67,9 @@ writeFileSync("report.xlsx", book.toXlsx());
 Continue a series the way the fill handle does:
 
 ```ts
+import { Book } from "@rosperitus/excelerate";
+
+const book = new Book();
 book.setRange(0, "F1", [["Jan", "Кв1", 1], [null, null, 3]]);
 book.fillSeries(0, "F1:H6", "down");   // Feb..Jun, Кв2..Кв6, 5, 7, 9, 11
 ```
@@ -107,8 +114,29 @@ the rows whose cell shows one of them (`blank: true` adds the empty ones),
 `{ bottom: n }` the extremes, `percent: true` for a share. `clearFilter()`
 takes them off.
 
+Every `Book` method that takes the sheet first is a `Sheet` method without
+it, and every one that takes no sheet a `Workbook` method: what `Book`
+answers with nothing returns the object, so it chains, and the rest return
+their answer. So the whole flat API is there:
+
+```ts
+const sheet = wb.sheet("Sales")
+  .setColumnWidth(2, 14)
+  .setRowHidden(5, true)
+  .insertRows(8, 2)
+  .setCellStyle("A1", { font: { bold: true } });
+sheet.getRange("A1:C3");                 // a query answers: CellGrid
+sheet.columnWidth(2);                    // 14
+wb.setDefinedName("Total", "Sales!$C$9").definedNames();
+```
+
+On top of that a few have their own shape: `write`, `range`, `style`,
+`width`, `freeze`, `addTable`, `addTableFromData`, `table`, `rename`,
+`activate`, `recalculate` and `remove` on a sheet; `sheet`, `addSheet` and
+`Workbook.readCsv` on the workbook.
+
 The objects are handles - a sheet index, a table name, an address - and work
-through `workbook.book`, which is there for everything they do not wrap. A
+through `workbook.book`. A
 sheet removed or moved through the `Book` moves the indexes under them, as it
 does for any index. `Workbook.read(bytes)` opens a file; `Book` and its flat
 API are unchanged.
@@ -228,7 +256,9 @@ class Book {
   setCellStyleAt(sheet: number, row: number, column: number, patch: CellStylePatch): void;
   setRangeStyle(sheet: number, range: string, patch: CellStylePatch): void;
   getRichText(sheet: number, address: string): TextRun[] | null;   // [{ text, font }]
+  getRichTextAt(sheet: number, row: number, column: number): TextRun[] | null;
   setRichText(sheet: number, address: string, runs: TextRun[]): void;
+  setRichTextAt(sheet: number, row: number, column: number, runs: TextRun[]): void;
 
   // Notes, links, tables
   setComment(sheet: number, address: string, author: string, text: string): void;
@@ -249,6 +279,10 @@ class Book {
   definedNames(): WorkbookName[];
   setDefinedName(name: string, formula: string, sheet?: number): void;
   removeDefinedName(name: string, sheet?: number): boolean;
+
+  // File > Info: title, author, company, and fields of your own
+  documentProperties(): DocumentProperties;
+  setDocumentProperties(patch: DocumentPropertiesPatch): void;  // null clears a field
 
   // Rules a file states
   dataValidations(sheet: number): SheetValidation[];

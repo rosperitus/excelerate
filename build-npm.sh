@@ -53,7 +53,7 @@ else:
     js = ('import * as core from "./excelerate.js";\nexport * from "./excelerate.js";\n' + default
           + "\n" + body + f"\nexport const {{ {names} }} = build(core.Book);\n")
 dts = ('export * from "./excelerate";\n' + default.replace(".js", "")
-       + 'import type { Book, CellValue, CellGrid, CellStylePatch, SheetTable, SortKeys, TableFilter }'
+       + 'import type { Book, CellValue, CellGrid, CellStylePatch, SheetTable, SortKeys, TableFilter, CsvOptions }'
        + ' from "./excelerate";\n\n' + types)
 (out / "index.js").write_text(js, encoding="utf-8")
 (out / "index.d.ts").write_text(dts, encoding="utf-8")

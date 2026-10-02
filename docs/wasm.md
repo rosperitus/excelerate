@@ -69,10 +69,15 @@ sales.records({ visible: true });   // [{ Region: "South", Amount: 340 }]
 
 | Object | Has |
 |---|---|
-| `Workbook` | `new Workbook()`, `Workbook.read(bytes)`, `sheet(index or name)`, `sheets()`, `addSheet(name)` (a new workbook's first call takes over its empty `Sheet1`), `recalculate()`, `toXlsx()`, `toOds()`, `toXls()`, `book` |
-| `Sheet` | `set`, `get`, `text`, `write(at, rows)`, `range(address)`, `style(address, patch)`, `width(column, chars)`, `freeze(rows, cols)`, `addTable`, `addTableFromData(name, at, rows)`, `table(name)`, `tables()`, `rename` |
+| `Workbook` | every `Book` method that takes no sheet (`definedNames`, `setDefinedName`, `moveSheet`, `registerFunction`, `protectWorkbook`...), plus `new Workbook()`, `Workbook.read(bytes)`, `Workbook.readCsv`, `sheet(index or name)`, `sheets()`, `addSheet(name)` (a new workbook's first call takes over its empty `Sheet1`), `recalculate()`, `toXlsx()`, `book` |
+| `Sheet` | every `Book` method that takes the sheet first, without it (`setColumnWidth(2, 14)`, `getRange("A1:C3")`, `insertRows(8, 2)`...), plus `text`, `write(at, rows)`, `range(address)`, `style(address, patch)`, `width(column, chars)`, `freeze(rows, cols)`, `addTable`, `addTableFromData(name, at, rows)`, `table(name)`, `tables()`, `rename`, `activate`, `recalculate`, `remove` |
 | `Table` | `set(row, column, value)` and `get` by data row and header, `addFilter(column, criteria)`, `clearFilter(column?)`, `sort(keys)`, `range()`, `data()`, `records({ visible? })`, `columns` |
 | `SheetRange` | `values()`, `visibleValues()`, `set(rows)`, `style(patch)`, `merge()` |
+
+A `Book` method that answers with nothing returns the object, so it chains;
+the rest return their answer. The types are derived from `Book`'s own, so a
+method `Book` gains is typed on `Sheet` too, and a test fails until it is
+listed.
 
 They are handles - a sheet index, a table name, an address - over
 `workbook.book`; the only package without them is `excelerate-reader`, since

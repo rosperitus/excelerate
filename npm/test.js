@@ -585,6 +585,39 @@ test("objects chain: a table from data, a filter, the rows it leaves", () => {
   assert.strictEqual(wb.addSheet("Итоги").index, 1);
 });
 
+test("Sheet and Workbook carry every Book method, chaining what returns nothing", () => {
+  const { Workbook, Sheet } = require("excelerate");
+  // Every Book method that takes the sheet first, from the declarations.
+  const dts = fs.readFileSync(require.resolve("excelerate/excelerate.d.ts"), "utf8");
+  const body = dts.slice(dts.indexOf("export class Book"));
+  const methods = [...body.slice(0, body.indexOf("\n}\n")).matchAll(/^ {4}(static )?(\w+)\((\w*)/gm)];
+  const ownWay = new Set(["renameSheet", "removeSheet", "setActiveSheet", "recalculate", "addTable", "tables", "addSheet", "free", "toXlsx"]);
+  for (const [, isStatic, name, first] of methods) {
+    if (ownWay.has(name)) continue;
+    const owner = isStatic ? Workbook : first === "sheet" ? Sheet.prototype : Workbook.prototype;
+    assert.strictEqual(typeof owner[name], "function", `${first === "sheet" ? "Sheet" : "Workbook"} lacks ${name}`);
+  }
+
+  const wb = new Workbook();
+  const sheet = wb.addSheet("Data")
+    .setRange("A1", [["x", "y"], [1, 2], [3, 4]])
+    .set("C2", "=A2+B2")
+    .setColumnWidth(1, 20)
+    .setRowHidden(3, true)
+    .setCellStyle("A1", { font: { bold: true } })
+    .merge("A5:B5")
+    .setComment("A1", "me", "header");
+  assert.strictEqual(sheet.recalculate().get("C2"), 3);
+  assert.strictEqual(sheet.columnWidth(1), 20);
+  assert.strictEqual(sheet.rowHidden(3), true);
+  assert.strictEqual(sheet.cellBold("A1"), true);
+  assert.deepStrictEqual(sheet.mergedRanges(), ["A5:B5"]);
+  assert.strictEqual(sheet.unmerge("A5:B5"), true, "a query returns its answer, not the sheet");
+  assert.strictEqual(wb.setDefinedName("Total", "Data!$C$2").definedNames()[0].name, "Total");
+  assert.strictEqual(wb.addSheet("Two").activate().workbook.activeSheet(), 1);
+  assert.strictEqual(wb.sheet("Two").remove().sheetNames().length, 1);
+});
+
 test("column widths, row heights and a hidden sheet survive a round trip", () => {
   const book = new Book();
   book.set(0, "A1", "ширина");
