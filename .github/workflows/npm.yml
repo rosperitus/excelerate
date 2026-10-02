@@ -1,0 +1,114 @@
+name: npm
+
+# Builds both npm packages on every push to main; a tag vX.Y.Z also publishes
+# them. Publishing goes through npm trusted publishing (OIDC): no token in the
+# repository, but each package on npmjs.com has to name this repository and
+# this workflow file as its trusted publisher.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: [full, reader]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add wasm32-unknown-unknown
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Cache the build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-wasm-${{ matrix.package }}-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-wasm-${{ matrix.package }}-
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.package }}" = full ]; then ./build-npm.sh; else ./build-npm-reader.sh; fi
+
+      # npm test reads files git ignores (npm/files, tests/corpus), so CI runs
+      # what works from a clean checkout: the TypeScript examples for the full
+      # package, a committed fixture for the reader.
+      - name: Check the full package
+        if: matrix.package == 'full'
+        working-directory: npm
+        run: |
+          npm ci
+          npm run typecheck
+          mkdir -p files
+          node typescript/basic.ts
+
+      - name: Check the reader package
+        if: matrix.package == 'reader'
+        working-directory: npm-reader
+        run: |
+          npm ci
+          node -e '
+            const { Book } = require("excelerate-reader");
+            const book = Book.read(require("fs").readFileSync("../tests/fixtures/sample.xlsx"), "sample.xlsx");
+            if (!(book.sheetNames().length > 0 && book.cellCount() > 0)) process.exit(1);
+          '
+
+      - name: Pack under the scope
+        run: ./pack-npm.sh ${{ matrix.package }}
+
+      - name: The tag matches the crate version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          dir=$([ "${{ matrix.package }}" = full ] && echo npm || echo npm-reader)
+          version=$(node -p "require('./$dir/pkg-publish/package.json').version")
+          [ "v$version" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME, package $version" >&2; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: npm-${{ matrix.package }}
+          path: ${{ matrix.package == 'full' && 'npm' || 'npm-reader' }}/pkg-publish
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      matrix:
+        package: [full, reader]
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@latest
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: npm-${{ matrix.package }}
+          path: pkg
+
+      - run: npm publish ./pkg --provenance
