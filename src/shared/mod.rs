@@ -28,3 +28,45 @@ pub fn unix_seconds() -> f64 {
             .map_or(0.0, |d| d.as_secs_f64())
     }
 }
+
+/// Matches text against a pattern holding `*` and `?`, with `~` escaping one.
+pub(crate) fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    // The usual two-cursor walk with a remembered star, so it stays linear.
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star, mut retry) = (None, 0);
+    while ti < t.len() {
+        let literal = match p.get(pi) {
+            Some('~') => p.get(pi + 1).copied().map(|c| (c, 2)),
+            Some('?') => {
+                pi += 1;
+                ti += 1;
+                continue;
+            }
+            Some('*') => {
+                star = Some(pi);
+                pi += 1;
+                retry = ti;
+                continue;
+            }
+            Some(c) => Some((*c, 1)),
+            None => None,
+        };
+        match literal {
+            Some((c, width)) if c == t[ti] => {
+                pi += width;
+                ti += 1;
+            }
+            _ => match star {
+                Some(at) => {
+                    pi = at + 1;
+                    retry += 1;
+                    ti = retry;
+                }
+                None => return false,
+            },
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
+}

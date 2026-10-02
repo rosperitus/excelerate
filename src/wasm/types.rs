@@ -357,6 +357,15 @@ export interface ShapeFormatPatch extends DrawingFormatPatch {
   flipH?: boolean;
   flipV?: boolean;
 }
+/**
+ * What a table column keeps, as `setTableFilter` takes it: the shown values,
+ * one or two comparisons, or the largest or smallest few.
+ */
+export type TableFilter =
+  | { values: (string | number)[]; blank?: boolean }
+  | { custom: { op: "=" | "<>" | ">" | ">=" | "<" | "<="; value: string | number }[]; and?: boolean }
+  | { top: number; percent?: boolean }
+  | { bottom: number; percent?: boolean };
 /** What `setChartFormat` takes: the chart area and the plot area. */
 export interface ChartFormatPatch {
   format?: DrawingFormatPatch | null;

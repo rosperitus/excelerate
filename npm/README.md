@@ -67,6 +67,52 @@ book.setRange(0, "F1", [["Jan", "Кв1", 1], [null, null, 3]]);
 book.fillSeries(0, "F1:H6", "down");   // Feb..Jun, Кв2..Кв6, 5, 7, 9, 11
 ```
 
+## Objects and chains
+
+`Book` is one flat class addressed by sheet index. Over it sit `Workbook`,
+`Sheet`, `Table` and `SheetRange`: a workbook hands out sheets, a sheet hands
+out tables and ranges, and every call that changes something returns its
+object, so calls chain.
+
+```ts
+import { Workbook } from "@rosperitus/excelerate";
+import { writeFileSync } from "node:fs";
+
+const wb = new Workbook();
+const sales = wb
+  .addSheet("Sales")                       // a new workbook's first sheet, renamed
+  .addTableFromData("Sales", "A1", [
+    ["Region", "Manager", "Amount"],
+    ["North", "Ivanov", 120],
+    ["South", "Petrov", 340],
+    ["West", "Kozlov", 210],
+    ["South", "Smirnov", 95],
+  ])
+  .set(1, "Amount", 125)                   // data row 1, by header
+  .addFilter("Region", { values: ["South", "West"] })
+  .addFilter("Amount", { custom: [{ op: ">", value: 100 }] });
+
+sales.records({ visible: true });          // [{ Region: "South", Manager: "Petrov", Amount: 340 }, ...]
+sales.range().visibleValues();             // the same with the header, as a grid
+sales.sheet.style("A1:C1", { font: { bold: true } }).width("B", 14);
+writeFileSync("sales.xlsx", wb.toXlsx());
+```
+
+A filter is Excel's own: the criteria go into the table's `<autoFilter>`, and
+the rows they reject are hidden in the file, so Excel opens it already
+filtered. Criteria on several columns all have to hold. `{ values }` keeps
+the rows whose cell shows one of them (`blank: true` adds the empty ones),
+`{ custom }` takes one or two comparisons (`=`, `<>`, `>`, `>=`, `<`, `<=`;
+`*` and `?` in `=` and `<>`; `and: true` to need both), `{ top: n }` and
+`{ bottom: n }` the extremes, `percent: true` for a share. `clearFilter()`
+takes them off.
+
+The objects are handles - a sheet index, a table name, an address - and work
+through `workbook.book`, which is there for everything they do not wrap. A
+sheet removed or moved through the `Book` moves the indexes under them, as it
+does for any index. `Workbook.read(bytes)` opens a file; `Book` and its flat
+API are unchanged.
+
 ## API
 
 ```ts
@@ -191,6 +237,7 @@ class Book {
   removeHyperlink(sheet: number, range: string): boolean;
   addTable(sheet: number, name: string, range: string, headerRow?: boolean): void;
   removeTable(sheet: number, name: string): boolean;
+  setTableFilter(name: string, column: string | number, criteria: TableFilter | null): void;  // hides the rows that fail
 
   // The saved view
   sheetView(sheet: number): SheetViewInfo;

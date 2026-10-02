@@ -51,6 +51,33 @@ charts, pictures, shapes, tables and notes, and a progress bar with a function
 of your own. Run them from `npm/` - `node typescript/basic.ts`
 on Node 22.6+, no build step and no separate install.
 
+## Objects and chains
+
+Over the flat `Book` sit `Workbook`, `Sheet`, `Table` and `SheetRange`, whose
+changing calls return themselves:
+
+```ts
+import { Workbook } from "@rosperitus/excelerate";
+
+const wb = new Workbook();
+const sales = wb.addSheet("Sales")
+  .addTableFromData("Sales", "A1", [["Region", "Amount"], ["North", 120], ["South", 340]])
+  .set(1, "Amount", 125)
+  .addFilter("Region", { values: ["South"] });
+sales.records({ visible: true });   // [{ Region: "South", Amount: 340 }]
+```
+
+| Object | Has |
+|---|---|
+| `Workbook` | `new Workbook()`, `Workbook.read(bytes)`, `sheet(index or name)`, `sheets()`, `addSheet(name)` (a new workbook's first call takes over its empty `Sheet1`), `recalculate()`, `toXlsx()`, `toOds()`, `toXls()`, `book` |
+| `Sheet` | `set`, `get`, `text`, `write(at, rows)`, `range(address)`, `style(address, patch)`, `width(column, chars)`, `freeze(rows, cols)`, `addTable`, `addTableFromData(name, at, rows)`, `table(name)`, `tables()`, `rename` |
+| `Table` | `set(row, column, value)` and `get` by data row and header, `addFilter(column, criteria)`, `clearFilter(column?)`, `sort(keys)`, `range()`, `data()`, `records({ visible? })`, `columns` |
+| `SheetRange` | `values()`, `visibleValues()`, `set(rows)`, `style(patch)`, `merge()` |
+
+They are handles - a sheet index, a table name, an address - over
+`workbook.book`; the only package without them is `excelerate-reader`, since
+most of what they do writes.
+
 ## The API
 
 | Method | Does |
@@ -105,6 +132,7 @@ on Node 22.6+, no build step and no separate install.
 | `setComment` / `removeComment` | put a note on a cell, take it off |
 | `setHyperlink` / `removeHyperlink` | link a cell or a block of them |
 | `addTable(sheet, name, range, headerRow?)` / `removeTable` | draw a table, the thing `Sales[Amount]` names |
+| `setTableFilter(name, column, criteria \| null)` | filter a table by a column (its header or number from 1): `{ values }`, `{ custom: [{ op, value }] }`, `{ top }` or `{ bottom }`. The criteria go into the file and the rows they reject are hidden there, as Excel does |
 | `sheetView(sheet)` | how the sheet is frozen and shown |
 | `freezePanes(sheet, rows, columns)` | pin the header row and the first columns; `(sheet, 0, 0)` unfreezes |
 | `setZoom(sheet, percent?)` / `setShowGridLines(sheet, show, headers?)` | how a reader opens it |

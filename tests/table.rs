@@ -312,3 +312,66 @@ fn a_table_keeps_its_hidden_buttons_and_its_extensions() {
         );
     }
 }
+
+/// Which of rows 2..=5 (the data of `Sales`) are hidden.
+fn hidden(book: &Spreadsheet) -> Vec<bool> {
+    (2..=5)
+        .map(|r| book.sheets()[0].rows.get(&row(r)).is_some_and(|p| p.hidden))
+        .collect()
+}
+
+#[test]
+fn a_filter_hides_the_rows_its_criteria_reject() {
+    use excelerate::edit::filter_table;
+    use excelerate::model::autofilter::{ColumnFilter, CustomFilter, FilterOperator};
+
+    let mut book = read_xlsx_from(Cursor::new(fixture())).unwrap();
+    // Sales: North Q1 120, North Q2 140, South Q1 90, South Q2 115.
+    let rule = |operator, value: &str| CustomFilter {
+        operator,
+        value: value.into(),
+    };
+    let over_100 = ColumnFilter::Custom {
+        and: false,
+        rules: vec![rule(FilterOperator::GreaterThan, "100")],
+    };
+    filter_table(&mut book, "Sales", 2, Some(over_100)).unwrap();
+    assert_eq!(hidden(&book), [false, false, true, false]);
+
+    // A second column narrows what the first kept: an AND across columns.
+    let north = ColumnFilter::Custom {
+        and: false,
+        rules: vec![rule(FilterOperator::Equal, "n*")],
+    };
+    filter_table(&mut book, "sales", 0, Some(north)).unwrap();
+    assert_eq!(hidden(&book), [false, false, true, true]);
+
+    // Top 10 from the bottom keeps the smallest, and records the cut-off as
+    // Excel does.
+    filter_table(&mut book, "Sales", 0, None).unwrap();
+    let smallest = ColumnFilter::Top10 {
+        value: Some("1".into()),
+        percent: false,
+        top: false,
+        filter_value: None,
+    };
+    filter_table(&mut book, "Sales", 2, Some(smallest)).unwrap();
+    assert_eq!(hidden(&book), [true, true, false, true]);
+    let table = &book.sheets()[0].tables[0];
+    let filter = table.auto_filter.as_ref().unwrap();
+    assert!(matches!(
+        &filter.columns[0].filter,
+        Some(ColumnFilter::Top10 { filter_value: Some(v), .. }) if v == "90"
+    ));
+
+    // The criteria and the hidden rows both survive a write.
+    let back = cycle(&book);
+    assert_eq!(hidden(&back), [true, true, false, true]);
+    assert_eq!(back.sheets()[0].tables[0].auto_filter, table.auto_filter);
+
+    // Taking the last criterion off shows every row again.
+    filter_table(&mut book, "Sales", 2, None).unwrap();
+    assert_eq!(hidden(&book), [false; 4]);
+    assert!(filter_table(&mut book, "Sales", 3, None).is_err());
+    assert!(filter_table(&mut book, "Nope", 0, None).is_err());
+}

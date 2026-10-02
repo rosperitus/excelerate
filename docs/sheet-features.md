@@ -130,9 +130,35 @@ way and unlocked it with the same password.
 ## Autofilter
 
 `AutoFilter` is a range and a list of columns; a column's `col_id` is an offset
-from the first column of the range, not a column of the sheet. What the filter
-hides is not computed: a hidden row is already a property of the row, Excel
-writes both, and in someone else's file the two are allowed to disagree.
+from the first column of the range, not a column of the sheet. Reading a file
+does not compute what the filter hides: a hidden row is already a property of
+the row, Excel writes both, and in someone else's file the two are allowed to
+disagree.
+
+Setting a filter does compute it. `edit::filter_table` puts a criterion on a
+column of a table and hides the data rows that the table's criteria reject,
+showing the rest, as applying a filter in Excel does:
+
+```rust
+use excelerate::edit::filter_table;
+use excelerate::model::autofilter::{ColumnFilter, CustomFilter, FilterOperator};
+# let mut book = excelerate::reader::read("tests/fixtures/table.xlsx")?;
+
+// Column 2 of the table "Sales" (from 0): keep what is over 100.
+let over_100 = ColumnFilter::Custom {
+    and: false,
+    rules: vec![CustomFilter { operator: FilterOperator::GreaterThan, value: "100".into() }],
+};
+filter_table(&mut book, "Sales", 2, Some(over_100))?;
+filter_table(&mut book, "Sales", 2, None)?;   // and off again
+# Ok::<(), excelerate::Error>(())
+```
+
+`Values` matches what the cell shows, without regard to case; `Custom`
+compares numbers with numbers and text with text, `*` and `?` in an equality;
+`Top10` keeps the extremes and records the cut-off as Excel does. `Dynamic`,
+`Color` and `Icon` are stored but hide nothing: they need the clock, the
+painted colours or the conditional formats.
 
 ```rust
 # use excelerate::model::{Spreadsheet, Worksheet};

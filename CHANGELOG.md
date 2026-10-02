@@ -48,6 +48,16 @@
   mode as a share of the chart area, and its size when set). A layout in
   factor mode stays in the markup.
 
+- Filtering a table: `edit::filter_table` sets a column's criterion and hides
+  the data rows the table's criteria reject, as Excel does; in JS,
+  `setTableFilter(name, column, { values } | { custom } | { top } |
+  { bottom })`.
+- In JS, objects over `Book` whose changing calls chain: `Workbook`, `Sheet`,
+  `Table`, `SheetRange` - `new Workbook().addSheet("Sales")
+  .addTableFromData(...).set(1, "Amount", 125).addFilter("Region", ...)
+  .records({ visible: true })`. The package's entry point is now `index.js`,
+  which is the generated module plus these four.
+
 ### Changed
 
 - An insertion of rows or columns that would push a stored cell or a merged

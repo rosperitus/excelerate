@@ -10,9 +10,11 @@
 mod anchor;
 mod chart;
 mod extension;
+mod filter;
 mod range;
 mod series;
 
+pub use filter::filter_table;
 pub use range::{
     SortBy, SortKey, SortOptions, copy_range, fill, insert_cells, insert_cells_with, move_range,
     move_sheet, remove_cells, sort_range, sort_range_with, sort_table,

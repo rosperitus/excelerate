@@ -546,6 +546,45 @@ test("a shape's and a chart's look survive a write", () => {
   assert.deepStrictEqual(chart.plotFormat, { fill: { type: "solid", color: "#FFEEEEEE" }, line: null });
 });
 
+test("objects chain: a table from data, a filter, the rows it leaves", () => {
+  const { Workbook } = require("excelerate");
+  const wb = new Workbook();
+  const sales = wb
+    .addSheet("Продажи")
+    .addTableFromData("Sales", "B2", [
+      ["Регион", "Сумма"],
+      ["Север", 120],
+      ["Юг", 340],
+      ["Юг", 95],
+      ["Запад", 210],
+    ])
+    .set(4, "Сумма", 220)
+    .addFilter("Регион", { values: ["юг", "Запад"] })
+    .addFilter(2, { custom: [{ op: ">", value: 100 }] });
+
+  assert.deepStrictEqual(wb.book.sheetNames(), ["Продажи"], "the first addSheet takes the spare sheet");
+  assert.strictEqual(sales.range().address, "B2:C6");
+  assert.deepStrictEqual(sales.records({ visible: true }), [
+    { Регион: "Юг", Сумма: 340 },
+    { Регион: "Запад", Сумма: 220 },
+  ]);
+  assert.strictEqual(sales.records().length, 4);
+
+  // The criteria and the hidden rows are in the file, not only in memory.
+  const back = Workbook.read(wb.toXlsx(), "out.xlsx").sheet("Продажи").table("Sales");
+  assert.deepStrictEqual(back.range().visibleValues(), [["Регион", "Сумма"], ["Юг", 340], ["Запад", 220]]);
+
+  sales.clearFilter();
+  assert.strictEqual(sales.records({ visible: true }).length, 4);
+  sales.addFilter("Сумма", { bottom: 1 });
+  assert.deepStrictEqual(sales.records({ visible: true }), [{ Регион: "Юг", Сумма: 95 }]);
+  assert.throws(() => sales.addFilter("Нет", { top: 1 }), /no column/);
+  assert.throws(() => wb.sheet("Нет"), /no sheet/);
+
+  // A second sheet is added, not taken over.
+  assert.strictEqual(wb.addSheet("Итоги").index, 1);
+});
+
 test("column widths, row heights and a hidden sheet survive a round trip", () => {
   const book = new Book();
   book.set(0, "A1", "ширина");

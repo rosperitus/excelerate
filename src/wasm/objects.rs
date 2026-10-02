@@ -411,6 +411,66 @@ impl Book {
         Ok(())
     }
 
+    /// Filters a table by one of its columns, named by its header or
+    /// numbered from 1, and hides the data rows the table's criteria reject,
+    /// as Excel does. `null` takes the column's criterion off.
+    ///
+    /// ```js
+    /// book.setTableFilter("Sales", "Region", { values: ["South", "West"] });
+    /// book.setTableFilter("Sales", "Amount", { custom: [{ op: ">", value: 100 }] });
+    /// book.setTableFilter("Sales", 3, { top: 5 });          // or { bottom: 10, percent: true }
+    /// ```
+    ///
+    /// `values` keeps a row whose cell shows one of them, `blank: true` the
+    /// empty ones too; `custom` takes one or two comparisons (`=`, `<>`, `>`,
+    /// `>=`, `<`, `<=`; `*` and `?` in `=` and `<>`), joined by `or` unless
+    /// `and` is set. Criteria on several columns all have to hold.
+    #[wasm_bindgen(js_name = setTableFilter)]
+    pub fn set_table_filter(
+        &mut self,
+        name: &str,
+        #[wasm_bindgen(unchecked_param_type = "string | number")] column: &JsValue,
+        #[wasm_bindgen(unchecked_param_type = "TableFilter | null")] criteria: &JsValue,
+    ) -> Result<(), JsError> {
+        let columns = self
+            .workbook
+            .sheets()
+            .iter()
+            .flat_map(|ws| &ws.tables)
+            .find(|t| {
+                t.display_name.eq_ignore_ascii_case(name) || t.name.eq_ignore_ascii_case(name)
+            })
+            .map(|t| t.columns.iter().map(|c| c.name.clone()).collect::<Vec<_>>())
+            .ok_or_else(|| JsError::new(&format!("no table called {name}")))?;
+        let offset = if let Some(header) = column.as_string() {
+            columns
+                .iter()
+                .position(|c| c.to_lowercase() == header.to_lowercase())
+                .ok_or_else(|| JsError::new(&format!("table {name} has no column {header:?}")))?
+        } else {
+            column
+                .as_f64()
+                .filter(|n| n.fract() == 0.0 && *n >= 1.0 && *n <= 16_384.0)
+                .map(|n| {
+                    #[expect(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        reason = "a whole column number checked just above"
+                    )]
+                    let n = n as usize;
+                    n - 1
+                })
+                .ok_or_else(|| JsError::new("a column is a header or a number from 1"))?
+        };
+        let filter = if criteria.is_null() || criteria.is_undefined() {
+            None
+        } else {
+            Some(table_filter_of(criteria)?)
+        };
+        let offset = u32::try_from(offset).map_err(|_| JsError::new("no such column"))?;
+        crate::edit::filter_table(&mut self.workbook, name, offset, filter).map_err(js)
+    }
+
     /// Removes a table by name. Answers whether there was one.
     #[wasm_bindgen(js_name = removeTable)]
     pub fn remove_table(&mut self, sheet: usize, name: &str) -> Result<bool, JsError> {
@@ -590,4 +650,82 @@ impl Book {
             ])
         })
     }
+}
+
+/// Reads the criteria of `setTableFilter`.
+#[cfg(feature = "write")]
+fn table_filter_of(criteria: &JsValue) -> Result<crate::model::autofilter::ColumnFilter, JsError> {
+    use super::convert::{array, field};
+    use crate::model::autofilter::{ColumnFilter, CustomFilter, FilterOperator};
+    // A number is written the way JS prints it, which is how a General cell
+    // shows it.
+    let spelled = |v: &JsValue| {
+        v.as_string()
+            .or_else(|| v.as_f64().map(|n| n.to_string()))
+            .ok_or_else(|| JsError::new("a filter value is a string or a number"))
+    };
+    let flag = |key: &str| field(criteria, key).is_some_and(|v| v.is_truthy());
+    if let Some(values) = field(criteria, "values") {
+        return Ok(ColumnFilter::Values {
+            blank: flag("blank"),
+            values: array(&values, "values")?
+                .iter()
+                .map(|v| spelled(&v))
+                .collect::<Result<_, _>>()?,
+            date_groups: Vec::new(),
+        });
+    }
+    if let Some(rules) = field(criteria, "custom") {
+        let rules = array(&rules, "custom")?
+            .iter()
+            .map(|rule| {
+                let op = field(&rule, "op")
+                    .and_then(|o| o.as_string())
+                    .unwrap_or_else(|| "=".into());
+                let operator = match op.as_str() {
+                    "=" => FilterOperator::Equal,
+                    "<>" | "!=" => FilterOperator::NotEqual,
+                    ">" => FilterOperator::GreaterThan,
+                    ">=" => FilterOperator::GreaterThanOrEqual,
+                    "<" => FilterOperator::LessThan,
+                    "<=" => FilterOperator::LessThanOrEqual,
+                    other => {
+                        return Err(JsError::new(&format!(
+                            "a comparison is =, <>, >, >=, < or <=, not {other:?}"
+                        )));
+                    }
+                };
+                let value = field(&rule, "value")
+                    .ok_or_else(|| JsError::new("a comparison has a value"))?;
+                Ok(CustomFilter {
+                    operator,
+                    value: spelled(&value)?,
+                })
+            })
+            .collect::<Result<Vec<_>, JsError>>()?;
+        if rules.is_empty() || rules.len() > 2 {
+            return Err(JsError::new("custom takes one or two comparisons"));
+        }
+        return Ok(ColumnFilter::Custom {
+            and: flag("and"),
+            rules,
+        });
+    }
+    for (key, top) in [("top", true), ("bottom", false)] {
+        if let Some(count) = field(criteria, key) {
+            let n = count
+                .as_f64()
+                .filter(|n| *n > 0.0 && n.is_finite())
+                .ok_or_else(|| JsError::new(&format!("{key} is a positive number")))?;
+            return Ok(ColumnFilter::Top10 {
+                value: Some(n.to_string()),
+                percent: flag("percent"),
+                top,
+                filter_value: None,
+            });
+        }
+    }
+    Err(JsError::new(
+        "a filter is { values }, { custom }, { top } or { bottom }",
+    ))
 }
