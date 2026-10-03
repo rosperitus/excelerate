@@ -23,6 +23,9 @@ formulas = ["dep:regex"]
 write = []
 
 [dependencies]
+# Already in the tree under `zip`: the cipher of a workbook encrypted with a
+# password to open (`reader::encryption`).
+aes = "0.9"
 # Already in the tree under `zip`; naming it here is what lets the Gnumeric
 # reader gunzip its one XML part.
 flate2 = "1.1.9"

@@ -552,7 +552,9 @@ fn an_array_formula_lays_its_answer_over_its_area() {
         sheet.set(at(&format!("A{row}")), n);
     }
     sheet.set(at("B1"), formula("A1:A3*2"));
-    sheet.array_formulas.push(excelerate::Range::parse("B1:B4").unwrap());
+    sheet
+        .array_formulas
+        .push(excelerate::Range::parse("B1:B4").unwrap());
     sheet.set(at("C1"), formula("SUM(B1:B3)"));
     book.add_sheet(sheet).unwrap();
 

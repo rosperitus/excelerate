@@ -68,6 +68,16 @@ pub enum Error {
     #[error("ods: {0}")]
     Ods(String),
 
+    /// The workbook is encrypted in a way this crate does not read, or its
+    /// encryption descriptor is malformed.
+    #[error("encrypted: {0}")]
+    Encrypted(String),
+
+    /// The workbook is encrypted, and the password given (or none, and
+    /// Excel's read-only default) does not open it.
+    #[error("the password does not open this workbook")]
+    WrongPassword,
+
     /// The xls file is malformed, encrypted, or not an xls at all.
     #[error("xls: {0}")]
     Xls(String),

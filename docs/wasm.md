@@ -88,7 +88,7 @@ most of what they do writes.
 | Method | Does |
 |---|---|
 | `new Book()` | empty workbook with one sheet |
-| `Book.read(bytes, name?, maxExpanded?, onProgress?)` | read any supported format |
+| `Book.read(bytes, name?, maxExpanded?, onProgress?, password?)` | read any supported format; `password` opens an encrypted workbook |
 | `sheetNames()` / `sheetIndex(name)` | sheet titles; the index of one, case-insensitively |
 | `addSheet(title)` / `renameSheet(sheet, title)` | append a sheet; rename one |
 | `activeSheet()` / `setActiveSheet(sheet)` | the tab a reader opens on |

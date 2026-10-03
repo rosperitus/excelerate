@@ -18,7 +18,7 @@ export declare class Workbook {
   constructor(book?: Book);
   readonly book: Book;
   /** Reads any format `Book.read` reads. */
-  static read(bytes: Uint8Array, name?: string, maxExpanded?: number, onProgress?: Function): Workbook;
+  static read(bytes: Uint8Array, name?: string, maxExpanded?: number, onProgress?: Function, password?: string): Workbook;
   static readCsv(bytes: Uint8Array, options: CsvOptions): Workbook;
   /** Hands one sheet over row by row without keeping its grid; the rest of the workbook comes back. */
   static forEachRow(bytes: Uint8Array, name: string | null | undefined, sheet: number, callback: Function, formatted?: boolean | null): Workbook;

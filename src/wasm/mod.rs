@@ -106,7 +106,9 @@ impl Book {
     ///
     /// `name` is the file name they came from, if the caller has one: it
     /// settles what the bytes cannot say (a `.csv` against a `.html`) and names
-    /// the sheet of a SYLK file.
+    /// the sheet of a SYLK file. `password` opens a workbook saved with a
+    /// password to open; without it only one encrypted to be opened
+    /// read-only reads.
     #[expect(
         clippy::needless_pass_by_value,
         reason = "an optional string crosses the wasm boundary owned"
@@ -116,6 +118,7 @@ impl Book {
         name: Option<String>,
         max_expanded: Option<f64>,
         on_progress: Option<js_sys::Function>,
+        password: Option<String>,
     ) -> Result<Self, JsError> {
         // The cap on how far a zipped package may expand, which stops a zip
         // bomb. A caller who knows where the file came from can raise it; the
@@ -132,6 +135,9 @@ impl Book {
         let mut options = crate::progress::Options::new();
         if let Some(report) = &report {
             options = options.reporting(report);
+        }
+        if let Some(password) = &password {
+            options = options.password(password);
         }
         crate::reader::read_bytes_limited_with(bytes, name.as_deref(), limit, &options)
             .map(Self::wrap)

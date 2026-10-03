@@ -255,7 +255,7 @@ fn base64(bytes: &[u8]) -> String {
 }
 
 /// The reverse; `None` for anything that is not base64.
-fn unbase64(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn unbase64(text: &str) -> Option<Vec<u8>> {
     let text = text.trim_end_matches('=');
     let mut out = Vec::with_capacity(text.len() * 3 / 4);
     let (mut n, mut bits) = (0u32, 0);

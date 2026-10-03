@@ -128,7 +128,15 @@ pub fn read(path: impl AsRef<std::path::Path>) -> Result<Spreadsheet> {
     match format {
         Format::Xlsx => super::xlsx::read_xlsx(path),
         Format::Xlsb => super::xlsb::read_xlsb(path),
-        Format::Xls => super::xls::read_xls(path),
+        // An encrypted xlsx is a compound file too.
+        Format::Xls => {
+            let bytes = std::fs::read(path).map_err(|e| Error::Io(e.to_string()))?;
+            if super::encryption::is_encrypted(&bytes) {
+                read_bytes(&bytes, path.to_str())
+            } else {
+                super::xls::read_xls_from(&bytes)
+            }
+        }
         Format::Ods => super::ods::read_ods(path),
         Format::Csv => super::csv::read_csv(path),
         Format::Html => super::html::read_html(path),
@@ -182,6 +190,13 @@ pub fn read_bytes_limited_with(
     max_expanded: u64,
     options: &crate::progress::Options<'_>,
 ) -> Result<Spreadsheet> {
+    if super::encryption::is_encrypted(bytes) {
+        let password = options
+            .given_password()
+            .unwrap_or(super::encryption::DEFAULT_PASSWORD);
+        let plain = super::encryption::decrypt(bytes, password)?;
+        return read_bytes_limited_with(&plain, name, max_expanded, options);
+    }
     let path = name.map(std::path::Path::new);
     let format = Format::from_signature(bytes)
         .map(|format| {

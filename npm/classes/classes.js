@@ -76,8 +76,8 @@ function build(Book) {
     }
 
     /** Reads xlsx, xls, xlsb, ods, csv and the rest, as `Book.read` does. */
-    static read(bytes, name, maxExpanded, onProgress) {
-      return new Workbook(Book.read(bytes, name, maxExpanded, onProgress));
+    static read(bytes, name, maxExpanded, onProgress, password) {
+      return new Workbook(Book.read(bytes, name, maxExpanded, onProgress, password));
     }
 
     /** Reads CSV in a stated shape, as `Book.readCsv` does. */

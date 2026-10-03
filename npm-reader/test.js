@@ -155,3 +155,10 @@ test("forEachRow on a format that cannot stream hands over the same rows", () =>
   assert.deepStrictEqual(seen, [[1, ["a", "b"]], [3, [1, 2, 3]]]);
   assert.strictEqual(book.getAt(0, 1, 1), null);
 });
+
+test("a password opens an encrypted workbook", () => {
+  const encrypted = readFileSync(`${__dirname}/../tests/fixtures/encrypted.xlsx`);
+  assert.throws(() => Book.read(encrypted, "encrypted.xlsx"), /password/);
+  const book = Book.read(encrypted, "encrypted.xlsx", undefined, undefined, "пароль");
+  assert.deepStrictEqual(book.sheetNames(), ["Data", "Second"]);
+});

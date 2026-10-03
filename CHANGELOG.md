@@ -4,6 +4,15 @@
 
 ### Added
 
+- Workbooks saved with a password to open: the agile encryption of Excel 2010
+  and later, for xlsx, xlsm and xlsb, is decrypted by `read_bytes` and
+  `read`. The password goes in `Options::password`; without one the reader
+  tries the password Excel uses for a workbook encrypted only to be opened
+  read-only. A password that does not open it is the new
+  `Error::WrongPassword`, an encryption this does not read (Excel 2007's
+  standard one, RC4 in xls) the new `Error::Encrypted`. In JS, the fifth
+  argument of `Book.read`. `reader::encryption` has `decrypt` and
+  `is_encrypted` on their own.
 - Rows and columns inserted or removed at many places in one pass:
   `edit::{insert_rows_many, remove_rows_many, insert_columns_many,
   remove_columns_many}`. Places are given as the sheet is before the call,

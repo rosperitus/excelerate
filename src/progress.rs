@@ -104,6 +104,8 @@ pub struct Options<'a> {
     progress: Option<&'a dyn Fn(Progress<'_>)>,
     /// Which sheet to stream row by row, and where its rows go.
     rows: Option<(usize, RowSink<'a>)>,
+    /// The password to open an encrypted workbook with.
+    password: Option<&'a str>,
     /// The caller's own functions, if any. Only a build with the formula
     /// engine has anywhere to put them.
     #[cfg(feature = "formulas")]
@@ -144,6 +146,23 @@ impl<'a> Options<'a> {
             rows: Some((sheet, sink)),
             ..self
         }
+    }
+
+    /// Opens an encrypted workbook with `password`. Without one a read tries
+    /// the password Excel uses for a workbook encrypted only to be opened
+    /// read-only, and fails with [`crate::Error::WrongPassword`] otherwise.
+    #[must_use]
+    pub fn password(self, password: &'a str) -> Self {
+        Self {
+            password: Some(password),
+            ..self
+        }
+    }
+
+    /// The password given, if any.
+    #[must_use]
+    pub const fn given_password(&self) -> Option<&'a str> {
+        self.password
     }
 
     /// The sheet being streamed and its sink, if any.
