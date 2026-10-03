@@ -60,6 +60,12 @@
   what `Book` answers with nothing returns the object, so it chains. The
   package's entry point is now `index.js`, which is the generated module
   plus these four.
+- Both npm packages carry the browser build next to the Node one, under
+  `web/`, and `exports` hands it to everything but Node, so
+  `import init, { Book } from "@rosperitus/excelerate"` works in a browser
+  and in a bundler after `await init()`. `…/web` names it explicitly. The
+  published package used to be the Node build alone, which a browser cannot
+  load.
 
 ### Changed
 
