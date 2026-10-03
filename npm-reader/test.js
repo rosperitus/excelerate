@@ -120,3 +120,38 @@ test("csv read with the delimiter stated", () => {
   const book = Book.readCsv(Buffer.from("a;1\nb;2\n"), { delimiter: ";" });
   assert.strictEqual(book.get(0, "B2"), 2);
 });
+
+test("forEachRow hands over what getRowAt answers, and keeps no grid", () => {
+  // Two sheets: the one streamed loses its cells, the other keeps them.
+  const bytes = readFileSync(`${__dirname}/../tests/fixtures/sample.xlsx`);
+  const whole = Book.read(bytes, "sample.xlsx");
+  let rows = 0;
+  const book = Book.forEachRow(bytes, "sample.xlsx", 0, (row, data) => {
+    rows += 1;
+    assert.deepStrictEqual(data, whole.getRowAt(0, row));
+  });
+  assert.ok(rows > 0);
+  assert.deepStrictEqual(book.sheetNames(), whole.sheetNames());
+  assert.strictEqual(book.getAt(0, 1, 1), null);
+  assert.deepStrictEqual(book.getRowAt(1, 1), whole.getRowAt(1, 1));
+});
+
+test("a callback that throws stops forEachRow with its error", () => {
+  let calls = 0;
+  assert.throws(
+    () => Book.forEachRow(bytes, "test1.xlsx", 0, () => {
+      calls += 1;
+      throw new Error("enough");
+    }),
+    /enough/,
+  );
+  assert.strictEqual(calls, 1);
+});
+
+test("forEachRow on a format that cannot stream hands over the same rows", () => {
+  const csv = new TextEncoder().encode("a,b\n\n1,2,3\n");
+  const seen = [];
+  const book = Book.forEachRow(csv, "rows.csv", 0, (row, data) => seen.push([row, data.values]));
+  assert.deepStrictEqual(seen, [[1, ["a", "b"]], [3, [1, 2, 3]]]);
+  assert.strictEqual(book.getAt(0, 1, 1), null);
+});

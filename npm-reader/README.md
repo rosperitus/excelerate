@@ -54,6 +54,28 @@ const book = Book.read(new Uint8Array(await file.arrayBuffer()), file.name);
 The server should send the `.wasm` as `application/wasm`. Without a bundler,
 an import map pointing at `@rosperitus/excelerate-reader/web/excelerate.js` does the same.
 
+## Reading a big sheet without holding it
+
+`forEachRow` reads the file and hands one sheet over row by row instead of
+building its grid: each row goes to the callback and is then dropped.
+
+```js
+const book = Book.forEachRow(bytes, "report.xlsx", 0, (row, data) => {
+  // data is what getRowAt returns: values, formatted, bold, indent, hidden
+  if (data.bold[0]) console.log(row, data.values[0]);
+}, false);   // false: skip the displayed text, a string per cell
+
+book.sheetNames();   // the workbook still comes back - every sheet is in it,
+                     // the streamed one with everything except its cells
+```
+
+On a million-row file of 70 MB that is 588 MB peak and 13.9 s, against
+863 MB and 14.4 s for `read` plus `getRowAt` on every row; on 882 thousand
+rows of 39 MB, 344 MB and 7.1 s against 547 MB and 8.4 s. A callback that
+throws is not called again, and its error comes out of `forEachRow`. Only
+xlsx streams; any other format is read whole first and then handed over the
+same way, so the callback sees the same rows but nothing is saved.
+
 ## Layout
 
 Reading a sheet usually means asking the same few things of every row, so each

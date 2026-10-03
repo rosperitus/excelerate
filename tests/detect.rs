@@ -235,3 +235,31 @@ fn the_workbook_stream_is_found_whatever_its_case() {
         book.sheets()[0].iter().count()
     );
 }
+
+#[test]
+fn a_format_that_cannot_stream_hands_over_the_same_rows() {
+    use excelerate::progress::{Options, RowBatch};
+    use std::cell::RefCell;
+
+    let seen: RefCell<Vec<(u32, usize)>> = RefCell::new(Vec::new());
+    let sink = |batch: &RowBatch<'_>| {
+        seen.borrow_mut().push((
+            batch.row.index() + 1,
+            batch.sheet.row_cells(batch.row).count(),
+        ));
+        assert_eq!(
+            batch.sheet.len(),
+            batch.sheet.row_cells(batch.row).count(),
+            "the sheet holds this row's cells and no others"
+        );
+    };
+    let book = excelerate::reader::read_bytes_limited_with(
+        b"a,b\n\n1,2,3\n",
+        Some("rows.csv"),
+        u64::MAX,
+        &Options::new().streaming(0, &sink),
+    )
+    .unwrap();
+    assert_eq!(seen.into_inner(), vec![(1, 2), (3, 3)]);
+    assert_eq!(book.sheet(0).unwrap().len(), 0, "the grid is not kept");
+}

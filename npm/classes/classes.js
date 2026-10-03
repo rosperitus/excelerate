@@ -85,6 +85,11 @@ function build(Book) {
       return new Workbook(Book.readCsv(bytes, options));
     }
 
+    /** Hands one sheet over row by row without keeping its grid, as `Book.forEachRow` does. */
+    static forEachRow(bytes, name, sheet, callback, formatted) {
+      return new Workbook(Book.forEachRow(bytes, name, sheet, callback, formatted));
+    }
+
     /** A sheet by position or by name. */
     sheet(which) {
       this._spare = false;
