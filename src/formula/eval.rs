@@ -273,12 +273,15 @@ impl<'a> Engine<'a> {
     /// `#VALUE!`. Inside an array formula, or an array parameter, the range
     /// stays whole.
     ///
-    /// ponytail: only a reference the formula spells out narrows - a range,
-    /// a table column, a defined name, `INDEX` with literal positions. A
-    /// reference a function hands back at run time (`IF(c,A1:A9,0)`,
-    /// `CHOOSE`, `OFFSET`) arrives as an array and shows its top left value,
-    /// because values carry no address. Narrowing those means a reference
-    /// value in `Value`.
+    /// A reference narrows when it can be told before its cells are read: a
+    /// range, a table column, a defined name, `INDEX` with literal
+    /// positions, `OFFSET` and `INDIRECT`, and the branch `IF` or `CHOOSE`
+    /// takes when that branch is one of these.
+    ///
+    /// ponytail: a reference built any other way (`INDEX` with computed
+    /// positions, `XLOOKUP` returning a range, `LET` naming one) arrives as an
+    /// array and shows its top left value, because values carry no address.
+    /// Narrowing those means a reference value in `Value`.
     pub(crate) fn eval_value(&mut self, origin: Origin, expr: &Expr) -> Value {
         match self.narrowed(origin, expr) {
             Some(Ok(cell)) => self.eval_expr(origin, &cell),
@@ -402,6 +405,43 @@ impl<'a> Engine<'a> {
                     end: CellRef::new(Col::new(c2)?, Row::new(r2)?),
                 };
                 (sheet, area)
+            }
+            Expr::Call { name, args } if name == "IF" && args.len() >= 2 => {
+                if !args[1..].iter().any(may_be_area) {
+                    return None;
+                }
+                // ponytail: when the branch taken is not a reference after
+                // all, the whole `IF` runs again and so does its condition.
+                let taken = match self.eval_value(origin, &args[0]).boolean() {
+                    Ok(true) => &args[1],
+                    Ok(false) => args.get(2)?,
+                    Err(_) => return None,
+                };
+                return self.area_of(origin, taken, depth);
+            }
+            Expr::Call { name, args } if name == "CHOOSE" && args.len() >= 2 => {
+                if !args[1..].iter().any(may_be_area) {
+                    return None;
+                }
+                let index = self.eval_value(origin, &args[0]).number().ok()?;
+                if index < 1.0 {
+                    return None;
+                }
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "at least 1, and an index past the list misses it"
+                )]
+                let taken = args.get(index as usize)?;
+                return self.area_of(origin, taken, depth);
+            }
+            // Built at run time, so a single cell is returned too: the caller
+            // would otherwise compute the reference a second time to read it.
+            Expr::Call { name, args } if name == "OFFSET" => {
+                return crate::formula::functions::lookup::offset_area(self, origin, args).ok();
+            }
+            Expr::Call { name, args } if name == "INDIRECT" => {
+                return crate::formula::functions::lookup::indirect_area(self, origin, args).ok();
             }
             _ => return None,
         };
@@ -1135,6 +1175,22 @@ fn calls_total(expr: &Expr) -> bool {
 
 /// A position written into `INDEX` as a literal: 0 or left out for the whole
 /// row or column. Excel truncates a fractional one.
+/// Whether an expression could turn out a reference to several cells, read
+/// from its shape alone: what lets `IF` skip computing its condition twice
+/// when no branch could be one.
+fn may_be_area(expr: &Expr) -> bool {
+    match expr {
+        Expr::Range { range, .. } => range.start != range.end,
+        Expr::Structured(_) | Expr::Name(_) => true,
+        Expr::Call { name, args } => match name.as_str() {
+            "INDEX" | "OFFSET" | "INDIRECT" => true,
+            "IF" | "CHOOSE" => args.iter().skip(1).any(may_be_area),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn position(e: Option<&Expr>) -> Option<u32> {
     match e {
         None | Some(Expr::Missing) => Some(0),

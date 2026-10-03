@@ -110,6 +110,9 @@
 
 ### Fixed
 
+- Outside an array formula, a reference that `IF`, `CHOOSE`, `OFFSET` or
+  `INDIRECT` hands back now narrows to the cell in the formula's row or
+  column, as Excel does: `=IF(TRUE,A1:A3,0)` in row 2 is A2, not A1.
 - Recalculation left the rest of an array formula's area (`{=...}` entered
   over several cells) holding the old answer, and formulas reading those
   cells read it too. The area now gets the new array, laid out as Excel lays
