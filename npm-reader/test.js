@@ -3,17 +3,17 @@ const assert = require("node:assert");
 const { readFileSync } = require("node:fs");
 const { Book } = require("excelerate-reader");
 
-const bytes = readFileSync(`${__dirname}/../tests/corpus/test1.xlsx`);
+const bytes = readFileSync(`${__dirname}/../tests/fixtures/styles.xlsx`);
 
 test("reads a workbook and its sheets", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   assert.ok(book.sheetNames().length > 0);
   assert.ok(book.cellCount() > 0);
   assert.ok(book.usedRange(0).includes(":"));
 });
 
 test("the value, the displayed text and the formula text", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   const range = book.getRange(0, "A1:E5");
   assert.strictEqual(range.length, 5);
   // Formula cells answer with the value the file was saved with.
@@ -23,7 +23,7 @@ test("the value, the displayed text and the formula text", () => {
 });
 
 test("the style of a cell", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   const style = book.cellStyle(0, "A1");
   assert.strictEqual(typeof style.numberFormat, "string");
   assert.strictEqual(typeof style.font.name, "string");
@@ -37,7 +37,7 @@ test("the style of a cell", () => {
 });
 
 test("neither writing nor recalculation is in this build", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   for (const gone of [
     "toXlsx",
     "toOds",
@@ -53,7 +53,7 @@ test("neither writing nor recalculation is in this build", () => {
 });
 
 test("a whole row, boldness and merges in one call", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   const row = book.getRowAt(0, 1);
   assert.strictEqual(row.values.length, row.formatted.length);
   assert.strictEqual(row.values.length, row.bold.length);
@@ -96,14 +96,14 @@ test("what is on a sheet besides cells", () => {
 });
 
 test("the shape of a sheet without walking it", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   assert.strictEqual(book.usedRangeHint(0), book.usedRange(0));
   const width = book.columnWidth(0, 1);
   assert.ok(width == null || width > 0);
 });
 
 test("the rules and names a file states", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   assert.ok(Array.isArray(book.definedNames()));
   assert.ok(Array.isArray(book.dataValidations(0)));
   assert.ok(Array.isArray(book.conditionalFormats(0)));

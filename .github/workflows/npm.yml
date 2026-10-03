@@ -1,13 +1,15 @@
 name: npm
 
-# Builds both npm packages on every push to main; a tag vX.Y.Z also publishes
-# them. Publishing goes through npm trusted publishing (OIDC): no token in the
-# repository, but each package on npmjs.com has to name this repository and
-# this workflow file as its trusted publisher.
+# Builds and tests both npm packages on every push and pull request to main;
+# a tag vX.Y.Z also publishes them. Publishing goes through npm trusted
+# publishing (OIDC): no token in the repository, but each package on npmjs.com
+# has to name this repository and this workflow file as its trusted publisher.
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
 env:
@@ -29,7 +31,8 @@ jobs:
 
       - uses: taiki-e/install-action@v2
         with:
-          tool: wasm-pack
+          # Pinned: a new wasm-pack must not break the build with no change here.
+          tool: wasm-pack@0.15.0
 
       - uses: actions/setup-node@v4
         with:
@@ -49,28 +52,27 @@ jobs:
         run: |
           if [ "${{ matrix.package }}" = full ]; then ./build-npm.sh; else ./build-npm-reader.sh; fi
 
-      # npm test reads files git ignores (npm/files, tests/corpus), so CI runs
-      # what works from a clean checkout: the TypeScript examples for the full
-      # package, a committed fixture for the reader.
-      - name: Check the full package
+      - name: The size of the wasm
+        run: |
+          dir=$([ "${{ matrix.package }}" = full ] && echo npm || echo npm-reader)
+          for f in $dir/pkg/*.wasm; do
+            echo "${{ matrix.package }}: $(stat -c %s "$f") bytes, $(gzip -9c "$f" | wc -c) gzipped" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: Test the full package
         if: matrix.package == 'full'
         working-directory: npm
         run: |
           npm ci
+          npm test
           npm run typecheck
-          mkdir -p files
-          node typescript/basic.ts
 
-      - name: Check the reader package
+      - name: Test the reader package
         if: matrix.package == 'reader'
         working-directory: npm-reader
         run: |
           npm ci
-          node -e '
-            const { Book } = require("excelerate-reader");
-            const book = Book.read(require("fs").readFileSync("../tests/fixtures/sample.xlsx"), "sample.xlsx");
-            if (!(book.sheetNames().length > 0 && book.cellCount() > 0)) process.exit(1);
-          '
+          npm test
 
       - name: Pack under the scope
         run: ./pack-npm.sh ${{ matrix.package }}
@@ -98,15 +100,16 @@ jobs:
       matrix:
         package: [full, reader]
     steps:
-      - uses: actions/setup-node@v4
+      # Pinned by commit: this job holds a token that publishes as the owner.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
       # Trusted publishing needs npm 11.5.1 or later.
-      - run: npm install -g npm@latest
+      - run: npm install -g npm@11
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: npm-${{ matrix.package }}
           path: pkg
