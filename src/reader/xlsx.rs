@@ -34,7 +34,7 @@ use crate::model::{
     SortCondition, SortState, Spreadsheet, TextRun, ValidationErrorStyle, ValidationOperator,
     ValidationType, WorkbookProtection, Worksheet,
 };
-use crate::progress::{Options, Stage};
+use crate::progress::{Options, RowBatch, Stage};
 use crate::shared::date::Epoch;
 use crate::style::{
     Alignment, Border, BorderStyle, Borders, Color, DiagonalDirection, DiffBorders, DiffFill,
@@ -153,7 +153,12 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
         // address there rather than in the sheet part, and a drawing or a
         // comment is reached only through them.
         let links = read_relationships(&mut zip, &rels_path_for(&path)).unwrap_or_default();
-        let mut sheet = read_sheet(&mut zip, &path, &name, &shared, &links)?;
+        let stream = options.row_sink(done).map(|sink| RowStream {
+            sink,
+            styles: &book.styles,
+            epoch: book.epoch,
+        });
+        let mut sheet = read_sheet(&mut zip, &path, &name, &shared, &links, stream)?;
         sheet.shrink_to_fit();
         sheet.visibility = visibility;
         let sheet_base = path.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -179,7 +184,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
         let drawings = sheet_drawings(&mut zip, &links, sheet_base);
         (sheet.charts, sheet.extended_charts) = read_sheet_charts(&mut zip, &drawings);
         sheet.images = read_sheet_images(&mut zip, &drawings);
-        sheet.shapes = read_sheet_shapes(&drawings);
+        sheet.shapes = read_sheet_shapes(&drawings, book.theme.as_deref());
         sheet.attachments = attachments(&links, sheet_base, &["hyperlink", "comments", "table"]);
         book.add_sheet(sheet)?;
     }
@@ -809,7 +814,10 @@ fn read_sheet_charts<R: Read + Seek>(
 }
 
 /// The shapes drawn on one sheet, in drawing order.
-fn read_sheet_shapes(drawings: &[(String, String)]) -> Vec<crate::model::shape::Shape> {
+fn read_sheet_shapes(
+    drawings: &[(String, String)],
+    theme: Option<&str>,
+) -> Vec<crate::model::shape::Shape> {
     use crate::model::shape::{Shape, ShapeOrigin};
     let mut shapes = Vec::new();
     for (drawing, xml) in drawings {
@@ -817,7 +825,7 @@ fn read_sheet_shapes(drawings: &[(String, String)]) -> Vec<crate::model::shape::
             continue;
         }
         let first = shapes.len();
-        for object in super::shape::scan_shapes(xml) {
+        for object in super::shape::scan_shapes(xml, theme) {
             let Some(anchor) = object.anchor else {
                 continue;
             };
@@ -830,15 +838,26 @@ fn read_sheet_shapes(drawings: &[(String, String)]) -> Vec<crate::model::shape::
                         name: element.name.clone(),
                         description: element.description.clone(),
                         anchor,
+                        rotation: element.rotation,
+                        flip_h: element.flip_h,
+                        flip_v: element.flip_v,
                         geometry: element.geometry.clone(),
+                        format: element.format.clone(),
                         text: element.text.clone(),
+                        font: element.font.clone(),
+                        style: element.style,
                         read_from_drawing: 0,
                     }),
                     name: element.name,
                     description: element.description,
                     anchor,
+                    rotation: element.rotation,
+                    flip_h: element.flip_h,
+                    flip_v: element.flip_v,
                     geometry: element.geometry,
+                    format: element.format,
                     text: element.text,
+                    font: element.font,
                 });
             }
         }
@@ -2005,36 +2024,11 @@ fn read_sheet<R: Read + Seek>(
     name: &str,
     shared: &[CellValue],
     links: &HashMap<String, Relationship>,
+    stream: Option<RowStream<'_>>,
 ) -> Result<Worksheet> {
     let part = super::zipxml::open_part(zip, path).map_err(Error::Xlsx)?;
     let sheet = Worksheet::new(name)?;
-    let mut state = SheetReader {
-        sheet,
-        sheet_dir: path.rsplit_once('/').map_or("", |(dir, _)| dir),
-        shared,
-        links,
-        at: None,
-        kind: CellKind::Number,
-        style: StyleId::default(),
-        value: String::new(),
-        formula: String::new(),
-        in_value: false,
-        in_formula: false,
-        in_phonetic: false,
-        shared_index: None,
-        masters: HashMap::new(),
-        header_part: None,
-        breaks_are_rows: true,
-        in_scale: false,
-        in_cf_formula: false,
-        validation: None,
-        in_formula1: false,
-        in_formula2: false,
-        filter_col: None,
-        in_filter: false,
-        root_namespaces: Vec::new(),
-        ext_depth: 0,
-    };
+    let mut state = SheetReader::new(sheet, path, shared, links, stream);
 
     // The part is parsed as it is inflated rather than read into memory
     // first. The one stretch kept as text is the sheet's own `<extLst>`, which
@@ -2164,6 +2158,14 @@ impl<R: Read> Read for Recorder<R> {
     }
 }
 
+/// Where a streamed sheet's rows go, and what they need to be understood.
+#[derive(Clone, Copy)]
+struct RowStream<'a> {
+    sink: crate::progress::RowSink<'a>,
+    styles: &'a crate::style::StyleTable,
+    epoch: Epoch,
+}
+
 /// The sheet being built and everything the event loop threads through it.
 ///
 /// A sheet part is one flat stream of elements whose meaning depends on what is
@@ -2192,6 +2194,11 @@ struct SheetReader<'a> {
     /// Inside `<rPh>` of an inline string: a reading guide for the text, not
     /// part of it.
     in_phonetic: bool,
+    /// The `<r>` runs of an inline string, read as the shared string pool
+    /// reads them; empty for a cell written with a bare `<t>`.
+    runs: Vec<TextRun>,
+    /// Inside `<rPr>` of such a run.
+    in_run_font: bool,
     /// `si` of the shared formula this cell takes part in, and the master cell
     /// of each group: xlsx writes the text once and leaves every other cell of
     /// the run to offset it.
@@ -2228,9 +2235,79 @@ struct SheetReader<'a> {
     /// `<x14:conditionalFormatting>` read as a `<conditionalFormatting>`
     /// becomes a rule with no range that the writer then puts in the sheet.
     ext_depth: u32,
+
+    /// Where finished rows go, when the caller asked for them one at a time.
+    stream: Option<RowStream<'a>>,
+    /// The row the cells now being read belong to, as `<row r>` names it.
+    row: Option<Row>,
+}
+
+impl<'a> SheetReader<'a> {
+    fn new(
+        sheet: Worksheet,
+        path: &'a str,
+        shared: &'a [CellValue],
+        links: &'a HashMap<String, Relationship>,
+        stream: Option<RowStream<'a>>,
+    ) -> Self {
+        SheetReader {
+            sheet,
+            sheet_dir: path.rsplit_once('/').map_or("", |(dir, _)| dir),
+            shared,
+            links,
+            at: None,
+            kind: CellKind::Number,
+            style: StyleId::default(),
+            value: String::new(),
+            formula: String::new(),
+            in_value: false,
+            in_formula: false,
+            in_phonetic: false,
+            runs: Vec::new(),
+            in_run_font: false,
+            shared_index: None,
+            masters: HashMap::new(),
+            header_part: None,
+            breaks_are_rows: true,
+            in_scale: false,
+            in_cf_formula: false,
+            validation: None,
+            in_formula1: false,
+            in_formula2: false,
+            filter_col: None,
+            in_filter: false,
+            root_namespaces: Vec::new(),
+            ext_depth: 0,
+            stream,
+            row: None,
+        }
+    }
 }
 
 impl SheetReader<'_> {
+    /// Hands a finished row to the stream, if there is one, and forgets its
+    /// cells: keeping them is what a streaming read exists to avoid.
+    fn flush_row(&mut self) {
+        let Some(stream) = self.stream else {
+            return;
+        };
+        // A `<row>` without `r` takes its number from its cells; with neither
+        // there is nothing to name it by, and nothing in it to hand over.
+        let row = self
+            .row
+            .take()
+            .or_else(|| self.sheet.iter().next().map(|(at, _)| at.row));
+        if let Some(row) = row {
+            (stream.sink)(&RowBatch {
+                row,
+                sheet: &self.sheet,
+                styles: stream.styles,
+                epoch: stream.epoch,
+            });
+        }
+        self.sheet.clear_cells();
+    }
+
     /// Dispatches an opening element to whichever group of the sheet vocabulary
     /// claims it. Each handler answers whether the name was its own.
     fn start(&mut self, e: &quick_xml::events::BytesStart<'_>, empty: bool) {
@@ -2250,6 +2327,11 @@ impl SheetReader<'_> {
             || self.start_conditional(name, e)
             || self.start_validation(name, e, empty)
             || self.start_filter(name, e, empty);
+        // `<row/>` never yields an End event, and a streaming read is still
+        // owed it: no cells, but maybe a height or a hidden flag.
+        if empty && name == "row" {
+            self.flush_row();
+        }
     }
 
     /// `<c>` and the elements that live inside one.
@@ -2267,6 +2349,7 @@ impl SheetReader<'_> {
                 self.value.clear();
                 self.formula.clear();
                 self.shared_index = None;
+                self.runs.clear();
                 for attr in e.attributes().flatten() {
                     let v = attr
                         .normalized_value(quick_xml::XmlVersion::Implicit1_0)
@@ -2300,10 +2383,20 @@ impl SheetReader<'_> {
             // its data validations - be swallowed as formula source.
             "v" => self.in_value = !empty,
             // `t="inlineStr"` keeps its text in `<is><t>`, or in a `<t>` per
-            // run of `<is><r>`; the runs are joined and their fonts dropped.
-            // ponytail: rich inline text reads as plain; parse `<r>` like the
-            // shared string pool does if a file needs the formatting.
+            // run of `<is><r>`, each with its own `<rPr>`.
             "rPh" => self.in_phonetic = !empty,
+            "r" if self.kind == CellKind::InlineString && !self.in_phonetic => {
+                self.runs.push(TextRun::default());
+            }
+            "rPr" if self.kind == CellKind::InlineString => {
+                if let Some(run) = self.runs.last_mut() {
+                    run.font = Some(DiffFont::default());
+                    self.in_run_font = !empty;
+                }
+            }
+            name if self.in_run_font => {
+                apply_run_font(self.runs.last_mut().and_then(|r| r.font.as_mut()), name, e);
+            }
             "t" if self.at.is_some()
                 && self.kind == CellKind::InlineString
                 && !self.in_phonetic =>
@@ -2339,6 +2432,14 @@ impl SheetReader<'_> {
                 }
             }
             "row" => {
+                // Kept whether or not the row has properties worth storing:
+                // it is what a streaming read hands the caller. Nobody else
+                // wants it, so an ordinary read does not parse it.
+                if self.stream.is_some() {
+                    self.row = attr(e, "r")
+                        .and_then(|v| v.parse().ok())
+                        .and_then(|n| Row::from_one_based(n).ok());
+                }
                 if let Some((row, props)) = read_row_properties(e) {
                     self.sheet.rows.insert(row, props);
                 }
@@ -2571,6 +2672,7 @@ impl SheetReader<'_> {
         match name {
             "v" | "t" => self.in_value = false,
             "rPh" => self.in_phonetic = false,
+            "rPr" => self.in_run_font = false,
             "f" => self.in_formula = false,
             "colorScale" | "dataBar" | "iconSet" => self.in_scale = false,
             "formula" => self.in_cf_formula = false,
@@ -2580,6 +2682,7 @@ impl SheetReader<'_> {
             "formula2" => self.in_formula2 = false,
             "filterColumn" => self.filter_col = None,
             "autoFilter" => self.in_filter = false,
+            "row" => self.flush_row(),
             "dataValidation" => {
                 if let Some(dv) = self.validation.take() {
                     self.sheet.data_validations.push(dv);
@@ -2593,8 +2696,13 @@ impl SheetReader<'_> {
                         at,
                         &self.formula,
                     );
+                    let value = if self.runs.is_empty() {
+                        build_value(self.kind, &self.value, &text, self.shared)
+                    } else {
+                        pooled(&std::mem::take(&mut self.runs))
+                    };
                     let cell = Cell {
-                        value: build_value(self.kind, &self.value, &text, self.shared),
+                        value,
                         style: self.style,
                     };
                     // An empty cell carrying only a style still matters:
@@ -2636,7 +2744,10 @@ impl SheetReader<'_> {
             return header_slot(&mut self.sheet, self.header_part.as_deref());
         }
         if self.in_value {
-            return Some(&mut self.value);
+            return Some(match self.runs.last_mut() {
+                Some(run) => &mut run.text,
+                None => &mut self.value,
+            });
         }
         if self.in_formula {
             return Some(&mut self.formula);
@@ -3519,6 +3630,43 @@ mod tests {
     }
 
     #[test]
+    fn a_streamed_sheet_hands_over_every_row_and_keeps_none() {
+        use crate::progress::{Options, RowBatch};
+        use std::cell::RefCell;
+
+        let seen: RefCell<Vec<(u32, usize)>> = RefCell::new(Vec::new());
+        let sink = |batch: &RowBatch<'_>| {
+            seen.borrow_mut().push((
+                batch.row.index() + 1,
+                batch.sheet.row_cells(batch.row).count(),
+            ));
+        };
+        let book = super::read_xlsx_from_with(
+            Cursor::new(package(concat!(
+                r#"<sheetData><row r="1"><c r="A1"><v>1</v></c><c r="C1"><v>3</v></c></row>"#,
+                r#"<row r="2" hidden="1"/>"#,
+                r#"<row><c r="B3"><v>5</v></c></row>"#,
+                "</sheetData>"
+            ))),
+            u64::MAX,
+            &Options::new().streaming(0, &sink),
+        )
+        .expect("package reads");
+        assert_eq!(
+            seen.into_inner(),
+            vec![(1, 2), (2, 0), (3, 1)],
+            "an empty row is still a row, and one without `r` is named by its cells"
+        );
+        let sheet = book.sheet(0).expect("one sheet");
+        assert_eq!(sheet.len(), 0, "nothing of the grid is kept");
+        assert_eq!(sheet.dimension(), None);
+        assert!(
+            sheet.rows.values().any(|props| props.hidden),
+            "row properties stay"
+        );
+    }
+
+    #[test]
     fn an_inline_string_is_read_from_inside_the_cell() {
         // 1C writes every text cell as `t="inlineStr"`; reading only `<v>`
         // left a whole column of such an export empty.
@@ -3543,6 +3691,15 @@ mod tests {
             Some("Bold part".to_owned()),
             "runs join, phonetics do not"
         );
+        let Some(CellValue::RichText(runs)) = sheet
+            .get(CellRef::parse("B1").unwrap())
+            .map(|c| c.value.clone())
+        else {
+            panic!("runs with a font read as rich text");
+        };
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].font, None);
+        assert_eq!(runs[1].font.as_ref().and_then(|f| f.bold), Some(true));
         assert_eq!(text("C1"), None);
         assert_eq!(
             sheet
@@ -3592,7 +3749,7 @@ mod tests {
         let sheet = book.sheet(0).expect("one sheet");
         assert_eq!(sheet.conditional_formats.len(), 1);
         assert_eq!(sheet.conditional_formats[0].rules[0].formulas, ["A1>0"]);
-        assert!(sheet.data_validations.is_empty());
+        assert_eq!(sheet.data_validations, []);
         assert!(
             sheet
                 .extensions

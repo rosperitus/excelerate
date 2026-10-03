@@ -3,7 +3,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "build": "../tools/build-npm.sh",
+    "build": "../build-npm.sh",
     "start": "node example.js",
     "test": "node --test",
     "bench": "node --max-old-space-size=12000 bench.js",

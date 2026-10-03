@@ -1,12 +1,18 @@
 //! Shared helper subsystems.
 
-pub mod biff_functions;
+// The writers and the formula engine are what use most of these; a build
+// with neither leaves part of them idle, and that is not dead code to delete.
+#[cfg_attr(not(any(feature = "write", feature = "formulas")), allow(dead_code))]
+pub(crate) mod biff_functions;
 pub mod codepage;
 pub mod date;
-pub mod date_parse;
-pub mod odf_formula;
-pub mod palette;
-pub mod special;
+pub(crate) mod date_parse;
+#[cfg_attr(not(any(feature = "write", feature = "formulas")), allow(dead_code))]
+pub(crate) mod odf_formula;
+#[cfg_attr(not(any(feature = "write", feature = "formulas")), allow(dead_code))]
+pub(crate) mod palette;
+#[cfg_attr(not(any(feature = "write", feature = "formulas")), allow(dead_code))]
+pub(crate) mod special;
 
 /// Seconds since the Unix epoch, as the clock of whatever platform this runs
 /// on reports them.
@@ -16,7 +22,7 @@ pub mod special;
 /// caller (`TODAY`, `NOW`, `RAND`, a date written without a year) only needs
 /// the wall clock, not monotonicity.
 #[must_use]
-pub fn unix_seconds() -> f64 {
+pub(crate) fn unix_seconds() -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
         js_sys::Date::now() / 1000.0
@@ -27,4 +33,46 @@ pub fn unix_seconds() -> f64 {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0.0, |d| d.as_secs_f64())
     }
+}
+
+/// Matches text against a pattern holding `*` and `?`, with `~` escaping one.
+pub(crate) fn wildcard_match(pattern: &str, text: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let t: Vec<char> = text.chars().collect();
+    // The usual two-cursor walk with a remembered star, so it stays linear.
+    let (mut pi, mut ti) = (0, 0);
+    let (mut star, mut retry) = (None, 0);
+    while ti < t.len() {
+        let literal = match p.get(pi) {
+            Some('~') => p.get(pi + 1).copied().map(|c| (c, 2)),
+            Some('?') => {
+                pi += 1;
+                ti += 1;
+                continue;
+            }
+            Some('*') => {
+                star = Some(pi);
+                pi += 1;
+                retry = ti;
+                continue;
+            }
+            Some(c) => Some((*c, 1)),
+            None => None,
+        };
+        match literal {
+            Some((c, width)) if c == t[ti] => {
+                pi += width;
+                ti += 1;
+            }
+            _ => match star {
+                Some(at) => {
+                    pi = at + 1;
+                    retry += 1;
+                    ti = retry;
+                }
+                None => return false,
+            },
+        }
+    }
+    p[pi..].iter().all(|c| *c == '*')
 }

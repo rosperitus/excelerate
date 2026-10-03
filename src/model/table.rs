@@ -10,6 +10,7 @@ use crate::coordinate::{CellRef, Range, Row};
 
 /// A table on a sheet.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct Table {
     /// The id the part carries, unique within the workbook.
     pub id: u32,
@@ -76,6 +77,46 @@ pub struct TableStyle {
 }
 
 impl Table {
+    /// A table over `range` with one header row naming `columns` in order,
+    /// numbered from 1, and no totals, filter or style.
+    ///
+    /// ```
+    /// use excelerate::{Range, model::table::Table};
+    ///
+    /// let table = Table::new(1, "Stock", Range::parse("A1:B3").unwrap(), ["Item", "Qty"]);
+    /// assert_eq!(table.display_name, "Stock");
+    /// assert_eq!(table.columns[1].id, 2);
+    /// ```
+    #[must_use]
+    pub fn new(
+        id: u32,
+        name: &str,
+        range: Range,
+        columns: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        Self {
+            id,
+            name: name.to_owned(),
+            display_name: name.to_owned(),
+            range,
+            header_row_count: None,
+            totals_row_count: None,
+            auto_filter: None,
+            sort_state: None,
+            columns: columns
+                .into_iter()
+                .zip(1..)
+                .map(|(name, id)| TableColumn {
+                    id,
+                    name: name.into(),
+                    ..TableColumn::default()
+                })
+                .collect(),
+            style: None,
+            extensions: None,
+        }
+    }
+
     /// The rows holding data, which is the range without its header and
     /// totals rows.
     ///

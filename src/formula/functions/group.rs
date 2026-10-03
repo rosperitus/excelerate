@@ -548,6 +548,60 @@ fn column_headers(
     out
 }
 
+/// `ROLLING(array, window, function, [min_periods])` - `function` over the
+/// last `window` rows up to each row, column by column.
+///
+/// Not an Excel function: proposed in the 2026 specification this engine
+/// follows for its newest functions. A window holding fewer than
+/// `min_periods` values (all of them unless given) is `#N/A`, so the first
+/// `window - 1` rows are.
+pub fn rolling(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
+    rolling_inner(engine, origin, args).unwrap_or_else(|e| e)
+}
+
+fn rolling_inner(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Result<Value, Value> {
+    let ([array, _, function] | [array, _, function, _]) = args else {
+        return Err(Value::Error(CellError::Value));
+    };
+    let values = engine.eval_expr(origin, array);
+    if let Value::Error(e) = values {
+        return Err(Value::Error(e));
+    }
+    let values = grid(values);
+    let window = option(engine, origin, args, 1, 0.0)?;
+    let window = super::lookup::index_within(window, values.len())
+        .ok_or(Value::Error(CellError::Value))?
+        + 1;
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "a window is at most the rows of an array"
+    )]
+    let least = option(engine, origin, args, 3, window as f64)?;
+    if least < 1.0 {
+        return Err(Value::Error(CellError::Value));
+    }
+    let summary = Summary::read(engine, origin, function)?;
+    let columns = values.first().map_or(0, Vec::len);
+    let mut out = vec![Vec::with_capacity(columns); values.len()];
+    for c in 0..columns {
+        for (i, line) in out.iter_mut().enumerate() {
+            let start = (i + 1).saturating_sub(window);
+            let slice: Vec<Value> = values[start..=i].iter().map(|r| r[c].clone()).collect();
+            let present = slice.iter().filter(|v| !matches!(v, Value::Blank)).count();
+            // ponytail: the function runs on every window from scratch, so
+            // the cost is rows x window; running sums would make SUM and
+            // AVERAGE linear, if a million-row window ever matters.
+            #[expect(clippy::cast_precision_loss, reason = "a count of cells")]
+            line.push(if (present as f64) < least {
+                Value::Error(CellError::Na)
+            } else {
+                summary.apply(engine, origin, slice)
+            });
+        }
+    }
+    Ok(Value::array(out))
+}
+
 /// `PERCENTOF(data_subset, data_all)`
 pub fn percentof(args: &[Arg]) -> Value {
     let [subset, all] = args else {

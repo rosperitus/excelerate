@@ -16,8 +16,8 @@ from the Rust signatures, so they never drift from the API.
 ## Build it yourself
 
 ```text
-tools/build-npm.sh            # nodejs target, release, into npm/pkg
-tools/build-npm.sh web        # or bundler
+./build-npm.sh            # nodejs target, release, into npm/pkg
+./build-npm.sh web        # or bundler
 ```
 
 The result is a publishable npm package: wasm, the JS glue, `.d.ts`, and
@@ -51,12 +51,44 @@ charts, pictures, shapes, tables and notes, and a progress bar with a function
 of your own. Run them from `npm/` - `node typescript/basic.ts`
 on Node 22.6+, no build step and no separate install.
 
+## Objects and chains
+
+Over the flat `Book` sit `Workbook`, `Sheet`, `Table` and `SheetRange`, whose
+changing calls return themselves:
+
+```ts
+import { Workbook } from "@rosperitus/excelerate";
+
+const wb = new Workbook();
+const sales = wb.addSheet("Sales")
+  .addTableFromData("Sales", "A1", [["Region", "Amount"], ["North", 120], ["South", 340]])
+  .set(1, "Amount", 125)
+  .addFilter("Region", { values: ["South"] });
+sales.records({ visible: true });   // [{ Region: "South", Amount: 340 }]
+```
+
+| Object | Has |
+|---|---|
+| `Workbook` | every `Book` method that takes no sheet (`definedNames`, `setDefinedName`, `moveSheet`, `registerFunction`, `protectWorkbook`...), plus `new Workbook()`, `Workbook.read(bytes)`, `Workbook.readCsv`, `sheet(index or name)`, `sheets()`, `addSheet(name)` (a new workbook's first call takes over its empty `Sheet1`), `recalculate()`, `toXlsx()`, `book` |
+| `Sheet` | every `Book` method that takes the sheet first, without it (`setColumnWidth(2, 14)`, `getRange("A1:C3")`, `insertRows(8, 2)`...), plus `text`, `write(at, rows)`, `range(address)`, `style(address, patch)`, `width(column, chars)`, `freeze(rows, cols)`, `addTable`, `addTableFromData(name, at, rows)`, `table(name)`, `tables()`, `rename`, `activate`, `recalculate`, `remove` |
+| `Table` | `set(row, column, value)` and `get` by data row and header, `addFilter(column, criteria)`, `clearFilter(column?)`, `sort(keys)`, `range()`, `data()`, `records({ visible? })`, `columns` |
+| `SheetRange` | `values()`, `visibleValues()`, `set(rows)`, `style(patch)`, `merge()` |
+
+A `Book` method that answers with nothing returns the object, so it chains;
+the rest return their answer. The types are derived from `Book`'s own, so a
+method `Book` gains is typed on `Sheet` too, and a test fails until it is
+listed.
+
+They are handles - a sheet index, a table name, an address - over
+`workbook.book`; the only package without them is `excelerate-reader`, since
+most of what they do writes.
+
 ## The API
 
 | Method | Does |
 |---|---|
 | `new Book()` | empty workbook with one sheet |
-| `Book.read(bytes, name?, maxExpanded?, onProgress?)` | read any supported format |
+| `Book.read(bytes, name?, maxExpanded?, onProgress?, password?)` | read any supported format; `password` opens an encrypted workbook |
 | `sheetNames()` / `sheetIndex(name)` | sheet titles; the index of one, case-insensitively |
 | `addSheet(title)` / `renameSheet(sheet, title)` | append a sheet; rename one |
 | `activeSheet()` / `setActiveSheet(sheet)` | the tab a reader opens on |
@@ -75,6 +107,7 @@ on Node 22.6+, no build step and no separate install.
 | `cellIndent(sheet, address)` | the cell's indent steps, 0 when it has none |
 | `rowLevel(sheet, row)` / `columnLevel(sheet, "C")` | outline depth of a row or column, 0 when ungrouped |
 | `cellBold(sheet, address)` / `cellBoldAt(sheet, row, col)` | whether the cell is bold, without building the rest of its style |
+| `Book.forEachRow(bytes, name, sheet, callback, formatted?)` | reads a workbook and hands one sheet over row by row, `callback(row, data)` with `data` as `getRowAt` gives it, without keeping that sheet's cells; only xlsx saves memory, other formats are read whole and then handed over the same way |
 | `getRowAt(sheet, row, formatted?)` | a whole row in one crossing: `{ values, formatted, bold, indent, hidden }`; `formatted: false` skips the displayed text and its string per cell |
 | `rowHidden(sheet, row)` | whether the row is hidden |
 | `sheetVisibility(sheet)` | `"visible"`, `"hidden"` or `"veryHidden"` |
@@ -86,6 +119,7 @@ on Node 22.6+, no build step and no separate install.
 | `setSheetVisibility(sheet, state)` | `"visible"`, `"hidden"` or `"veryHidden"` |
 | `merge(sheet, "A1:C1")` / `unmerge(sheet, range)` | merge a block of cells, or take the merge back out |
 | `insertRows` / `removeRows` / `insertColumns` / `removeColumns` | edit the grid; formulas across the workbook follow. An insert takes `copyOrigin` last: `"before"` (the default, as in Excel), `"after"` or `"none"` |
+| `insertRowsMany(sheet, [[at, count], ...], copyOrigin?)` / `removeRowsMany` / `insertColumnsMany` / `removeColumnsMany` | the same at many places in one walk of the workbook; places are numbered as before the call, in any order |
 | `copyRange(sheet, range, to, toSheet?)` / `moveRange(...)` | a block of cells: a copy rewrites its formulas, a move keeps them and drags the references to it along |
 | `insertCells(sheet, range, "down" \| "right", copyOrigin?)` / `removeCells(sheet, range, "up" \| "left")` | Excel's "Insert Cells": part of a row moves, the rest of the sheet stays |
 | `sortRange(sheet, range, keys, { header?, byColumns? })` | Data - Sort. A key is a column number (`2`) or a header (`"Amount"`); a minus sorts largest first |
@@ -95,7 +129,8 @@ on Node 22.6+, no build step and no separate install.
 | `moveSheet(from, to)` | reorder the tabs; every sheet index moves with them |
 | `removeSheet(sheet)` | drop a sheet - references to it become `#REF!` |
 | `comments(sheet)` / `hyperlinks(sheet)` / `tables(sheet)` | what the sheet carries besides cells |
-| `charts(sheet)` / `shapes(sheet)` / `images(sheet)` | the drawing objects, each with its anchor; `imageData(sheet, i)` for a picture's bytes |
+| `charts(sheet)` / `shapes(sheet)` / `images(sheet)` | the drawing objects, each with its anchor; `imageData(sheet, i)` for a picture's bytes. A shape carries `rotation` (degrees), `flipH`, `flipV` and the `fill`, `line` and `font` Excel shows, its style filling in what it leaves out; a chart carries `format` and `plotFormat`, the fill and outline of its chart and plot area. A drawing colour comes resolved through the workbook theme as `#AARRGGBB` |
+| `setShapeFormat(sheet, i, { fill?, line?, font?, rotation?, flipH?, flipV? })` / `setChartFormat(sheet, i, { format?, plotFormat? })` | change that look; a field left out stays, `null` gives a fill or line back to the style. A colour to write is `#RRGGBB`, `#AARRGGBB` or a theme name such as `accent1`, which follows the theme |
 | `cellStyle(sheet, address)` / `cellStyleAt` | the whole style: `numberFormat`, `font`, `fill`, `borders`, `alignment`; a colour is `#AARRGGBB`, `indexed:N`, `theme:N` or `null` |
 | `getRichText(sheet, address)` / `getRichTextAt` | formatted text as runs, `{ text, font }` each, `font` naming only what the run changes; `null` for a cell without it |
 | `setRichText(sheet, address, runs)` / `setRichTextAt` | write formatted text in the same shape |
@@ -103,6 +138,7 @@ on Node 22.6+, no build step and no separate install.
 | `setComment` / `removeComment` | put a note on a cell, take it off |
 | `setHyperlink` / `removeHyperlink` | link a cell or a block of them |
 | `addTable(sheet, name, range, headerRow?)` / `removeTable` | draw a table, the thing `Sales[Amount]` names |
+| `setTableFilter(name, column, criteria \| null)` | filter a table by a column (its header or number from 1): `{ values }`, `{ custom: [{ op, value }] }`, `{ top }` or `{ bottom }`. The criteria go into the file and the rows they reject are hidden there, as Excel does |
 | `sheetView(sheet)` | how the sheet is frozen and shown |
 | `freezePanes(sheet, rows, columns)` | pin the header row and the first columns; `(sheet, 0, 0)` unfreezes |
 | `setZoom(sheet, percent?)` / `setShowGridLines(sheet, show, headers?)` | how a reader opens it |

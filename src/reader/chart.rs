@@ -12,9 +12,9 @@ use crate::model::chart::{
     Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartColor,
     ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint,
     DataSource, Dimension, DimensionRole, EditAs, ExSeries, Fill, GradientPath, GradientStop,
-    Grouping, LabelPosition, Legend, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot,
-    PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, SeriesMarker, ShapeFormat, Title,
-    UpDownBars,
+    Grouping, LabelPosition, Legend, LegendPosition, LineFormat, ManualLayout, Marker,
+    MarkerSymbol, Plot, PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, SeriesMarker,
+    ShapeFormat, Title, UpDownBars,
 };
 use core::ops::Range;
 use quick_xml::Reader;
@@ -364,6 +364,8 @@ pub(crate) fn read_chart(xml: &str) -> Option<(Chart, String, String)> {
         if child.name == "chart" {
             seen_chart = true;
             read_chart_body(&child, &mut out);
+        } else if seen_chart && child.name == "spPr" {
+            out.format = Some(read_shape_format(&child));
         } else if seen_chart {
             out.markup.after_chart.push_str(child.outer);
         } else {
@@ -403,6 +405,8 @@ fn read_plot_area(area: &Node<'_>, out: &mut Chart) {
     for child in area.children() {
         if child.name == "layout" {
             child.outer.clone_into(&mut out.markup.plot_area_layout);
+        } else if child.name == "spPr" {
+            out.plot_format = Some(read_shape_format(&child));
         } else if let Some(plot) = read_plot(&child) {
             out.plots.push(plot);
         } else if let Some(axis) = read_axis(&child) {
@@ -418,6 +422,11 @@ fn read_title(node: &Node<'_>) -> Title {
     for child in node.children() {
         if child.name == "tx" {
             out.text = read_text(&child);
+        } else if let Some(layout) = (child.name == "layout")
+            .then(|| read_manual_layout(&child))
+            .flatten()
+        {
+            out.layout = Some(layout);
         } else {
             out.markup.push_str(child.outer);
         }
@@ -470,11 +479,54 @@ fn read_legend(node: &Node<'_>) -> Legend {
     for child in node.children() {
         if child.name == "legendPos" {
             out.position = LegendPosition::parse(child.val().unwrap_or_default());
+        } else if let Some(layout) = (child.name == "layout")
+            .then(|| read_manual_layout(&child))
+            .flatten()
+        {
+            out.layout = Some(layout);
         } else {
             out.markup.push_str(child.outer);
         }
     }
     out
+}
+
+/// Reads `<c:layout>` whose `c:manualLayout` places the corner by edges;
+/// `None` for any other layout, which the markup keeps.
+fn read_manual_layout(layout: &Node<'_>) -> Option<ManualLayout> {
+    let manual = layout.child("manualLayout")?;
+    let kids = manual.children();
+    let val = |name: &str| kids.iter().find(|n| n.name == name).and_then(Node::val);
+    let share = |name: &str| -> Option<Option<i32>> {
+        match val(name) {
+            None => Some(None),
+            Some(v) => {
+                let v: f64 = v.parse().ok()?;
+                #[allow(clippy::cast_possible_truncation, reason = "clamped to a share")]
+                let v = (v.clamp(-10.0, 10.0) * 100_000.0).round() as i32;
+                Some(Some(v))
+            }
+        }
+    };
+    let known = kids.iter().all(|n| {
+        matches!(
+            n.name,
+            "xMode" | "yMode" | "wMode" | "hMode" | "x" | "y" | "w" | "h"
+        )
+    });
+    let factor = |name: &str| val(name).is_none_or(|v| v == "factor");
+    if !known || val("xMode")? != "edge" || val("yMode")? != "edge" {
+        return None;
+    }
+    if !factor("wMode") || !factor("hMode") {
+        return None;
+    }
+    Some(ManualLayout {
+        x: share("x")??,
+        y: share("y")??,
+        w: share("w")?,
+        h: share("h")?,
+    })
 }
 
 fn read_plot(node: &Node<'_>) -> Option<Plot> {
@@ -670,7 +722,7 @@ fn read_gradient(node: &Node<'_>) -> Option<Fill> {
     })
 }
 
-fn read_color(node: &Node<'_>) -> Option<ChartColor> {
+pub(crate) fn read_color(node: &Node<'_>) -> Option<ChartColor> {
     let hex = |v: &str| u32::from_str_radix(v, 16).ok().filter(|_| v.len() == 6);
     let base = match node.name {
         "srgbClr" => ColorBase::Rgb(hex(node.val()?)?),

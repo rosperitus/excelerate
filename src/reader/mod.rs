@@ -3,6 +3,7 @@
 pub(crate) mod chart;
 pub mod csv;
 pub mod detect;
+pub mod encryption;
 pub mod gnumeric;
 pub mod html;
 pub(crate) mod image;

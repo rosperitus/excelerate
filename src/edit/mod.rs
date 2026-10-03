@@ -10,9 +10,11 @@
 mod anchor;
 mod chart;
 mod extension;
+mod filter;
 mod range;
 mod series;
 
+pub use filter::filter_table;
 pub use range::{
     SortBy, SortKey, SortOptions, copy_range, fill, insert_cells, insert_cells_with, move_range,
     move_sheet, remove_cells, sort_range, sort_range_with, sort_table,
@@ -54,7 +56,11 @@ pub enum CopyOrigin {
 /// moves, and every reference to it follows.
 ///
 /// # Errors
-/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
+/// [`Error::WouldPushOffSheet`] if a cell that holds something, or a merged
+/// area, would be pushed past the last row or column; the book is then left
+/// as it was. Row heights, column widths and styles at the edge are cut off
+/// without a word, as Excel does.
 pub fn insert_rows(book: &mut Spreadsheet, sheet: usize, at: Row, count: u32) -> Result<()> {
     insert_rows_with(book, sheet, at, count, CopyOrigin::Blank)
 }
@@ -63,7 +69,11 @@ pub fn insert_rows(book: &mut Spreadsheet, sheet: usize, at: Row, count: u32) ->
 /// styles, the row's own style and its height.
 ///
 /// # Errors
-/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
+/// [`Error::WouldPushOffSheet`] if a cell that holds something, or a merged
+/// area, would be pushed past the last row or column; the book is then left
+/// as it was. Row heights, column widths and styles at the edge are cut off
+/// without a word, as Excel does.
 pub fn insert_rows_with(
     book: &mut Spreadsheet,
     sheet: usize,
@@ -71,11 +81,36 @@ pub fn insert_rows_with(
     count: u32,
     origin: CopyOrigin,
 ) -> Result<()> {
-    apply(book, sheet, Shift::insert(Axis::Rows, at.index(), count))?;
-    if let Some(target) = book.sheet_mut(sheet) {
-        format_inserted(target, Axis::Rows, at.index(), count, origin);
-    }
-    Ok(())
+    insert_rows_many(book, sheet, &[(at, count)], origin)
+}
+
+/// Inserts rows at several places in one pass over the workbook: each
+/// `(at, count)` puts `count` rows before row `at`, 0-based.
+///
+/// Every `at` is a row of the sheet as it is before the call, so the result
+/// is that of [`insert_rows_with`] called once per place from the bottom up.
+/// The order of `at` does not matter, and counts at the same row add up.
+/// `origin` formats each inserted block from its own neighbour.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
+/// [`Error::WouldPushOffSheet`] if a cell that holds something, or a merged
+/// area, would be pushed past the last row or column; the book is then left
+/// as it was. Row heights, column widths and styles at the edge are cut off
+/// without a word, as Excel does.
+pub fn insert_rows_many(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    at: &[(Row, u32)],
+    origin: CopyOrigin,
+) -> Result<()> {
+    let points: Vec<(u32, u32)> = at.iter().map(|&(r, n)| (r.index(), n)).collect();
+    insert_many(
+        book,
+        sheet,
+        &Shift::insert_many(Axis::Rows, &points),
+        origin,
+    )
 }
 
 /// Removes `count` rows starting at row `at`, 0-based.
@@ -83,13 +118,32 @@ pub fn insert_rows_with(
 /// # Errors
 /// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
 pub fn remove_rows(book: &mut Spreadsheet, sheet: usize, at: Row, count: u32) -> Result<()> {
-    apply(book, sheet, Shift::remove(Axis::Rows, at.index(), count))
+    remove_rows_many(book, sheet, &[(at, count)])
+}
+
+/// Removes several blocks of rows in one pass over the workbook: each
+/// `(at, count)` names `count` rows from row `at`, 0-based.
+///
+/// Every `at` is a row of the sheet as it is before the call, so the result
+/// is that of [`remove_rows`] called once per block from the bottom up. The
+/// order does not matter, and blocks that overlap or touch are one block: a
+/// row is removed once however many blocks name it.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+pub fn remove_rows_many(book: &mut Spreadsheet, sheet: usize, spans: &[(Row, u32)]) -> Result<()> {
+    let spans: Vec<(u32, u32)> = spans.iter().map(|&(r, n)| (r.index(), n)).collect();
+    apply(book, sheet, &Shift::remove_many(Axis::Rows, &spans))
 }
 
 /// Inserts `count` columns before column `at`, 0-based.
 ///
 /// # Errors
-/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
+/// [`Error::WouldPushOffSheet`] if a cell that holds something, or a merged
+/// area, would be pushed past the last row or column; the book is then left
+/// as it was. Row heights, column widths and styles at the edge are cut off
+/// without a word, as Excel does.
 pub fn insert_columns(book: &mut Spreadsheet, sheet: usize, at: Col, count: u32) -> Result<()> {
     insert_columns_with(book, sheet, at, count, CopyOrigin::Blank)
 }
@@ -98,7 +152,11 @@ pub fn insert_columns(book: &mut Spreadsheet, sheet: usize, at: Col, count: u32)
 /// styles, the column's own style and its width.
 ///
 /// # Errors
-/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
+/// [`Error::WouldPushOffSheet`] if a cell that holds something, or a merged
+/// area, would be pushed past the last row or column; the book is then left
+/// as it was. Row heights, column widths and styles at the edge are cut off
+/// without a word, as Excel does.
 pub fn insert_columns_with(
     book: &mut Spreadsheet,
     sheet: usize,
@@ -106,9 +164,81 @@ pub fn insert_columns_with(
     count: u32,
     origin: CopyOrigin,
 ) -> Result<()> {
-    apply(book, sheet, Shift::insert(Axis::Columns, at.index(), count))?;
-    if let Some(target) = book.sheet_mut(sheet) {
-        format_inserted(target, Axis::Columns, at.index(), count, origin);
+    insert_columns_many(book, sheet, &[(at, count)], origin)
+}
+
+/// [`insert_rows_many`] for columns: the result of [`insert_columns_with`]
+/// called once per place from right to left.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet, and
+/// [`Error::WouldPushOffSheet`] if a cell that holds something, or a merged
+/// area, would be pushed past the last row or column; the book is then left
+/// as it was. Row heights, column widths and styles at the edge are cut off
+/// without a word, as Excel does.
+pub fn insert_columns_many(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    at: &[(Col, u32)],
+    origin: CopyOrigin,
+) -> Result<()> {
+    let points: Vec<(u32, u32)> = at.iter().map(|&(c, n)| (c.index(), n)).collect();
+    insert_many(
+        book,
+        sheet,
+        &Shift::insert_many(Axis::Columns, &points),
+        origin,
+    )
+}
+
+/// Removes `count` columns starting at column `at`, 0-based.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+pub fn remove_columns(book: &mut Spreadsheet, sheet: usize, at: Col, count: u32) -> Result<()> {
+    remove_columns_many(book, sheet, &[(at, count)])
+}
+
+/// [`remove_rows_many`] for columns: the result of [`remove_columns`] called
+/// once per block from right to left, with overlapping blocks merged.
+///
+/// # Errors
+/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
+pub fn remove_columns_many(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    spans: &[(Col, u32)],
+) -> Result<()> {
+    let spans: Vec<(u32, u32)> = spans.iter().map(|&(c, n)| (c.index(), n)).collect();
+    apply(book, sheet, &Shift::remove_many(Axis::Columns, &spans))
+}
+
+/// Applies an insertion, then formats each inserted block from its
+/// neighbour. The blocks are found in the edited grid: block `k` starts where
+/// its row now is, less its own count.
+fn insert_many(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    shift: &Shift,
+    origin: CopyOrigin,
+) -> Result<()> {
+    apply(book, sheet, shift)?;
+    if origin == CopyOrigin::Blank {
+        return Ok(());
+    }
+    let Some(target) = book.sheet_mut(sheet) else {
+        return Ok(());
+    };
+    for span in &shift.spans {
+        // Everything inserted above this block, its own count excluded.
+        let Some(start) = u64::from(span.at)
+            .checked_add(span.total - span.count())
+            .and_then(|i| u32::try_from(i).ok())
+        else {
+            continue;
+        };
+        let count = u32::try_from(span.count()).unwrap_or(u32::MAX);
+        format_inserted(target, shift.axis, start, count, origin);
     }
     Ok(())
 }
@@ -156,6 +286,9 @@ fn format_inserted(sheet: &mut Worksheet, axis: Axis, at: u32, count: u32, origi
         }
         Axis::Columns => {
             let Some(from) = Col::new(source) else { return };
+            // ponytail: a walk of the whole sheet per block, so a batch of
+            // formatted columns costs blocks x cells; collect every source
+            // column in one walk if that ever matters.
             let styles: Vec<(Row, _)> = sheet
                 .iter()
                 .filter(|(cell_at, cell)| {
@@ -185,54 +318,99 @@ fn format_inserted(sheet: &mut Worksheet, axis: Axis, at: u32, count: u32, origi
     }
 }
 
-/// Removes `count` columns starting at column `at`, 0-based.
-///
-/// # Errors
-/// [`Error::SheetIndexOutOfRange`] if there is no such sheet.
-pub fn remove_columns(book: &mut Spreadsheet, sheet: usize, at: Col, count: u32) -> Result<()> {
-    apply(book, sheet, Shift::remove(Axis::Columns, at.index(), count))
-}
-
-/// One grid edit: which axis it moves, from where, and by how much.
-#[derive(Debug, Clone, Copy)]
+/// A grid edit: rows or columns inserted at, or removed from, any number of
+/// places at once, as a map from an index before the edit to the index after.
+#[derive(Debug, Clone)]
 struct Shift {
     axis: Axis,
-    /// First index the edit touches, 0-based.
+    /// Whether the spans are inserted rather than removed.
+    insert: bool,
+    /// The places, sorted by `at`; a removal's spans are disjoint and never
+    /// touch, so a run of removed indexes is always one span.
+    spans: Vec<Span>,
+}
+
+/// One place of a [`Shift`], in indexes before the edit.
+#[derive(Debug, Clone, Copy)]
+struct Span {
+    /// First index the place touches, 0-based.
     at: u32,
-    /// How far indexes from `at` on move; negative for a removal.
-    delta: i64,
+    /// One past the last index a removal takes; `at` plus the count.
+    end: u64,
+    /// The count of this span and of every span before it.
+    total: u64,
+}
+
+impl Span {
+    const fn count(self) -> u64 {
+        self.end - self.at as u64
+    }
 }
 
 impl Shift {
-    const fn insert(axis: Axis, at: u32, count: u32) -> Self {
+    #[cfg(test)]
+    fn insert(axis: Axis, at: u32, count: u32) -> Self {
+        Self::insert_many(axis, &[(at, count)])
+    }
+
+    #[cfg(test)]
+    fn remove(axis: Axis, at: u32, count: u32) -> Self {
+        Self::remove_many(axis, &[(at, count)])
+    }
+
+    /// Insertions at `points`, in any order; counts at one index add up.
+    fn insert_many(axis: Axis, points: &[(u32, u32)]) -> Self {
+        Self::new(axis, true, points)
+    }
+
+    /// Removals of `spans`, in any order; spans that overlap or touch merge.
+    fn remove_many(axis: Axis, spans: &[(u32, u32)]) -> Self {
+        Self::new(axis, false, spans)
+    }
+
+    fn new(axis: Axis, insert: bool, points: &[(u32, u32)]) -> Self {
+        let mut sorted: Vec<(u32, u64)> = points
+            .iter()
+            .filter(|&&(_, count)| count > 0)
+            .map(|&(at, count)| (at, u64::from(at) + u64::from(count)))
+            .collect();
+        sorted.sort_unstable();
+        let mut spans: Vec<Span> = Vec::with_capacity(sorted.len());
+        for (at, end) in sorted {
+            match spans.last_mut() {
+                // Insertions merge only at the same index; removals whenever
+                // they meet.
+                Some(last) if insert && last.at == at => last.end += end - u64::from(at),
+                Some(last) if !insert && u64::from(at) <= last.end => last.end = last.end.max(end),
+                _ => spans.push(Span { at, end, total: 0 }),
+            }
+        }
+        let mut total = 0;
+        for span in &mut spans {
+            total += span.count();
+            span.total = total;
+        }
         Self {
             axis,
-            at,
-            delta: count as i64,
+            insert,
+            spans,
         }
     }
 
-    const fn remove(axis: Axis, at: u32, count: u32) -> Self {
-        Self {
-            axis,
-            at,
-            delta: -(count as i64),
-        }
+    /// The last span starting at or before `i`.
+    fn span_at(&self, i: u32) -> Option<Span> {
+        let k = self.spans.partition_point(|s| s.at <= i);
+        k.checked_sub(1).and_then(|k| self.spans.get(k)).copied()
     }
 
-    /// The last index a removal takes with it.
-    fn last_removed(self) -> u32 {
-        let count = u32::try_from(self.delta.unsigned_abs()).unwrap_or(u32::MAX);
-        self.at.saturating_add(count).saturating_sub(1)
-    }
-
-    /// Whether a removal takes `i` with it.
-    fn removes(self, i: u32) -> bool {
-        self.delta < 0 && i >= self.at && i <= self.last_removed()
+    /// The removed span holding `i`, if the edit removes it.
+    fn removing(&self, i: u32) -> Option<Span> {
+        self.span_at(i)
+            .filter(|s| !self.insert && u64::from(i) < s.end)
     }
 
     /// The largest index this axis has.
-    const fn ceiling(self) -> u32 {
+    const fn ceiling(&self) -> u32 {
         match self.axis {
             Axis::Rows => MAX_ROW - 1,
             Axis::Columns => MAX_COL - 1,
@@ -241,14 +419,17 @@ impl Shift {
 
     /// Where index `i` ends up. `None` when the edit removes it, or when an
     /// insertion would push it off the sheet.
-    fn moved(self, i: u32) -> Option<u32> {
-        if self.removes(i) {
-            return None;
-        }
-        if i < self.at {
+    fn moved(&self, i: u32) -> Option<u32> {
+        let Some(span) = self.span_at(i) else {
             return Some(i);
-        }
-        let moved = i64::from(i) + self.delta;
+        };
+        let moved = if self.insert {
+            u64::from(i).checked_add(span.total)?
+        } else if u64::from(i) < span.end {
+            return None;
+        } else {
+            u64::from(i).checked_sub(span.total)?
+        };
         u32::try_from(moved).ok().filter(|&i| i <= self.ceiling())
     }
 
@@ -256,28 +437,31 @@ impl Shift {
     /// cell: a removal that swallows it pulls it onto the edit point instead
     /// of deleting it, which is how a range shrinks around a removal.
     ///
-    /// `start` says which edge it is: the leading one collapses onto the edit
-    /// point, the trailing one onto the row or column just before it.
-    fn moved_edge(self, i: u32, start: bool) -> Option<u32> {
-        if self.removes(i) {
-            return if start {
-                Some(self.at)
-            } else {
-                self.at.checked_sub(1)
-            };
-        }
-        self.moved(i)
+    /// `start` says which edge it is: the leading one collapses onto the
+    /// first index after the removed span, the trailing one onto the last
+    /// index before it.
+    fn moved_edge(&self, i: u32, start: bool) -> Option<u32> {
+        let Some(span) = self.removing(i) else {
+            return self.moved(i);
+        };
+        // Where the span's first index lands: less everything removed above.
+        let at = u64::from(span.at).checked_sub(span.total - span.count())?;
+        let at = u32::try_from(at).ok()?;
+        if start { Some(at) } else { at.checked_sub(1) }
     }
 
     /// Where a range ends up, narrowed if the edit took part of it. `None`
     /// when nothing of it is left.
-    fn range(self, r: Range) -> Option<Range> {
+    fn range(&self, r: Range) -> Option<Range> {
         let (start, end) = match self.axis {
             Axis::Rows => (r.start.row.index(), r.end.row.index()),
             Axis::Columns => (r.start.col.index(), r.end.col.index()),
         };
-        // A removal that covers the whole range leaves nothing to narrow.
-        if self.delta < 0 && start >= self.at && end <= self.last_removed() {
+        // A removal that covers the whole range leaves nothing to narrow;
+        // removed indexes in a row are always one span.
+        if let Some(span) = self.removing(start)
+            && u64::from(end) < span.end
+        {
             return None;
         }
         let (start, end) = (self.moved_edge(start, true)?, self.moved_edge(end, false)?);
@@ -296,30 +480,51 @@ impl Shift {
         })
     }
 
-    /// The index a cell reference carries on this axis.
-    const fn of(self, at: CellRef) -> u32 {
-        match self.axis {
-            Axis::Rows => at.row.index(),
-            Axis::Columns => at.col.index(),
+    /// Whether an insertion would push content off the sheet: a stored cell
+    /// (a blank one that only carries a style counts, as it does to Excel) or
+    /// a merged area, past the last row or column. Excel refuses such an edit
+    /// and so does this; what it cuts off without a word - row heights and
+    /// styles, column runs, drawings, which stay pinned to the edge - is not
+    /// asked about.
+    ///
+    /// Indexes only grow under an insertion, so the last occupied one decides
+    /// for the cells: no walk of them.
+    fn pushes_off(&self, sheet: &Worksheet) -> bool {
+        if !self.insert {
+            return false;
         }
+        let gone = |i: u32| self.moved(i).is_none();
+        let last = sheet.dimension().map(|d| match self.axis {
+            Axis::Rows => d.end.row.index(),
+            Axis::Columns => d.end.col.index(),
+        });
+        last.is_some_and(gone)
+            || sheet.merges.iter().any(|m| {
+                gone(match self.axis {
+                    Axis::Rows => m.end.row.index(),
+                    Axis::Columns => m.end.col.index(),
+                })
+            })
     }
 
-    /// `at` with its index on this axis replaced.
-    fn with(self, at: CellRef, i: u32) -> Option<CellRef> {
+    /// Where a cell ends up; `None` when the edit removes it.
+    fn cell(&self, at: CellRef) -> Option<CellRef> {
         Some(match self.axis {
-            Axis::Rows => CellRef::new(at.col, Row::new(i)?),
-            Axis::Columns => CellRef::new(Col::new(i)?, at.row),
+            Axis::Rows => CellRef::new(at.col, Row::new(self.moved(at.row.index())?)?),
+            Axis::Columns => CellRef::new(Col::new(self.moved(at.col.index())?)?, at.row),
         })
     }
 }
 
-/// Applies one grid edit to the whole workbook.
-fn apply(book: &mut Spreadsheet, sheet: usize, shift: Shift) -> Result<()> {
-    let title = book
+/// Applies a grid edit to the whole workbook.
+fn apply(book: &mut Spreadsheet, sheet: usize, shift: &Shift) -> Result<()> {
+    let target = book
         .sheet(sheet)
-        .ok_or(Error::SheetIndexOutOfRange(sheet))?
-        .title()
-        .to_owned();
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+    if shift.pushes_off(target) {
+        return Err(Error::WouldPushOffSheet);
+    }
+    let title = target.title().to_owned();
 
     // Formulas first, while the cells still sit where the formulas expect
     // them: every sheet may point at the edited one.
@@ -387,16 +592,9 @@ fn apply(book: &mut Spreadsheet, sheet: usize, shift: Shift) -> Result<()> {
 }
 
 /// Moves the cells themselves, dropping what the edit removed.
-fn move_cells(sheet: &mut Worksheet, shift: Shift) {
-    let moved: Vec<(CellRef, Option<CellRef>)> = sheet
-        .iter()
-        .map(|(at, _)| {
-            (
-                at,
-                shift.moved(shift.of(at)).and_then(|i| shift.with(at, i)),
-            )
-        })
-        .collect();
+fn move_cells(sheet: &mut Worksheet, shift: &Shift) {
+    let moved: Vec<(CellRef, Option<CellRef>)> =
+        sheet.iter().map(|(at, _)| (at, shift.cell(at))).collect();
     // Taken out first, so a cell never lands on one not yet moved.
     let mut carried = Vec::with_capacity(moved.len());
     for (from, to) in moved {
@@ -413,7 +611,7 @@ fn move_cells(sheet: &mut Worksheet, shift: Shift) {
 
 /// A filter after the edit, with the sort it carries; `None` when its range
 /// is gone.
-fn moved_filter(mut filter: AutoFilter, shift: Shift) -> Option<AutoFilter> {
+fn moved_filter(mut filter: AutoFilter, shift: &Shift) -> Option<AutoFilter> {
     filter.range = shift.range(filter.range)?;
     filter.sort_state = filter
         .sort_state
@@ -424,11 +622,11 @@ fn moved_filter(mut filter: AutoFilter, shift: Shift) -> Option<AutoFilter> {
 
 /// A sparkline is drawn in a cell and goes where the cell goes; one whose
 /// cell the edit removed goes with it, and so does a group left empty.
-fn move_sparklines(sheet: &mut Worksheet, shift: Shift) {
+fn move_sparklines(sheet: &mut Worksheet, shift: &Shift) {
     sheet.sparklines.retain_mut(|group| {
         group.sparklines.retain_mut(|line| {
             let at = line.location;
-            let Some(moved) = shift.moved(shift.of(at)).and_then(|i| shift.with(at, i)) else {
+            let Some(moved) = shift.cell(at) else {
                 return false;
             };
             line.location = moved;
@@ -439,7 +637,7 @@ fn move_sparklines(sheet: &mut Worksheet, shift: Shift) {
 }
 
 /// Moves everything on the sheet that names a row, a column or a range.
-fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
+fn move_furniture(sheet: &mut Worksheet, shift: &Shift) {
     sheet.merges = sheet
         .merges
         .iter()
@@ -485,10 +683,7 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
     // part, which `anchor` moves in the bytes.
     sheet.comments = std::mem::take(&mut sheet.comments)
         .into_iter()
-        .filter_map(|(at, note)| {
-            let moved = shift.moved(shift.of(at))?;
-            Some((shift.with(at, moved)?, note))
-        })
+        .filter_map(|(at, note)| Some((shift.cell(at)?, note)))
         .collect();
     // A table whose range is gone entirely goes with it, the way a filter
     // does; one that lost part of itself narrows. Its own filter sits on the
@@ -552,7 +747,7 @@ fn move_furniture(sheet: &mut Worksheet, shift: Shift) {
 }
 
 /// Moves the charts, pictures and shapes of the model with the grid.
-fn move_drawn_objects(sheet: &mut Worksheet, shift: Shift) {
+fn move_drawn_objects(sheet: &mut Worksheet, shift: &Shift) {
     // A chart's frame is anchored to cells like any drawing. The bytes of the
     // drawing were moved by `anchor`, so an untouched chart stays untouched.
     for chart in &mut sheet.charts {
@@ -590,7 +785,7 @@ fn move_drawn_objects(sheet: &mut Worksheet, shift: Shift) {
 ///
 /// `own` says whether the formula lives on the edited sheet, which is what an
 /// unqualified reference points at.
-fn adjust(formula: &str, shift: Shift, target: &str, own: bool) -> String {
+fn adjust(formula: &str, shift: &Shift, target: &str, own: bool) -> String {
     scan_references(formula, |qualifier, s| {
         let aims_at_target = qualifier.map_or(own, |q| q.eq_ignore_ascii_case(target));
         if !aims_at_target {
@@ -619,13 +814,10 @@ fn adjust(formula: &str, shift: Shift, target: &str, own: bool) -> String {
             return Some((len + 1 + second_len, text));
         }
         let at = CellRef::new(first.col, first.row);
-        let text = shift
-            .moved(shift.of(at))
-            .and_then(|i| shift.with(at, i))
-            .map_or_else(
-                || "#REF!".to_owned(),
-                |moved| first.render(moved.col, moved.row),
-            );
+        let text = shift.cell(at).map_or_else(
+            || "#REF!".to_owned(),
+            |moved| first.render(moved.col, moved.row),
+        );
         Some((len, text))
     })
 }

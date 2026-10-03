@@ -1,5 +1,6 @@
 //! Picking a reader for a file.
 
+use crate::coordinate::{CellRef, Row};
 use crate::error::{Error, Result};
 use crate::model::Spreadsheet;
 
@@ -127,7 +128,15 @@ pub fn read(path: impl AsRef<std::path::Path>) -> Result<Spreadsheet> {
     match format {
         Format::Xlsx => super::xlsx::read_xlsx(path),
         Format::Xlsb => super::xlsb::read_xlsb(path),
-        Format::Xls => super::xls::read_xls(path),
+        // An encrypted xlsx is a compound file too.
+        Format::Xls => {
+            let bytes = std::fs::read(path).map_err(|e| Error::Io(e.to_string()))?;
+            if super::encryption::is_encrypted(&bytes) {
+                read_bytes(&bytes, path.to_str())
+            } else {
+                super::xls::read_xls_from(&bytes)
+            }
+        }
         Format::Ods => super::ods::read_ods(path),
         Format::Csv => super::csv::read_csv(path),
         Format::Html => super::html::read_html(path),
@@ -181,6 +190,13 @@ pub fn read_bytes_limited_with(
     max_expanded: u64,
     options: &crate::progress::Options<'_>,
 ) -> Result<Spreadsheet> {
+    if super::encryption::is_encrypted(bytes) {
+        let password = options
+            .given_password()
+            .unwrap_or(super::encryption::DEFAULT_PASSWORD);
+        let plain = super::encryption::decrypt(bytes, password)?;
+        return read_bytes_limited_with(&plain, name, max_expanded, options);
+    }
     let path = name.map(std::path::Path::new);
     let format = Format::from_signature(bytes)
         .map(|format| {
@@ -197,9 +213,13 @@ pub fn read_bytes_limited_with(
         })
         .unwrap_or(Format::Csv);
 
-    match format {
+    let mut book = match format {
         Format::Xlsx => {
-            super::xlsx::read_xlsx_from_with(std::io::Cursor::new(bytes), max_expanded, options)
+            return super::xlsx::read_xlsx_from_with(
+                std::io::Cursor::new(bytes),
+                max_expanded,
+                options,
+            );
         }
         Format::Xlsb => {
             super::xlsb::read_xlsb_from_limited(std::io::Cursor::new(bytes), max_expanded)
@@ -221,6 +241,45 @@ pub fn read_bytes_limited_with(
         }
         Format::Gnumeric => super::gnumeric::read_gnumeric_from(bytes),
         Format::Xml2003 => super::xml2003::read_xml2003_str(&super::csv::decode(bytes)),
+    }?;
+    if let Some((sheet, sink)) = options.streamed() {
+        replay_rows(&mut book, sheet, sink);
+    }
+    Ok(book)
+}
+
+/// Hands a sheet read whole to a row sink, as the xlsx reader would have, and
+/// leaves it without cells, as the xlsx reader would have.
+///
+/// Nothing is saved - the grid was built before the first row went out - but a
+/// caller streaming a file of unknown format gets the same rows either way.
+fn replay_rows(book: &mut Spreadsheet, sheet: usize, sink: crate::progress::RowSink<'_>) {
+    let Some(full) = book.sheet(sheet) else {
+        return;
+    };
+    // The grid sits behind an `Arc`, so this copy shares it rather than
+    // duplicating it.
+    let mut rest = full.clone();
+    rest.clear_cells();
+    let rows: std::collections::BTreeSet<Row> = full
+        .iter()
+        .map(|(at, _)| at.row)
+        .chain(full.rows.keys().copied())
+        .collect();
+    for row in rows {
+        for (col, cell) in full.row_cells(row) {
+            *rest.entry(CellRef::new(col, row)) = cell.clone();
+        }
+        sink(&crate::progress::RowBatch {
+            row,
+            sheet: &rest,
+            styles: &book.styles,
+            epoch: book.epoch,
+        });
+        rest.clear_cells();
+    }
+    if let Some(slot) = book.sheet_mut(sheet) {
+        *slot = rest;
     }
 }
 

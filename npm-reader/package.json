@@ -3,7 +3,7 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "build": "../tools/build-npm-reader.sh",
+    "build": "../build-npm-reader.sh",
     "start": "node example.js",
     "test": "node --test"
   },

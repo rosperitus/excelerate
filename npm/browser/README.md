@@ -4,9 +4,9 @@ The browser build lands in `npm/pkg-web`, the Node build in `npm/pkg`. They are
 not interchangeable, which is why the folders differ:
 
 ```
-tools/build-npm.sh web        # -> npm/pkg-web
-tools/build-npm.sh            # -> npm/pkg, target nodejs
-tools/build-npm.sh bundler    # -> npm/pkg-bundler, for webpack and the like
+./build-npm.sh web        # -> npm/pkg-web
+./build-npm.sh            # -> npm/pkg, target nodejs
+./build-npm.sh bundler    # -> npm/pkg-bundler, for webpack and the like
 ```
 
 Opening `index.html` by double-clicking it will not work: over `file://` the

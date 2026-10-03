@@ -216,12 +216,11 @@ plot.series.push(Series {
 });
 plot.axis_ids = vec![1, 2];
 if let Some(sheet) = book.sheet_mut(0) {
-    sheet.charts.push(Chart {
-        name: "Revenue".into(),
-        plots: vec![plot],
-        axes: vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)],
-        ..Chart::default()
-    });
+    let mut chart = Chart::default();
+    chart.name = "Revenue".into();
+    chart.plots = vec![plot];
+    chart.axes = vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)];
+    sheet.charts.push(chart);
 }
 // Fill in the caches from the cells: one chart changed.
 assert_eq!(excelerate::formula::chart::refresh_caches(&mut book, None), 1);
@@ -315,16 +314,28 @@ stays in the drawing as written.
 ## Shapes
 
 `Worksheet::shapes` holds one `Shape` per `<xdr:sp>` in the sheet's drawing -
-boxes, arrows, callouts, text boxes: its name, alt text, anchor, preset outline
-(`geometry`, such as `rect` or `rightArrow`; `None` for a freeform one) and the
-text inside, a line per paragraph. Fill, line, effects and the formatting of the
-text stay in the drawing as written.
+boxes, arrows, callouts, text boxes: its name, alt text, anchor, turn
+(`rotation` in 60 000ths of a degree clockwise, `flip_h`, `flip_v`), preset
+outline (`geometry`, such as `rect` or `rightArrow`; `None` for a freeform one),
+fill and outline (`format`, the chart's `ShapeFormat`), the text inside, a line
+per paragraph, and the font of its first run (`font`, a `DiffFont`). Effects
+and the formatting of later runs stay in the drawing as written.
+
+A shape Excel draws usually states no colours of its own and takes them from
+its style: `format.fill` is `None` and the shape is filled with the theme's
+first accent. `effective_fill`, `effective_line` and `effective_font` give what
+Excel shows, the style applied; `Fill::None` is "not filled", and a theme colour
+becomes RGB through `ChartColor::resolve(book.theme.as_deref())`. A shape turned
+between 45 and 135 or 225 and 315 degrees is anchored by its frame turned a
+quarter: swap the anchor's width and height about its centre to get the frame.
 
 Writing works as it does for pictures. An untouched shape goes back byte for
-byte; a moved one gets a new anchor around the same element; a new outline is
-one attribute; new text replaces the paragraphs and keeps the first run's
-formatting, so it looks like the old. A shape removed from the list is removed
-from the drawing, and one built in code is added with Excel's default look.
+byte; a moved one gets a new anchor around the same element; a new outline or
+turn is attributes; a new fill or line replaces those children of `xdr:spPr`
+and keeps the rest; new text or a new font replaces the paragraphs and keeps
+the first run's other formatting, so it looks like the old. A shape removed
+from the list is removed from the drawing, and one built in code is added with
+Excel's default look and whatever `format`, `font` and turn it was given.
 
 ```rust
 # use excelerate::model::Spreadsheet;

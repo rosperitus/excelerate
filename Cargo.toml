@@ -1,7 +1,8 @@
 [package]
 name = "excelerate"
-version = "0.14.0"
+version = "0.15.0"
 edition = "2024"
+rust-version = "1.92"
 description = "Read, write and recalculate spreadsheets: xlsx, xls, ods, csv, html, and a 518-function formula engine"
 license = "MIT"
 repository = "https://github.com/rosperitus/excelerate"
@@ -12,7 +13,7 @@ keywords = ["xlsx", "spreadsheet", "excel", "ods", "formula"]
 categories = ["parser-implementations", "encoding", "wasm"]
 # The npm packages are built from this crate but are not part of it, and the
 # oracle is a Go module used to check our answers against another engine.
-exclude = ["npm/", "npm-reader/", "tools/", ".github/"]
+exclude = ["npm/", "npm-reader/", "tools/", ".github/", "build-npm.sh", "build-npm-reader.sh", "pack-npm.sh"]
 
 [features]
 default = ["formulas", "write"]
@@ -23,6 +24,9 @@ formulas = ["dep:regex"]
 write = []
 
 [dependencies]
+# Already in the tree under `zip`: the cipher of a workbook encrypted with a
+# password to open (`reader::encryption`).
+aes = "0.9"
 # Already in the tree under `zip`; naming it here is what lets the Gnumeric
 # reader gunzip its one XML part.
 flate2 = "1.1.9"

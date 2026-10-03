@@ -65,8 +65,10 @@ pub fn count(args: &[Arg]) -> Value {
                 Value::Number(_) => true,
                 Value::Blank | Value::Error(_) | Value::Array(_) | Value::Lambda(_) => false,
                 // Written into the formula, text and booleans count if they
-                // convert; read out of a cell they never do.
-                Value::Bool(_) | Value::Text(_) => !arg.reference && v.number().is_ok(),
+                // convert; read out of a cell or an array they never do.
+                Value::Bool(_) | Value::Text(_) => {
+                    !arg.reference && !matches!(arg.value, Value::Array(_)) && v.number().is_ok()
+                }
             };
             n += usize::from(counts);
         }

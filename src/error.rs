@@ -34,6 +34,12 @@ pub enum Error {
     #[error("no sheet at index {0}")]
     SheetIndexOutOfRange(usize),
 
+    /// An insertion would push cells that hold something, or a merged area,
+    /// past the last row or column of the sheet. Excel refuses the same
+    /// edit; nothing has been changed.
+    #[error("the insertion would push non-empty cells off the sheet")]
+    WouldPushOffSheet,
+
     /// A sheet name that breaks Excel's naming rules.
     #[error("invalid sheet name {0:?}")]
     InvalidSheetName(String),
@@ -61,6 +67,16 @@ pub enum Error {
     /// The ODS package is malformed, truncated, or not an ODS at all.
     #[error("ods: {0}")]
     Ods(String),
+
+    /// The workbook is encrypted in a way this crate does not read, or its
+    /// encryption descriptor is malformed.
+    #[error("encrypted: {0}")]
+    Encrypted(String),
+
+    /// The workbook is encrypted, and the password given (or none, and
+    /// Excel's read-only default) does not open it.
+    #[error("the password does not open this workbook")]
+    WrongPassword,
 
     /// The xls file is malformed, encrypted, or not an xls at all.
     #[error("xls: {0}")]

@@ -54,6 +54,29 @@ impl Progress<'_> {
     }
 }
 
+/// One row of a sheet, handed over as it is read.
+///
+/// A streaming read never holds more than this: the row is given to the sink
+/// and then dropped, so a sheet of half a million rows costs what one row
+/// costs. The styles and the epoch come along because a cell alone says
+/// nothing about how it is shown.
+#[non_exhaustive]
+pub struct RowBatch<'a> {
+    /// Which row this is.
+    pub row: crate::coordinate::Row,
+    /// The sheet being read. Its cells are this row's and no others; the rest
+    /// of it - merges, column runs, row properties - is whatever the part has
+    /// said so far.
+    pub sheet: &'a crate::model::Worksheet,
+    /// The workbook's styles, which is where a cell's `StyleId` points.
+    pub styles: &'a crate::style::StyleTable,
+    /// The date the workbook counts its serial numbers from.
+    pub epoch: crate::shared::date::Epoch,
+}
+
+/// Where the rows of a streamed sheet go.
+pub type RowSink<'a> = &'a dyn Fn(&RowBatch<'_>);
+
 /// What a caller lends to a long operation: somewhere to report, and functions
 /// the workbook may call.
 ///
@@ -79,6 +102,10 @@ impl Progress<'_> {
 pub struct Options<'a> {
     /// Where to report progress, if anywhere.
     progress: Option<&'a dyn Fn(Progress<'_>)>,
+    /// Which sheet to stream row by row, and where its rows go.
+    rows: Option<(usize, RowSink<'a>)>,
+    /// The password to open an encrypted workbook with.
+    password: Option<&'a str>,
     /// The caller's own functions, if any. Only a build with the formula
     /// engine has anywhere to put them.
     #[cfg(feature = "formulas")]
@@ -103,6 +130,52 @@ impl<'a> Options<'a> {
             progress: Some(report),
             ..self
         }
+    }
+
+    /// Streams sheet `sheet` to `sink` instead of building its grid.
+    ///
+    /// The sink is called once per row, and the row is dropped after it
+    /// returns, so what a read costs stops depending on how many rows the
+    /// sheet has. The sheet still comes back in the workbook with everything
+    /// but its cells; the other sheets are read whole. Only xlsx streams: the
+    /// other formats are read whole and their rows are then handed over the
+    /// same way, so the sink sees the same thing and only the saving is lost.
+    #[must_use]
+    pub fn streaming(self, sheet: usize, sink: RowSink<'a>) -> Self {
+        Self {
+            rows: Some((sheet, sink)),
+            ..self
+        }
+    }
+
+    /// Opens an encrypted workbook with `password`. Without one a read tries
+    /// the password Excel uses for a workbook encrypted only to be opened
+    /// read-only, and fails with [`crate::Error::WrongPassword`] otherwise.
+    #[must_use]
+    pub fn password(self, password: &'a str) -> Self {
+        Self {
+            password: Some(password),
+            ..self
+        }
+    }
+
+    /// The password given, if any.
+    #[must_use]
+    pub const fn given_password(&self) -> Option<&'a str> {
+        self.password
+    }
+
+    /// The sheet being streamed and its sink, if any.
+    #[must_use]
+    pub fn streamed(&self) -> Option<(usize, RowSink<'a>)> {
+        self.rows
+    }
+
+    /// The sink for `sheet`, when that is the sheet being streamed.
+    #[must_use]
+    pub fn row_sink(&self, sheet: usize) -> Option<RowSink<'a>> {
+        self.rows
+            .and_then(|(wanted, sink)| (wanted == sheet).then_some(sink))
     }
 
     /// Lends the operation these functions.
@@ -139,6 +212,7 @@ impl std::fmt::Debug for Options<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Options")
             .field("reporting", &self.progress.is_some())
+            .field("streaming", &self.rows.map(|(sheet, _)| sheet))
             .finish()
     }
 }

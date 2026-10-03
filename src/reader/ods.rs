@@ -14,7 +14,7 @@
 //!   style, and for dates and times the file gives no format at all. A reader
 //!   guesses one from the shape of the displayed text, and so does this.
 //! * Formulas are in `OpenDocument` notation - see
-//!   [`crate::shared::odf_formula`].
+//!   `shared::odf_formula`.
 //! * An array formula says how far it reaches on the cell that holds it
 //!   (`table:number-matrix-columns-spanned`), which is where xlsx puts a
 //!   `ref` and BIFF an `ARRAY` record.

@@ -1703,7 +1703,7 @@ fn sparklines_survive_beside_the_extensions_they_share_a_list_with() {
     let mut none = once;
     none.sheet_mut(0).unwrap().sparklines.clear();
     let twice = cycle(&none);
-    assert!(twice.sheets()[0].sparklines.is_empty());
+    assert_eq!(twice.sheets()[0].sparklines, []);
     assert_eq!(
         twice.sheets()[0].extensions.as_deref(),
         Some(format!("<extLst>{other}</extLst>").as_str())

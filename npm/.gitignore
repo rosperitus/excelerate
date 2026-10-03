@@ -1,4 +1,4 @@
-# Build output: tools/build-npm.sh writes pkg*/, tools/pack-npm.sh pkg-publish/.
+# Build output: build-npm.sh writes pkg*/, pack-npm.sh pkg-publish/.
 pkg/
 pkg-web/
 pkg-bundler/

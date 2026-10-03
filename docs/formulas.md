@@ -5,6 +5,10 @@ statistics, distributions, regression, text, dates, financial, lookup, logic,
 information, database, engineering and web categories, `LAMBDA` and its kin,
 `GROUPBY` and `PIVOTBY`, `GETPIVOTDATA`, and the regular expressions (`REGEXTEST`,
 `REGEXEXTRACT`, `REGEXREPLACE`, which have no lookaround or backreferences).
+Ten more come from a 2026 specification ([Excel_2026.md](Excel_2026.md)):
+`FLATTEN`, `HAS`, `HASANY` and `HASALL` from Microsoft's Beta Channel, and
+`FILLDOWN`, `PARSEJSON`, `ROLLING`, `BINS`, `TABLEJOIN`, `FUZZYLOOKUP`, which
+Excel does not have.
 
 ## Recalculating a workbook
 

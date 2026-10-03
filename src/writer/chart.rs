@@ -16,7 +16,7 @@ use super::xlsx::relative_target;
 use super::xmlesc::escape;
 use crate::error::{Error, Result};
 use crate::model::chart::{Anchor, ChartText, DataSource, Marker, Plot, PlotKind, Series, Title};
-use crate::model::chart::{BarDirection, Chart, ChartAxis};
+use crate::model::chart::{BarDirection, Chart, ChartAxis, ManualLayout};
 use crate::model::chart::{
     ChartColor, ColorBase, DataLabel, DataLabels, DataPoint, Fill, GradientPath, GradientStop,
     LabelPosition, LineFormat, SeriesMarker, ShapeFormat, UpDownBars,
@@ -543,15 +543,46 @@ pub(crate) fn render_chart(chart: &Chart) -> String {
     for axis in &chart.axes {
         w.axis(axis, fresh);
     }
-    w.s.push_str(&m.after_axes);
+    // The plot area's `spPr` sits after a data table and before the
+    // extension list, both of which the carried markup may hold.
+    let tail = m
+        .after_axes
+        .find(&format!("<{}extLst", w.p))
+        .unwrap_or(m.after_axes.len());
+    w.s.push_str(&m.after_axes[..tail]);
+    if let Some(format) = &chart.plot_format {
+        w.s.push_str(&shape_format(&w.p, format));
+    }
+    w.s.push_str(&m.after_axes[tail..]);
     w.close("plotArea");
     if let Some(legend) = &chart.legend {
         w.open("legend");
         w.empty("legendPos", Some(legend.position.as_str()));
-        if fresh && legend.markup.is_empty() {
+        let markup = if legend.layout.is_some() {
+            without_layout(&legend.markup, &w.p)
+        } else {
+            legend.markup.clone()
+        };
+        // The layout goes after the hidden entries and before the rest.
+        let (open, close) = (
+            format!("<{}legendEntry", w.p),
+            format!("</{}legendEntry>", w.p),
+        );
+        let mut entries = 0;
+        while markup[entries..].starts_with(&open) {
+            let Some(end) = markup[entries..].find(&close) else {
+                break;
+            };
+            entries += end + close.len();
+        }
+        w.s.push_str(&markup[..entries]);
+        if let Some(layout) = &legend.layout {
+            w.manual_layout(layout);
+        }
+        if fresh && markup.is_empty() {
             w.empty("overlay", Some("0"));
         }
-        w.s.push_str(&legend.markup);
+        w.s.push_str(&markup[entries..]);
         w.close("legend");
     }
     if fresh && m.after_legend.is_empty() {
@@ -559,9 +590,27 @@ pub(crate) fn render_chart(chart: &Chart) -> String {
     }
     w.s.push_str(&m.after_legend);
     w.close("chart");
+    // `spPr` is the first child after `c:chart`.
+    if let Some(format) = &chart.format {
+        w.s.push_str(&shape_format(&w.p, format));
+    }
     w.s.push_str(&m.after_chart);
     w.close("chartSpace");
     w.s
+}
+
+/// Carried markup without its `c:layout`, which a layout set by hand
+/// replaces.
+fn without_layout(markup: &str, p: &str) -> String {
+    let empty = format!("<{p}layout/>");
+    let (open, close) = (format!("<{p}layout>"), format!("</{p}layout>"));
+    if let Some(at) = markup.find(&empty) {
+        return [&markup[..at], &markup[at + empty.len()..]].concat();
+    }
+    match (markup.find(&open), markup.find(&close)) {
+        (Some(a), Some(b)) if a < b => [&markup[..a], &markup[b + close.len()..]].concat(),
+        _ => markup.to_owned(),
+    }
 }
 
 /// The text being built, and the prefix chart elements take in it.
@@ -571,6 +620,25 @@ struct Out {
 }
 
 impl Out {
+    /// `<c:layout>` placing the element by edges.
+    fn manual_layout(&mut self, layout: &ManualLayout) {
+        self.open("layout");
+        self.open("manualLayout");
+        self.empty("xMode", Some("edge"));
+        self.empty("yMode", Some("edge"));
+        let share = |v: i32| (f64::from(v) / 100_000.0).to_string();
+        self.empty("x", Some(&share(layout.x)));
+        self.empty("y", Some(&share(layout.y)));
+        if let Some(v) = layout.w {
+            self.empty("w", Some(&share(v)));
+        }
+        if let Some(v) = layout.h {
+            self.empty("h", Some(&share(v)));
+        }
+        self.close("manualLayout");
+        self.close("layout");
+    }
+
     fn open(&mut self, name: &str) {
         let _ = write!(self.s, "<{}{name}>", self.p);
     }
@@ -612,10 +680,17 @@ impl Out {
             }
             self.close("tx");
         }
-        if fresh && title.markup.is_empty() {
+        let markup = match &title.layout {
+            Some(layout) => {
+                self.manual_layout(layout);
+                without_layout(&title.markup, &self.p)
+            }
+            None => title.markup.clone(),
+        };
+        if fresh && markup.is_empty() {
             self.empty("overlay", Some("0"));
         }
-        self.s.push_str(&title.markup);
+        self.s.push_str(&markup);
         self.close("title");
     }
 
@@ -989,7 +1064,7 @@ fn element(xml: &str) -> Option<Node<'_>> {
 /// `order` are replaced by the text given (dropped when it is empty), those in
 /// slots `drop` accepts go, and everything else stays as it was. `tag`
 /// replaces the start tag.
-fn rebuild(
+pub(super) fn rebuild(
     node: &Node<'_>,
     order: &[&[&str]],
     owned: &[(usize, String)],
@@ -1035,7 +1110,7 @@ fn rebuild(
 }
 
 /// A start tag with one attribute set to `value`, or removed.
-fn set_attr(tag: &str, name: &str, value: Option<String>) -> String {
+pub(super) fn set_attr(tag: &str, name: &str, value: Option<String>) -> String {
     let body = tag.trim_end_matches('>').trim_end_matches('/').trim_end();
     let body = match tag_attr(body, name) {
         Some(old) => {
@@ -1070,7 +1145,7 @@ fn color_xml(color: &ChartColor) -> String {
 }
 
 /// A fill made from the model, declaring the namespace it is written in.
-fn fill_xml(fill: &Fill) -> String {
+pub(super) fn fill_xml(fill: &Fill) -> String {
     match fill {
         Fill::None => format!(r#"<a:noFill xmlns:a="{MAIN_NS}"/>"#),
         Fill::Solid(color) => format!(
@@ -1200,7 +1275,7 @@ fn line_xml(line: &LineFormat, read: Option<&Node<'_>>) -> String {
 }
 
 /// `c:spPr` for a series or a point; `p` is the chart namespace prefix.
-fn shape_format(p: &str, format: &ShapeFormat) -> String {
+pub(super) fn shape_format(p: &str, format: &ShapeFormat) -> String {
     let read = format.source.as_deref().and_then(element);
     let Some(node) = read else {
         return format!(

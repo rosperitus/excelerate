@@ -31,6 +31,32 @@ assert_eq!(format_of("tests/fixtures/sample.xlsx")?, Format::Xlsx);
 # Ok::<(), excelerate::Error>(())
 ```
 
+## Encrypted workbooks
+
+A workbook saved with a password to open is not a zip but a compound file
+holding the encrypted package. `read_bytes` and `read` recognise it and
+decrypt the agile encryption of Excel 2010 and later, for xlsx, xlsm and xlsb
+alike. The password goes in `Options`; without one, the reader tries the
+password Excel uses for a workbook encrypted only to be opened read-only.
+
+```rust
+use excelerate::Error;
+use excelerate::progress::Options;
+use excelerate::reader::detect::{read_bytes, read_bytes_limited_with};
+use excelerate::reader::xlsx::MAX_UNCOMPRESSED_SIZE;
+
+let bytes = std::fs::read("tests/fixtures/encrypted.xlsx")?;
+assert_eq!(read_bytes(&bytes, None).unwrap_err(), Error::WrongPassword);
+
+let options = Options::new().password("пароль");
+let book = read_bytes_limited_with(&bytes, None, MAX_UNCOMPRESSED_SIZE, &options)?;
+assert_eq!(book.sheets().len(), 2);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+The standard encryption of Excel 2007 and the RC4 of xls are refused with
+`Error::Encrypted`. Writing never encrypts.
+
 ## xlsx - the full-fat one
 
 Read *and* written: values, types, formulas (shared ones are expanded), shared

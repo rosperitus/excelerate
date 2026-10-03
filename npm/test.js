@@ -417,6 +417,29 @@ test("inserting and removing rows moves the formulas with them", () => {
   assert.strictEqual(book.get(0, "A1"), 1);
 });
 
+test("batch edits take places as the sheet was before the call", () => {
+  const book = new Book();
+  for (let r = 1; r <= 6; r++) book.set(0, `A${r}`, r);
+  book.set(0, "B1", "=SUM(A1:A6)");
+
+  book.insertRowsMany(0, [[5, 1], [3, 2]]);
+  assert.deepStrictEqual(
+    [3, 4, 5, 6, 7, 8, 9].map((r) => book.get(0, `A${r}`)),
+    [null, null, 3, 4, null, 5, 6],
+  );
+  assert.strictEqual(book.getFormula(0, "B1"), "SUM(A1:A9)");
+
+  book.removeRowsMany(0, [[7, 1], [3, 2]]);
+  assert.strictEqual(book.getFormula(0, "B1"), "SUM(A1:A6)");
+  assert.strictEqual(book.get(0, "A6"), 6);
+
+  book.insertColumnsMany(0, [[1, 1]], "none");
+  assert.strictEqual(book.getFormula(0, "C1"), "SUM(B1:B6)");
+  book.removeColumnsMany(0, [[1, 1]]);
+  assert.strictEqual(book.get(0, "A1"), 1);
+  assert.throws(() => book.insertRowsMany(0, [[1]]));
+});
+
 test("a removed sheet leaves #REF! behind", () => {
   const book = new Book();
   const second = book.addSheet("Данные");
@@ -468,11 +491,131 @@ test("pictures, shapes and charts", () => {
   const shapes = Book.read(fixture("shapes.xlsx"), "shapes.xlsx").shapes(0);
   assert.ok(shapes.length > 0);
   assert.strictEqual(typeof shapes[0].text, "string");
+  // A text box from excelize: no fill of its own and a style that adds none,
+  // a bold white first run.
+  assert.deepStrictEqual(shapes[0].fill, { type: "none" });
+  assert.strictEqual(shapes[0].rotation, 0);
+  assert.strictEqual(shapes[0].flipH, false);
+  assert.strictEqual(shapes[0].font.bold, true);
+  assert.strictEqual(shapes[0].font.color, "#FFFFFFFF");
 
   const charts = Book.read(fixture("chart.xlsx"), "chart.xlsx").charts(0);
   assert.ok(charts.length > 0);
   assert.ok(charts[0].kinds.every((k) => k.endsWith("Chart")));
   assert.ok(charts[0].seriesCount >= 1);
+  assert.deepStrictEqual(charts[0].format.fill, { type: "solid", color: "#FFFFFFFF" });
+  assert.strictEqual(charts[0].plotFormat, null);
+});
+
+test("a shape's and a chart's look survive a write", () => {
+  const book = Book.read(fixture("shapes.xlsx"), "shapes.xlsx");
+  book.setShapeFormat(0, 0, {
+    fill: { type: "solid", color: "accent2" },
+    line: { fill: { type: "solid", color: "#80112233" }, width: 2.5 },
+    font: { size: 14, italic: true, color: "#FF0000FF" },
+    rotation: -90,
+    flipH: true,
+  });
+  book.setShapeFormat(0, 1, {
+    fill: { type: "gradient", stops: [{ position: 0, color: "#FF0000" }, { position: 100, color: "bg1" }], angle: 90 },
+  });
+  const shapes = Book.read(book.toXlsx(), "out.xlsx").shapes(0);
+  // accent2 of Office's theme, which excelize's file carries.
+  assert.deepStrictEqual(shapes[0].fill, { type: "solid", color: "#FFED7D31" });
+  assert.deepStrictEqual(shapes[0].line, { fill: { type: "solid", color: "#80112233" }, width: 2.5 });
+  assert.strictEqual(shapes[0].rotation, 270);
+  assert.strictEqual(shapes[0].flipH, true);
+  assert.strictEqual(shapes[0].font.size, 14);
+  assert.strictEqual(shapes[0].font.italic, true);
+  assert.strictEqual(shapes[0].font.bold, true, "a field the patch left out stays");
+  assert.strictEqual(shapes[0].font.color, "#FF0000FF");
+  assert.strictEqual(shapes[0].text, "Итого за квартал");
+  assert.deepStrictEqual(shapes[1].fill, {
+    type: "gradient",
+    stops: [{ position: 0, color: "#FFFF0000" }, { position: 100, color: "#FFFFFFFF" }],
+    angle: 90,
+    path: null,
+  });
+  assert.throws(() => book.setShapeFormat(0, 0, { fill: { type: "solid", color: "accent9" } }), /theme colour/);
+  assert.throws(() => book.setShapeFormat(0, 99, {}), /no such shape/);
+
+  const charts = Book.read(fixture("chart.xlsx"), "chart.xlsx");
+  charts.setChartFormat(0, 0, { format: { fill: { type: "none" } }, plotFormat: { fill: { type: "solid", color: "#EEEEEE" } } });
+  const chart = Book.read(charts.toXlsx(), "out.xlsx").charts(0)[0];
+  assert.deepStrictEqual(chart.format.fill, { type: "none" });
+  assert.deepStrictEqual(chart.plotFormat, { fill: { type: "solid", color: "#FFEEEEEE" }, line: null });
+});
+
+test("objects chain: a table from data, a filter, the rows it leaves", () => {
+  const { Workbook } = require("excelerate");
+  const wb = new Workbook();
+  const sales = wb
+    .addSheet("Продажи")
+    .addTableFromData("Sales", "B2", [
+      ["Регион", "Сумма"],
+      ["Север", 120],
+      ["Юг", 340],
+      ["Юг", 95],
+      ["Запад", 210],
+    ])
+    .set(4, "Сумма", 220)
+    .addFilter("Регион", { values: ["юг", "Запад"] })
+    .addFilter(2, { custom: [{ op: ">", value: 100 }] });
+
+  assert.deepStrictEqual(wb.book.sheetNames(), ["Продажи"], "the first addSheet takes the spare sheet");
+  assert.strictEqual(sales.range().address, "B2:C6");
+  assert.deepStrictEqual(sales.records({ visible: true }), [
+    { Регион: "Юг", Сумма: 340 },
+    { Регион: "Запад", Сумма: 220 },
+  ]);
+  assert.strictEqual(sales.records().length, 4);
+
+  // The criteria and the hidden rows are in the file, not only in memory.
+  const back = Workbook.read(wb.toXlsx(), "out.xlsx").sheet("Продажи").table("Sales");
+  assert.deepStrictEqual(back.range().visibleValues(), [["Регион", "Сумма"], ["Юг", 340], ["Запад", 220]]);
+
+  sales.clearFilter();
+  assert.strictEqual(sales.records({ visible: true }).length, 4);
+  sales.addFilter("Сумма", { bottom: 1 });
+  assert.deepStrictEqual(sales.records({ visible: true }), [{ Регион: "Юг", Сумма: 95 }]);
+  assert.throws(() => sales.addFilter("Нет", { top: 1 }), /no column/);
+  assert.throws(() => wb.sheet("Нет"), /no sheet/);
+
+  // A second sheet is added, not taken over.
+  assert.strictEqual(wb.addSheet("Итоги").index, 1);
+});
+
+test("Sheet and Workbook carry every Book method, chaining what returns nothing", () => {
+  const { Workbook, Sheet } = require("excelerate");
+  // Every Book method that takes the sheet first, from the declarations.
+  const dts = fs.readFileSync(require.resolve("excelerate/excelerate.d.ts"), "utf8");
+  const body = dts.slice(dts.indexOf("export class Book"));
+  const methods = [...body.slice(0, body.indexOf("\n}\n")).matchAll(/^ {4}(static )?(\w+)\((\w*)/gm)];
+  const ownWay = new Set(["renameSheet", "removeSheet", "setActiveSheet", "recalculate", "addTable", "tables", "addSheet", "free", "toXlsx"]);
+  for (const [, isStatic, name, first] of methods) {
+    if (ownWay.has(name)) continue;
+    const owner = isStatic ? Workbook : first === "sheet" ? Sheet.prototype : Workbook.prototype;
+    assert.strictEqual(typeof owner[name], "function", `${first === "sheet" ? "Sheet" : "Workbook"} lacks ${name}`);
+  }
+
+  const wb = new Workbook();
+  const sheet = wb.addSheet("Data")
+    .setRange("A1", [["x", "y"], [1, 2], [3, 4]])
+    .set("C2", "=A2+B2")
+    .setColumnWidth(1, 20)
+    .setRowHidden(3, true)
+    .setCellStyle("A1", { font: { bold: true } })
+    .merge("A5:B5")
+    .setComment("A1", "me", "header");
+  assert.strictEqual(sheet.recalculate().get("C2"), 3);
+  assert.strictEqual(sheet.columnWidth(1), 20);
+  assert.strictEqual(sheet.rowHidden(3), true);
+  assert.strictEqual(sheet.cellBold("A1"), true);
+  assert.deepStrictEqual(sheet.mergedRanges(), ["A5:B5"]);
+  assert.strictEqual(sheet.unmerge("A5:B5"), true, "a query returns its answer, not the sheet");
+  assert.strictEqual(wb.setDefinedName("Total", "Data!$C$2").definedNames()[0].name, "Total");
+  assert.strictEqual(wb.addSheet("Two").activate().workbook.activeSheet(), 1);
+  assert.strictEqual(wb.sheet("Two").remove().sheetNames().length, 1);
 });
 
 test("column widths, row heights and a hidden sheet survive a round trip", () => {

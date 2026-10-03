@@ -11,7 +11,11 @@ npm install @rosperitus/excelerate
 
 TypeScript declarations ship with the package. Only need to read? The
 `@rosperitus/excelerate-reader` package has the reading half of the API in a
-wasm file of 1.0 MB instead of 2.3 MB.
+wasm file of 1.4 MB instead of 3.9 MB (0.6 MB against 1.5 MB gzipped).
+
+The examples use `import`: a project needs `"type": "module"` in its
+`package.json` for that (`npm init -y` writes `"commonjs"`), or `require`
+works the same - `const { Book } = require("@rosperitus/excelerate")`.
 
 ## Quick start
 
@@ -63,9 +67,100 @@ writeFileSync("report.xlsx", book.toXlsx());
 Continue a series the way the fill handle does:
 
 ```ts
+import { Book } from "@rosperitus/excelerate";
+
+const book = new Book();
 book.setRange(0, "F1", [["Jan", "Кв1", 1], [null, null, 3]]);
 book.fillSeries(0, "F1:H6", "down");   // Feb..Jun, Кв2..Кв6, 5, 7, 9, 11
 ```
+
+## In the browser
+
+The package carries a second build for browsers and bundlers (Vite, webpack,
+esbuild), and the same import picks it there. The one difference from Node:
+the module has to be started first, which fetches the `.wasm`:
+
+```ts
+import init, { Book } from "@rosperitus/excelerate";
+
+await init();
+const file = document.querySelector("input[type=file]") as HTMLInputElement;
+const book = Book.read(new Uint8Array(await file.files![0].arrayBuffer()));
+const blob = new Blob([book.toXlsx()]);
+```
+
+The `.wasm` is fetched from beside the module, so the server should send it as
+`application/wasm`; then the browser compiles it as it streams. Without a
+bundler, an import map pointing at `@rosperitus/excelerate/web/index.js` does
+the same. `@rosperitus/excelerate/web` names the browser build explicitly,
+which also runs in Node given the bytes: `await init({ module_or_path: bytes })`.
+
+## Objects and chains
+
+`Book` is one flat class addressed by sheet index. Over it sit `Workbook`,
+`Sheet`, `Table` and `SheetRange`: a workbook hands out sheets, a sheet hands
+out tables and ranges, and every call that changes something returns its
+object, so calls chain.
+
+```ts
+import { Workbook } from "@rosperitus/excelerate";
+import { writeFileSync } from "node:fs";
+
+const wb = new Workbook();
+const sales = wb
+  .addSheet("Sales")                       // a new workbook's first sheet, renamed
+  .addTableFromData("Sales", "A1", [
+    ["Region", "Manager", "Amount"],
+    ["North", "Ivanov", 120],
+    ["South", "Petrov", 340],
+    ["West", "Kozlov", 210],
+    ["South", "Smirnov", 95],
+  ])
+  .set(1, "Amount", 125)                   // data row 1, by header
+  .addFilter("Region", { values: ["South", "West"] })
+  .addFilter("Amount", { custom: [{ op: ">", value: 100 }] });
+
+sales.records({ visible: true });          // [{ Region: "South", Manager: "Petrov", Amount: 340 }, ...]
+sales.range().visibleValues();             // the same with the header, as a grid
+sales.sheet.style("A1:C1", { font: { bold: true } }).width("B", 14);
+writeFileSync("sales.xlsx", wb.toXlsx());
+```
+
+A filter is Excel's own: the criteria go into the table's `<autoFilter>`, and
+the rows they reject are hidden in the file, so Excel opens it already
+filtered. Criteria on several columns all have to hold. `{ values }` keeps
+the rows whose cell shows one of them (`blank: true` adds the empty ones),
+`{ custom }` takes one or two comparisons (`=`, `<>`, `>`, `>=`, `<`, `<=`;
+`*` and `?` in `=` and `<>`; `and: true` to need both), `{ top: n }` and
+`{ bottom: n }` the extremes, `percent: true` for a share. `clearFilter()`
+takes them off.
+
+Every `Book` method that takes the sheet first is a `Sheet` method without
+it, and every one that takes no sheet a `Workbook` method: what `Book`
+answers with nothing returns the object, so it chains, and the rest return
+their answer. So the whole flat API is there:
+
+```ts
+const sheet = wb.sheet("Sales")
+  .setColumnWidth(2, 14)
+  .setRowHidden(5, true)
+  .insertRows(8, 2)
+  .setCellStyle("A1", { font: { bold: true } });
+sheet.getRange("A1:C3");                 // a query answers: CellGrid
+sheet.columnWidth(2);                    // 14
+wb.setDefinedName("Total", "Sales!$C$9").definedNames();
+```
+
+On top of that a few have their own shape: `write`, `range`, `style`,
+`width`, `freeze`, `addTable`, `addTableFromData`, `table`, `rename`,
+`activate`, `recalculate` and `remove` on a sheet; `sheet`, `addSheet` and
+`Workbook.readCsv` on the workbook.
+
+The objects are handles - a sheet index, a table name, an address - and work
+through `workbook.book`. A
+sheet removed or moved through the `Book` moves the indexes under them, as it
+does for any index. `Workbook.read(bytes)` opens a file; `Book` and its flat
+API are unchanged.
 
 ## API
 
@@ -146,6 +241,11 @@ class Book {
   removeRows(sheet: number, at: number, count: number): void;
   insertColumns(sheet: number, at: number, count: number, copyOrigin?: CopyOrigin): void;  // 1-based
   removeColumns(sheet: number, at: number, count: number): void;
+  // Many places in one pass: [at, count] pairs, numbered as before the call
+  insertRowsMany(sheet: number, places: [number, number][], copyOrigin?: CopyOrigin): void;
+  removeRowsMany(sheet: number, places: [number, number][]): void;
+  insertColumnsMany(sheet: number, places: [number, number][], copyOrigin?: CopyOrigin): void;
+  removeColumnsMany(sheet: number, places: [number, number][]): void;
   copyRange(sheet: number, range: string, to: string, toSheet?: number): void;   // formulas rewritten
   moveRange(sheet: number, range: string, to: string, toSheet?: number): void;   // formulas kept, references follow
   insertCells(sheet: number, range: string, shift: "down" | "right", copyOrigin?: CopyOrigin): void;
@@ -163,10 +263,12 @@ class Book {
   comments(sheet: number): SheetComment[];
   hyperlinks(sheet: number): SheetHyperlink[];
   tables(sheet: number): SheetTable[];
-  charts(sheet: number): SheetChart[];
+  charts(sheet: number): SheetChart[];          // with the chart and plot area fill and outline
   images(sheet: number): SheetImage[];          // without the bytes
   imageData(sheet: number, index: number): Uint8Array;
-  shapes(sheet: number): SheetShape[];
+  shapes(sheet: number): SheetShape[];          // rotation, flips, fill, line, font as Excel shows them
+  setShapeFormat(sheet: number, index: number, patch: ShapeFormatPatch): void;   // fill, line, font, rotation, flips
+  setChartFormat(sheet: number, index: number, patch: ChartFormatPatch): void;   // chart and plot area fill and outline
 
   // Style: read whole, written as a patch over what the cell has
   cellStyle(sheet: number, address: string): CellStyle;   // numberFormat, font, fill, borders, alignment
@@ -175,7 +277,9 @@ class Book {
   setCellStyleAt(sheet: number, row: number, column: number, patch: CellStylePatch): void;
   setRangeStyle(sheet: number, range: string, patch: CellStylePatch): void;
   getRichText(sheet: number, address: string): TextRun[] | null;   // [{ text, font }]
+  getRichTextAt(sheet: number, row: number, column: number): TextRun[] | null;
   setRichText(sheet: number, address: string, runs: TextRun[]): void;
+  setRichTextAt(sheet: number, row: number, column: number, runs: TextRun[]): void;
 
   // Notes, links, tables
   setComment(sheet: number, address: string, author: string, text: string): void;
@@ -184,6 +288,7 @@ class Book {
   removeHyperlink(sheet: number, range: string): boolean;
   addTable(sheet: number, name: string, range: string, headerRow?: boolean): void;
   removeTable(sheet: number, name: string): boolean;
+  setTableFilter(name: string, column: string | number, criteria: TableFilter | null): void;  // hides the rows that fail
 
   // The saved view
   sheetView(sheet: number): SheetViewInfo;
@@ -195,6 +300,10 @@ class Book {
   definedNames(): WorkbookName[];
   setDefinedName(name: string, formula: string, sheet?: number): void;
   removeDefinedName(name: string, sheet?: number): boolean;
+
+  // File > Info: title, author, company, and fields of your own
+  documentProperties(): DocumentProperties;
+  setDocumentProperties(patch: DocumentPropertiesPatch): void;  // null clears a field
 
   // Rules a file states
   dataValidations(sheet: number): SheetValidation[];
@@ -261,6 +370,14 @@ missing sheet, a truncated package.
   workbook, not one sheet: `$A$5` becomes `$A$6`, a range that lost cells
   narrows, a deleted cell reads `#REF!`, and drawings and tables follow. The
   cached result of a rewritten formula is dropped, so recalculate after.
+  An insert that would push a filled cell or a merge off the last row or
+  column throws and leaves the book as it was, as Excel refuses it.
+- **Many rows at once.** Every edit walks the whole workbook, so a loop of
+  `insertRows` costs a walk per row. `insertRowsMany(0, [[5, 1], [9, 1],
+  [14, 1]])` does it in one: places are numbered as the sheet was before the
+  call, in any order. Subtotal rows under 4 000 groups of 40 000 rows took
+  73 s one at a time and take 29 ms this way. `removeRowsMany` and the column
+  pair work the same.
 - **Style is a patch.** `setCellStyle(0, "A1", { font: { bold: true } })` keeps
   the number format the cell had. Equal styles share one entry in the
   workbook's table, so painting a column costs one style, not one per cell -
@@ -280,9 +397,18 @@ missing sheet, a truncated package.
 - **Read and write formatting by the block.** `getRangeStyles` returns each
   distinct style once and a grid of indexes into them; `setRangeStyles` takes
   the same shape back, so copying a block's look is two calls.
-- **Charts, pictures and shapes are read-only here.** `charts`, `images` and
-  `shapes` describe what a sheet carries; the parts themselves travel through
-  a write byte for byte.
+- **Charts, pictures and shapes travel byte for byte; their look is a patch.**
+  `charts`, `images` and `shapes` describe what a sheet carries, and an
+  untouched object goes back into the file as it came. A shape's `fill`,
+  `line` and `font` are what Excel shows, its style filling in what the shape
+  leaves out, and a colour comes resolved through the theme:
+  `{ type: "solid", color: "#FF4472C4" }`. `setShapeFormat(0, 2, { fill: {
+  type: "solid", color: "accent2" }, line: { width: 2 }, rotation: 15 })`
+  changes only what it names - `null` gives a fill or line back to the style -
+  and only those elements are rewritten; effects, other runs and dashes stay.
+  A colour to write is `#RRGGBB`, `#AARRGGBB` or a theme name (`accent1`,
+  `tx1`, `bg2`) that follows the theme. `setChartFormat` does the same for a
+  chart's chart area (`format`) and plot area (`plotFormat`).
 - **Functions of your own.** `book.registerFunction("MYTOTAL", (range) =>
   range.flat().reduce((a, b) => a + (b ?? 0), 0))` - arguments arrive
   evaluated, a range as a grid. A built-in name stays the built-in's, an
@@ -318,19 +444,19 @@ This folder is both the published package's readme and the workspace that
 builds and exercises it.
 
 ```
-../tools/build-npm.sh          # wasm-pack --release --target nodejs -> npm/pkg
+../build-npm.sh                # wasm-pack --release --target nodejs -> npm/pkg
 npm install && npm test        # tests against the freshly built package
 npm start                      # example.js: build a book, calculate, round-trip
 npm run ts                     # typescript/basic.ts, no build step
 npm run typecheck              # tsc --strict over the TypeScript examples
 npm run bench [iterations]     # parse timings, median and best
-../tools/pack-npm.sh           # pkg -> pkg-publish, then: cd pkg-publish && npm publish --otp=...
+../pack-npm.sh                 # pkg -> pkg-publish, then: cd pkg-publish && npm publish --otp=...
 ```
 
 | Path | What it is |
 |---|---|
 | `pkg/` | build output for Node (git-ignored); `pkg-web/` and `pkg-bundler/` for the other targets |
-| `pkg-publish/` | `tools/pack-npm.sh`: a copy of `pkg/` renamed to `@rosperitus/excelerate`, the folder `npm publish` runs in (git-ignored) |
+| `pkg-publish/` | `pack-npm.sh`: a copy of `pkg/` renamed to `@rosperitus/excelerate`, the folder `npm publish` runs in (git-ignored) |
 | `example.js`, `test.js`, `bench.js` | JavaScript examples, tests, benchmark |
 | `typescript/` | TypeScript examples, run from here: `node typescript/basic.ts` (Node 22.6+). No node_modules of their own - they resolve the package from this folder |
 | `browser/` | the same API in a page: `index.html` over `pkg-web/` |

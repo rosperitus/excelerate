@@ -25,7 +25,7 @@ use crate::model::chart::{Anchor, EditAs, Marker};
 
 /// Moves every drawing anchored to the sheet, so that an object keeps the
 /// cells it was put on.
-pub(super) fn move_anchors(book: &mut Spreadsheet, sheet: usize, shift: Shift) {
+pub(super) fn move_anchors(book: &mut Spreadsheet, sheet: usize, shift: &Shift) {
     let Some(target) = book.sheet(sheet) else {
         return;
     };
@@ -49,7 +49,7 @@ pub(super) fn move_anchors(book: &mut Spreadsheet, sheet: usize, shift: Shift) {
 
 /// The same move for an anchor held in the model, by the same rules as
 /// [`rewrite`] applies to the bytes.
-pub(super) fn move_anchor(anchor: &mut Anchor, shift: Shift) {
+pub(super) fn move_anchor(anchor: &mut Anchor, shift: &Shift) {
     let (from, to, resizes) = match anchor {
         Anchor::TwoCell {
             edit_as: Some(EditAs::Absolute),
@@ -102,7 +102,7 @@ fn tags(axis: Axis) -> [&'static str; 2] {
 /// `oneCell` keeps the size and moves the whole object by whatever its top
 /// left corner moved. `absolute` pins the object to the page and is left
 /// alone.
-fn rewrite(xml: &str, shift: Shift) -> String {
+fn rewrite(xml: &str, shift: &Shift) -> String {
     let mut out = String::with_capacity(xml.len());
     let mut rest = xml;
     // How far the anchor being read has moved its first corner, for the two
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn an_insert_above_moves_the_whole_object() {
-        let out = rewrite(DRAWING, Shift::insert(Axis::Rows, 0, 3));
+        let out = rewrite(DRAWING, &Shift::insert(Axis::Rows, 0, 3));
         assert_eq!(rows(&out), [7, 11]);
         // The offsets inside the cell are not indexes and must not move.
         assert!(out.contains("<xdr:rowOff>9</xdr:rowOff>"), "{out}");
@@ -194,7 +194,7 @@ mod tests {
     /// grid, which is what `twoCellAnchor` means by default.
     #[test]
     fn an_insert_inside_stretches_the_default_anchor() {
-        let out = rewrite(DRAWING, Shift::insert(Axis::Rows, 6, 2));
+        let out = rewrite(DRAWING, &Shift::insert(Axis::Rows, 6, 2));
         assert_eq!(rows(&out), [4, 10]);
     }
 
@@ -206,10 +206,10 @@ mod tests {
             "<xdr:twoCellAnchor>",
             r#"<xdr:twoCellAnchor editAs="oneCell">"#,
         );
-        let out = rewrite(&pinned, Shift::insert(Axis::Rows, 6, 2));
+        let out = rewrite(&pinned, &Shift::insert(Axis::Rows, 6, 2));
         assert_eq!(rows(&out), [4, 8]);
 
-        let out = rewrite(&pinned, Shift::insert(Axis::Rows, 0, 3));
+        let out = rewrite(&pinned, &Shift::insert(Axis::Rows, 0, 3));
         assert_eq!(rows(&out), [7, 11]);
     }
 
@@ -220,7 +220,7 @@ mod tests {
             "<xdr:twoCellAnchor>",
             r#"<xdr:twoCellAnchor editAs="absolute">"#,
         );
-        let out = rewrite(&pinned, Shift::insert(Axis::Rows, 0, 3));
+        let out = rewrite(&pinned, &Shift::insert(Axis::Rows, 0, 3));
         assert_eq!(rows(&out), [4, 8]);
     }
 
@@ -228,7 +228,7 @@ mod tests {
     /// than leaving it pointing into the gap.
     #[test]
     fn a_removal_pulls_the_corner_in() {
-        let out = rewrite(DRAWING, Shift::remove(Axis::Rows, 3, 3));
+        let out = rewrite(DRAWING, &Shift::remove(Axis::Rows, 3, 3));
         assert_eq!(rows(&out), [3, 5]);
     }
 
@@ -236,12 +236,12 @@ mod tests {
     #[test]
     fn a_comment_box_moves_too() {
         let vml = r#"<x:ClientData ObjectType="Note"><x:Anchor>10,12,12,88</x:Anchor><x:Row>13</x:Row><x:Column>3</x:Column></x:ClientData>"#;
-        let out = rewrite(vml, Shift::insert(Axis::Rows, 2, 5));
+        let out = rewrite(vml, &Shift::insert(Axis::Rows, 2, 5));
         assert!(out.contains("<x:Row>18</x:Row>"), "{out}");
         // The pixel offsets in `<x:Anchor>` are not grid indexes.
         assert!(out.contains("<x:Anchor>10,12,12,88</x:Anchor>"), "{out}");
 
-        let out = rewrite(vml, Shift::insert(Axis::Columns, 0, 1));
+        let out = rewrite(vml, &Shift::insert(Axis::Columns, 0, 1));
         assert!(out.contains("<x:Column>4</x:Column>"), "{out}");
         assert!(out.contains("<x:Row>13</x:Row>"), "{out}");
     }

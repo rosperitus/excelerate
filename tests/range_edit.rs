@@ -522,7 +522,7 @@ fn fill_series_back_runs_the_series_up_from_the_end() {
 #[test]
 fn a_table_sorts_by_its_column_names() {
     use excelerate::edit::{SortKey, sort_table};
-    use excelerate::model::table::{Table, TableColumn};
+    use excelerate::model::table::Table;
 
     let at = |a: &str| CellRef::parse(a).unwrap();
     let mut book = Spreadsheet::new();
@@ -537,29 +537,12 @@ fn a_table_sorts_by_its_column_names() {
     ] {
         sheet.set(at(address), value);
     }
-    sheet.tables.push(Table {
-        id: 1,
-        name: "Stock".into(),
-        display_name: "Stock".into(),
-        range: Range::parse("A1:B3").unwrap(),
-        columns: ["Item", "Qty"]
-            .iter()
-            .zip(1..)
-            .map(|(name, id)| TableColumn {
-                id,
-                name: (*name).into(),
-                totals_row_function: None,
-                totals_row_label: None,
-                calculated_formula: None,
-            })
-            .collect(),
-        header_row_count: None,
-        totals_row_count: None,
-        auto_filter: None,
-        sort_state: None,
-        style: None,
-        extensions: None,
-    });
+    sheet.tables.push(Table::new(
+        1,
+        "Stock",
+        Range::parse("A1:B3").unwrap(),
+        ["Item", "Qty"],
+    ));
     sort_table(&mut book, "stock", &[SortKey::header("Qty").descending()]).unwrap();
     let sheet = book.sheet(0).unwrap();
     assert_eq!(sheet.get(at("A2")).unwrap().value, CellValue::text("cup"));

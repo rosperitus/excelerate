@@ -395,12 +395,15 @@ pub fn transpose(args: &[Arg]) -> Value {
     let [arg] = args else {
         return Value::Error(CellError::Value);
     };
-    let grid = owned_grid(&arg.value);
+    Value::array(flip(&owned_grid(&arg.value)))
+}
+
+/// Rows as columns.
+fn flip(grid: &[Vec<Value>]) -> Vec<Vec<Value>> {
     let width = grid.first().map_or(0, Vec::len);
-    let flipped = (0..width)
+    (0..width)
         .map(|c| grid.iter().map(|row| row[c].clone()).collect())
-        .collect();
-    Value::array(flipped)
+        .collect()
 }
 
 /// `AREAS(reference)` - how many separate rectangles a reference names.
@@ -525,10 +528,16 @@ pub fn sort(args: &[Arg]) -> Value {
             .filter(|a| !a.missing())
             .map_or(Ok(default), Arg::number)
     };
-    let (Ok(index), Ok(order)) = (number(0, 1.0), number(1, 1.0)) else {
+    let (Ok(index), Ok(order), Ok(by_column)) = (number(0, 1.0), number(1, 1.0), number(2, 0.0))
+    else {
         return Value::Error(CellError::Value);
     };
+    // Sorting columns is sorting the rows of the flipped array.
+    let by_column = by_column != 0.0;
     let mut grid = owned_grid(&array.value);
+    if by_column {
+        grid = flip(&grid);
+    }
     let width = grid.first().map_or(0, Vec::len);
     let Some(column) = index_within(index, width) else {
         return Value::Error(CellError::Value);
@@ -542,11 +551,11 @@ pub fn sort(args: &[Arg]) -> Value {
             ordering
         }
     });
-    Value::array(grid)
+    Value::array(if by_column { flip(&grid) } else { grid })
 }
 
 /// A one-based index into an axis of `len` cells, as a position from zero.
-fn index_within(n: f64, len: usize) -> Option<usize> {
+pub(crate) fn index_within(n: f64, len: usize) -> Option<usize> {
     let n = n.trunc();
     if !(1.0..=1.0e7).contains(&n) {
         return None;
@@ -1036,46 +1045,55 @@ pub fn lookup_vector(args: &[Arg]) -> Value {
 /// is what keeps `INDIRECT("1+1")` from quietly computing two, which Excel
 /// answers `#REF!` for.
 pub fn indirect(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
+    match indirect_area(engine, origin, args) {
+        Ok((sheet, range)) => engine.range(origin, sheet.as_deref(), range),
+        Err(e) => Value::Error(e),
+    }
+}
+
+/// The rectangle `INDIRECT` reads, without reading it.
+pub(crate) fn indirect_area(
+    engine: &mut Engine<'_>,
+    origin: Origin,
+    args: &[Expr],
+) -> Result<(Option<String>, Range), CellError> {
     let (text, style) = match args {
         [t] => (t, None),
         [t, s] => (t, Some(s)),
-        _ => return Value::Error(CellError::Value),
+        _ => return Err(CellError::Value),
     };
     // R1C1 notation is a different language; this reads A1 only.
     if let Some(style) = style
         && engine.eval_expr(origin, style).boolean() == Ok(false)
     {
-        return Value::Error(CellError::Ref);
+        return Err(CellError::Ref);
     }
     let value = engine.eval_expr(origin, text);
     if let Some(e) = value.error() {
-        return Value::Error(e);
+        return Err(e);
     }
     let Ok(text) = value.text() else {
-        return Value::Error(CellError::Ref);
+        return Err(CellError::Ref);
     };
     let Some(parsed) = engine.parsed(&text) else {
-        return Value::Error(CellError::Ref);
+        return Err(CellError::Ref);
     };
     // A defined name is a reference too: `INDIRECT("Sales")` reads the cells
     // the name points at. A name that is no reference is not one to follow.
     let parsed = match &*parsed {
         Expr::Name(name) => {
             let Some(found) = engine.defined_name(name, Some(origin.sheet)) else {
-                return Value::Error(CellError::Ref);
+                return Err(CellError::Ref);
             };
             let formula = engine.book().defined_names[found].formula.clone();
             match engine.parsed(&formula) {
                 Some(definition) => definition,
-                None => return Value::Error(CellError::Ref),
+                None => return Err(CellError::Ref),
             }
         }
         _ => parsed,
     };
-    let Some((sheet, range)) = crate::formula::eval::spanned(&parsed) else {
-        return Value::Error(CellError::Ref);
-    };
-    engine.range(origin, sheet.as_deref(), range)
+    crate::formula::eval::spanned(&parsed).ok_or(CellError::Ref)
 }
 
 /// `OFFSET(reference, rows, columns, [height], [width])`
@@ -1083,27 +1101,36 @@ pub fn indirect(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value
 /// Lazy, because it works on the reference rather than on what it holds: the
 /// rectangle is moved and then optionally resized.
 pub fn offset(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
+    match offset_area(engine, origin, args) {
+        Ok((sheet, range)) => engine.range(origin, sheet.as_deref(), range),
+        Err(e) => Value::Error(e),
+    }
+}
+
+/// The rectangle `OFFSET` reads, without reading it.
+pub(crate) fn offset_area(
+    engine: &mut Engine<'_>,
+    origin: Origin,
+    args: &[Expr],
+) -> Result<(Option<String>, Range), CellError> {
     let (reference, rest) = match args {
         [reference, rest @ ..] if (2..=4).contains(&rest.len()) => (reference, rest),
-        _ => return Value::Error(CellError::Value),
+        _ => return Err(CellError::Value),
     };
     let Some((sheet, base)) = crate::formula::eval::spanned(reference) else {
-        return Value::Error(CellError::Ref);
+        return Err(CellError::Ref);
     };
     let mut numbers = Vec::with_capacity(rest.len());
     for arg in rest {
         let value = engine.eval_expr(origin, arg);
         if let Some(e) = value.error() {
-            return Value::Error(e);
+            return Err(e);
         }
         // A left-out size keeps the one the reference already has.
         numbers.push(if matches!(value, Value::Blank) {
             None
         } else {
-            match value.number() {
-                Ok(n) => Some(n.trunc()),
-                Err(e) => return Value::Error(e),
-            }
+            Some(value.number()?.trunc())
         });
     }
 
@@ -1151,7 +1178,7 @@ pub fn offset(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
     let (Some((top, rows)), Some((left, columns))) =
         (sized(top, rows, height), sized(left, columns, width))
     else {
-        return Value::Error(CellError::Ref);
+        return Err(CellError::Ref);
     };
     let corner = |row: i64, column: i64| -> Option<CellRef> {
         let row = Row::from_one_based(u64::try_from(row).ok()?).ok()?;
@@ -1163,9 +1190,9 @@ pub fn offset(engine: &mut Engine<'_>, origin: Origin, args: &[Expr]) -> Value {
         corner(top + rows - 1, left + columns - 1),
     ) else {
         // Moved off the sheet, which is what `#REF!` is for.
-        return Value::Error(CellError::Ref);
+        return Err(CellError::Ref);
     };
-    engine.range(origin, sheet.as_deref(), Range { start, end })
+    Ok((sheet, Range { start, end }))
 }
 
 /// `WRAPROWS(vector, count, [pad])` - a line folded into rows of `count`.

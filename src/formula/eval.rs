@@ -108,6 +108,9 @@ pub struct Engine<'a> {
     /// The top left cells of the workbook's array formulas, built on first
     /// use.
     array_starts: Option<HashSet<(usize, CellRef)>>,
+    /// Every cell of an array formula's area but its top left one, and the
+    /// area, built on first use.
+    array_cells: Option<HashMap<(usize, CellRef), Range>>,
     /// Results other engines finished in a parallel pass, looked at before a
     /// formula cell is computed here.
     shared: Option<&'a Shared>,
@@ -195,6 +198,7 @@ impl<'a> Engine<'a> {
             parsed: HashMap::new(),
             implicit: false,
             array_starts: None,
+            array_cells: None,
             shared: None,
             stale: None,
         }
@@ -269,12 +273,15 @@ impl<'a> Engine<'a> {
     /// `#VALUE!`. Inside an array formula, or an array parameter, the range
     /// stays whole.
     ///
-    /// ponytail: only a reference the formula spells out narrows - a range,
-    /// a table column, a defined name, `INDEX` with literal positions. A
-    /// reference a function hands back at run time (`IF(c,A1:A9,0)`,
-    /// `CHOOSE`, `OFFSET`) arrives as an array and shows its top left value,
-    /// because values carry no address. Narrowing those means a reference
-    /// value in `Value`.
+    /// A reference narrows when it can be told before its cells are read: a
+    /// range, a table column, a defined name, `INDEX` with literal
+    /// positions, `OFFSET` and `INDIRECT`, and the branch `IF` or `CHOOSE`
+    /// takes when that branch is one of these.
+    ///
+    /// ponytail: a reference built any other way (`INDEX` with computed
+    /// positions, `XLOOKUP` returning a range, `LET` naming one) arrives as an
+    /// array and shows its top left value, because values carry no address.
+    /// Narrowing those means a reference value in `Value`.
     pub(crate) fn eval_value(&mut self, origin: Origin, expr: &Expr) -> Value {
         match self.narrowed(origin, expr) {
             Some(Ok(cell)) => self.eval_expr(origin, &cell),
@@ -399,6 +406,43 @@ impl<'a> Engine<'a> {
                 };
                 (sheet, area)
             }
+            Expr::Call { name, args } if name == "IF" && args.len() >= 2 => {
+                if !args[1..].iter().any(may_be_area) {
+                    return None;
+                }
+                // ponytail: when the branch taken is not a reference after
+                // all, the whole `IF` runs again and so does its condition.
+                let taken = match self.eval_value(origin, &args[0]).boolean() {
+                    Ok(true) => &args[1],
+                    Ok(false) => args.get(2)?,
+                    Err(_) => return None,
+                };
+                return self.area_of(origin, taken, depth);
+            }
+            Expr::Call { name, args } if name == "CHOOSE" && args.len() >= 2 => {
+                if !args[1..].iter().any(may_be_area) {
+                    return None;
+                }
+                let index = self.eval_value(origin, &args[0]).number().ok()?;
+                if index < 1.0 {
+                    return None;
+                }
+                #[expect(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "at least 1, and an index past the list misses it"
+                )]
+                let taken = args.get(index as usize)?;
+                return self.area_of(origin, taken, depth);
+            }
+            // Built at run time, so a single cell is returned too: the caller
+            // would otherwise compute the reference a second time to read it.
+            Expr::Call { name, args } if name == "OFFSET" => {
+                return crate::formula::functions::lookup::offset_area(self, origin, args).ok();
+            }
+            Expr::Call { name, args } if name == "INDIRECT" => {
+                return crate::formula::functions::lookup::indirect_area(self, origin, args).ok();
+            }
             _ => return None,
         };
         (area.start != area.end).then_some((sheet, area))
@@ -461,7 +505,19 @@ impl<'a> Engine<'a> {
     /// its own cell, and the rest of its range holds the rest as stored
     /// values; read through a reference, the whole array would otherwise be
     /// counted again for every cell. [`Engine::spilled`] has the array whole.
+    ///
+    /// The rest of that range is read from the array too, while its formula
+    /// is being computed in this pass: what the range stores is the answer to
+    /// the inputs before the edit.
     pub fn cell(&mut self, sheet: usize, at: CellRef) -> Value {
+        if let Some(area) = self.array_area(sheet, at)
+            && self
+                .stale
+                .is_none_or(|stale| stale.contains(&(sheet, area.start)))
+        {
+            let whole = self.spilled(sheet, area.start);
+            return area_value(&whole, area, at);
+        }
         match self.spilled(sheet, at) {
             Value::Array(rows) => rows
                 .first()
@@ -470,6 +526,32 @@ impl<'a> Engine<'a> {
                 .unwrap_or(Value::Blank),
             other => other,
         }
+    }
+
+    /// The area of the array formula `at` lies inside, when it is not the
+    /// formula's own cell.
+    fn array_area(&mut self, sheet: usize, at: CellRef) -> Option<Range> {
+        let book = self.book;
+        let cells = self.array_cells.get_or_insert_with(|| {
+            let mut cells = HashMap::new();
+            for (index, ws) in book.sheets().iter().enumerate() {
+                for &area in &ws.array_formulas {
+                    if !small_area(area)
+                        || !matches!(
+                            ws.get(area.start).map(|c| &c.value),
+                            Some(CellValue::Formula { .. })
+                        )
+                    {
+                        continue;
+                    }
+                    for cell in area.cells().skip(1) {
+                        cells.insert((index, cell), area);
+                    }
+                }
+            }
+            cells
+        });
+        cells.get(&(sheet, at)).copied()
     }
 
     /// What a cell's formula works out to, an array included, which is what
@@ -512,39 +594,40 @@ impl<'a> Engine<'a> {
             return Value::Error(CellError::Ref);
         };
         let stored = ws.get(at).map(|c| c.value.clone());
-        let value = match stored {
-            None | Some(CellValue::Empty) => Value::Blank,
-            Some(CellValue::Number(n)) => Value::Number(n),
-            Some(CellValue::Text(t)) => Value::Text(t.to_string()),
+        // A formula cell answered without computing it here: finished by
+        // another engine of a parallel pass, outside this pass and so as
+        // stored, or claimed from another engine now.
+        let ready = match &stored {
+            Some(CellValue::Formula { cached, .. }) => {
+                if let Some(done) = self.shared.and_then(|sh| sh.get(sheet, at)) {
+                    Some(done.clone())
+                } else if let Some(cached) = cached
+                    && self
+                        .stale
+                        .is_some_and(|stale| !stale.contains(&(sheet, at)))
+                {
+                    Some(stored_value(cached))
+                } else {
+                    self.shared
+                        .and_then(|sh| sh.slot(sheet, at).and_then(|slot| sh.claim(slot)))
+                        .cloned()
+                }
+            }
+            _ => None,
+        };
+        let value = match (ready, stored) {
+            (Some(done), _) => done,
+            (None, None | Some(CellValue::Empty)) => Value::Blank,
+            (None, Some(CellValue::Number(n))) => Value::Number(n),
+            (None, Some(CellValue::Text(t))) => Value::Text(t.to_string()),
             // Formatting inside the cell is presentation; a formula reads the
             // text it spells.
-            Some(rich @ CellValue::RichText(_)) => {
+            (None, Some(rich @ CellValue::RichText(_))) => {
                 Value::Text(rich.plain_text().unwrap_or_default())
             }
-            Some(CellValue::Bool(b)) => Value::Bool(b),
-            Some(CellValue::Error(e)) => Value::Error(e),
-            Some(CellValue::Formula { .. })
-                if let Some(done) = self.shared.and_then(|sh| sh.get(sheet, at)) =>
-            {
-                done.clone()
-            }
-            Some(CellValue::Formula {
-                cached: Some(cached),
-                ..
-            }) if self
-                .stale
-                .is_some_and(|stale| !stale.contains(&(sheet, at))) =>
-            {
-                stored_value(&cached)
-            }
-            Some(CellValue::Formula { .. })
-                if let Some(sh) = self.shared
-                    && let Some(slot) = sh.slot(sheet, at)
-                    && let Some(done) = sh.claim(slot) =>
-            {
-                done.clone()
-            }
-            Some(CellValue::Formula { formula, .. }) => {
+            (None, Some(CellValue::Bool(b))) => Value::Bool(b),
+            (None, Some(CellValue::Error(e))) => Value::Error(e),
+            (None, Some(CellValue::Formula { formula, .. })) => {
                 // A formula that refers back to its own cell would recurse for
                 // ever. Excel answers 0 and warns; making it visible is more
                 // use than a silent zero.
@@ -610,8 +693,16 @@ impl<'a> Engine<'a> {
                 unary(*op, &v)
             }
             Expr::Binary(op, a, b) => self.binary(origin, *op, a, b),
-            Expr::Call { name, args } => functions::call(self, origin, name, args),
-            Expr::Apply { callee, args } => self.apply_expr(origin, callee, args),
+            // A name bound by `LET` or a lambda's parameter is called before
+            // the library is asked, as it is read before the workbook's names.
+            Expr::Call { name, args } => match self.bound(name) {
+                Some(callee) => self.apply_args(origin, &callee, args),
+                None => functions::call(self, origin, name, args),
+            },
+            Expr::Apply { callee, args } => {
+                let callee = self.eval_expr(origin, callee);
+                self.apply_args(origin, &callee, args)
+            }
             Expr::Array(rows) => Value::array(
                 rows.iter()
                     .map(|r| r.iter().map(|e| self.eval_expr(origin, e)).collect())
@@ -677,12 +768,20 @@ impl<'a> Engine<'a> {
         self.scope.clone()
     }
 
-    /// Computes a call written on an expression rather than a name, as
-    /// `LAMBDA(x,x+1)(5)` is.
-    fn apply_expr(&mut self, origin: Origin, callee: &Expr, args: &[Expr]) -> Value {
-        let callee = self.eval_expr(origin, callee);
+    /// Calls `callee` with arguments still to be computed: `LAMBDA(x,x+1)(5)`,
+    /// or `f(5)` where `f` is bound to a lambda.
+    fn apply_args(&mut self, origin: Origin, callee: &Value, args: &[Expr]) -> Value {
         let args: Vec<Value> = args.iter().map(|a| self.eval_expr(origin, a)).collect();
-        self.apply(origin, &callee, args)
+        self.apply(origin, callee, args)
+    }
+
+    /// Calls a name the library does not know: a defined name holding a
+    /// `LAMBDA` is a function the workbook defined. Anything else is `#NAME?`.
+    pub(crate) fn call_defined(&mut self, origin: Origin, name: &str, args: &[Expr]) -> Value {
+        match self.name(origin, name) {
+            callee @ Value::Lambda(_) => self.apply_args(origin, &callee, args),
+            _ => Value::Error(CellError::Name),
+        }
     }
 
     /// The sheet a name is looked up in, and the name without its sheet.
@@ -1077,6 +1176,22 @@ fn calls_total(expr: &Expr) -> bool {
 
 /// A position written into `INDEX` as a literal: 0 or left out for the whole
 /// row or column. Excel truncates a fractional one.
+/// Whether an expression could turn out a reference to several cells, read
+/// from its shape alone: what lets `IF` skip computing its condition twice
+/// when no branch could be one.
+fn may_be_area(expr: &Expr) -> bool {
+    match expr {
+        Expr::Range { range, .. } => range.start != range.end,
+        Expr::Structured(_) | Expr::Name(_) => true,
+        Expr::Call { name, args } => match name.as_str() {
+            "INDEX" | "OFFSET" | "INDIRECT" => true,
+            "IF" | "CHOOSE" => args.iter().skip(1).any(may_be_area),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
 fn position(e: Option<&Expr>) -> Option<u32> {
     match e {
         None | Some(Expr::Missing) => Some(0),
@@ -1388,13 +1503,74 @@ fn store(book: &mut Spreadsheet, results: Vec<(usize, CellRef, Value)>) -> usize
         };
         if let CellValue::Formula { cached, .. } = &mut sheet.entry(at).value {
             *cached = Some(Box::new(stored(&value)));
+        } else {
+            continue;
+        }
+        // The rest of an array formula's area holds the rest of its answer.
+        let Some(area) = sheet
+            .array_formulas
+            .iter()
+            .find(|area| area.start == at && area.start != area.end && small_area(**area))
+            .copied()
+        else {
+            continue;
+        };
+        for cell in area.cells().skip(1) {
+            sheet.entry(cell).value = stored(&area_value(&value, area, cell));
         }
     }
     computed
 }
 
-/// A computed value as it is stored in a cell: an array shows its top-left
-/// value, the way a single cell can only show one.
+/// The areas of the workbook's array formulas wider than one cell, by their
+/// top left cell.
+fn array_areas(book: &Spreadsheet) -> HashMap<(usize, CellRef), Range> {
+    book.sheets()
+        .iter()
+        .enumerate()
+        .flat_map(|(index, ws)| {
+            ws.array_formulas
+                .iter()
+                .filter(|area| area.start != area.end && small_area(**area))
+                .map(move |&area| ((index, area.start), area))
+        })
+        .collect()
+}
+
+/// Whether an array formula's area is small enough to lay an answer over: the
+/// area comes from the file, and one over a whole sheet is billions of cells.
+fn small_area(area: Range) -> bool {
+    u64::from(area.width()) * u64::from(area.height()) <= MAX_RANGE_CELLS as u64
+}
+
+/// What one cell of an array formula's area shows, the way Excel lays an
+/// answer over an area entered with Ctrl+Shift+Enter: a single row or column
+/// repeats across the area, a single value fills it, and a cell past the
+/// array's edge is `#N/A`.
+fn area_value(value: &Value, area: Range, at: CellRef) -> Value {
+    let Value::Array(rows) = value else {
+        return value.clone();
+    };
+    let offset = |a: u32, b: u32| usize::try_from(a - b).unwrap_or(usize::MAX);
+    let row = offset(at.row.index(), area.start.row.index());
+    let col = offset(at.col.index(), area.start.col.index());
+    let pick = |len: usize, i: usize| {
+        if len == 1 {
+            Some(0)
+        } else {
+            (i < len).then_some(i)
+        }
+    };
+    let width = rows.first().map_or(0, Vec::len);
+    match (pick(rows.len(), row), pick(width, col)) {
+        (Some(r), Some(c)) => rows[r]
+            .get(c)
+            .cloned()
+            .unwrap_or(Value::Error(CellError::Na)),
+        _ => Value::Error(CellError::Na),
+    }
+}
+
 /// Recomputes one formula and stores the result as that cell's cached value.
 /// Returns whether there was a formula there to compute.
 ///
@@ -1582,6 +1758,9 @@ struct Node {
     at: CellRef,
     reads: Vec<(usize, Range)>,
     always: bool,
+    /// The area an array formula lays its answer over, when that is more
+    /// than its own cell: a formula reading the area reads this one.
+    area: Option<Range>,
 }
 
 /// Functions whose answer does not follow from what `reads` holds: the clock
@@ -1663,7 +1842,9 @@ impl Dependencies {
         } else {
             vec![parse_chunk(&cells)]
         };
-        for (node, tree) in parts.into_iter().flatten() {
+        let areas = array_areas(book);
+        for (mut node, tree) in parts.into_iter().flatten() {
+            node.area = areas.get(&(node.sheet, node.at)).copied();
             formulas.push(node);
             trees.push(tree);
         }
@@ -1688,8 +1869,9 @@ impl Dependencies {
         self.formulas
             .retain(|node| node.sheet != sheet || node.at != at);
         if let Some(value) = book.sheet(sheet).and_then(|s| s.get(at)).map(|c| &c.value)
-            && let Some((node, _)) = node_of(&mut Refs::new(book), sheet, at, value)
+            && let Some((mut node, _)) = node_of(&mut Refs::new(book), sheet, at, value)
         {
+            node.area = array_areas(book).get(&(sheet, at)).copied();
             self.formulas.push(node);
         }
     }
@@ -1813,6 +1995,19 @@ impl Dependencies {
         graph.members = map_chunks(&graph.ranges, |&(sheet, range)| {
             formulas_in(&by_sheet, sheet, range)
         });
+        // An array formula stands in every rectangle its area touches, so a
+        // formula reading a cell of the area waits for it.
+        for &i in nodes {
+            let Some(area) = self.formulas[i].area else {
+                continue;
+            };
+            let sheet = self.formulas[i].sheet;
+            for (id, &(s, range)) in graph.ranges.iter().enumerate() {
+                if s == sheet && range.intersects(&area) && !graph.members[id].contains(&i) {
+                    graph.members[id].push(i);
+                }
+            }
+        }
         for (id, members) in graph.members.iter().enumerate() {
             for &j in members {
                 graph.member_of[j].push(id);
@@ -2012,6 +2207,7 @@ fn node_of(
             at,
             reads,
             always,
+            area: None,
         },
         expr,
     ))

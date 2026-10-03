@@ -19,6 +19,7 @@
     reason = "a `#[must_use]` on each of hundreds of table entries says nothing"
 )]
 
+pub mod data;
 pub mod database;
 pub mod date;
 pub mod distributions;
@@ -27,7 +28,9 @@ pub mod ets;
 pub mod financial;
 pub mod group;
 pub mod info;
+pub mod json;
 pub mod lambda;
+pub mod lists;
 pub mod logical;
 pub mod lookup;
 pub mod math;
@@ -161,7 +164,7 @@ pub fn call(engine: &mut Engine<'_>, origin: Origin, name: &str, args: &[Expr]) 
     let custom = if eager.is_none() && dated.is_none() {
         match engine.custom().and_then(|set| set.get(name)) {
             Some(f) => Some(f),
-            None => return Value::Error(CellError::Name),
+            None => return engine.call_defined(origin, name, args),
         }
     } else {
         None
@@ -360,6 +363,7 @@ fn lazy(name: &str) -> Option<Lazy> {
         "INFO" => info::info,
         "GROUPBY" => group::groupby,
         "PIVOTBY" => group::pivotby,
+        "ROLLING" => group::rolling,
         "ANCHORARRAY" => lookup::anchorarray,
         "INDIRECT" => lookup::indirect,
         "SINGLE" => lookup::single,
@@ -877,6 +881,17 @@ fn eager_lookup(name: &str) -> Option<Eager> {
         "HYPERLINK" => lookup::hyperlink,
         "TRIMRANGE" => group::trimrange,
         "PERCENTOF" => group::percentof,
+        // Lists and nested arrays (Excel, Beta Channel, September 2026).
+        "FLATTEN" => lists::flatten,
+        "HAS" => lists::has,
+        "HASANY" => lists::hasany,
+        "HASALL" => lists::hasall,
+        // Proposed in the 2026 specification; not in Excel.
+        "FILLDOWN" => lists::filldown,
+        "PARSEJSON" => json::parsejson,
+        "BINS" => data::bins,
+        "TABLEJOIN" => data::tablejoin,
+        "FUZZYLOOKUP" => data::fuzzylookup,
         "PHONETIC" => text::phonetic,
         "REGEXTEST" => pattern::regextest,
         "REGEXEXTRACT" => pattern::regexextract,
@@ -1026,47 +1041,7 @@ impl Criterion {
     }
 }
 
-/// Matches text against a pattern holding `*` and `?`, with `~` escaping one.
-pub(crate) fn wildcard_match(pattern: &str, text: &str) -> bool {
-    let p: Vec<char> = pattern.chars().collect();
-    let t: Vec<char> = text.chars().collect();
-    // The usual two-cursor walk with a remembered star, so it stays linear.
-    let (mut pi, mut ti) = (0, 0);
-    let (mut star, mut retry) = (None, 0);
-    while ti < t.len() {
-        let literal = match p.get(pi) {
-            Some('~') => p.get(pi + 1).copied().map(|c| (c, 2)),
-            Some('?') => {
-                pi += 1;
-                ti += 1;
-                continue;
-            }
-            Some('*') => {
-                star = Some(pi);
-                pi += 1;
-                retry = ti;
-                continue;
-            }
-            Some(c) => Some((*c, 1)),
-            None => None,
-        };
-        match literal {
-            Some((c, width)) if c == t[ti] => {
-                pi += width;
-                ti += 1;
-            }
-            _ => match star {
-                Some(at) => {
-                    pi = at + 1;
-                    retry += 1;
-                    ti = retry;
-                }
-                None => return false,
-            },
-        }
-    }
-    p[pi..].iter().all(|c| *c == '*')
-}
+pub(crate) use crate::shared::wildcard_match;
 
 /// The first position in `text` at or after `from` where `pattern` starts to
 /// match, counted in characters from one.

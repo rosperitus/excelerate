@@ -374,13 +374,14 @@ fn lex_quoted(c: &[char], i: &mut usize, quote: char, unterminated: &str) -> Res
 
 /// An error literal, `#` first.
 fn lex_error(c: &[char], i: &mut usize) -> Result<Tok> {
-    // FIXME: this builds a `String` for every `#`, where a prefix comparison
-    // would do. Error literals are rare enough that it has not been worth it.
-    let rest: String = c[*i..].iter().collect();
+    let rest = &c[*i..];
     let found = ERROR_LITERALS
         .iter()
-        .find(|lit| rest.starts_with(**lit))
-        .ok_or_else(|| Error::InvalidFormula(format!("unknown error literal {rest}")))?;
+        .find(|lit| rest.iter().copied().take(lit.len()).eq(lit.chars()))
+        .ok_or_else(|| {
+            let rest: String = rest.iter().collect();
+            Error::InvalidFormula(format!("unknown error literal {rest}"))
+        })?;
     *i += found.chars().count();
     CellError::parse(found)
         .map(Tok::Err)
@@ -681,7 +682,7 @@ const INTERSECT_BP: u8 = 80;
 /// untrusted input and `((((...1...))))` a hundred thousand deep would overflow it.
 /// Excel itself refuses more than 64 levels, so this is not a limit a formula
 /// written by anyone can reach.
-const MAX_DEPTH: u32 = 256;
+const MAX_DEPTH: u32 = 128;
 
 /// Binding power of a leading `-` or `+`. Above `^`, which is why `-2^2` is 4
 /// in Excel and not -4.

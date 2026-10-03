@@ -1,5 +1,137 @@
 # Changelog
 
+## 0.15.0
+
+### Added
+
+- Workbooks saved with a password to open: the agile encryption of Excel 2010
+  and later, for xlsx, xlsm and xlsb, is decrypted by `read_bytes` and
+  `read`. The password goes in `Options::password`; without one the reader
+  tries the password Excel uses for a workbook encrypted only to be opened
+  read-only. A password that does not open it is the new
+  `Error::WrongPassword`, an encryption this does not read (Excel 2007's
+  standard one, RC4 in xls) the new `Error::Encrypted`. In JS, the fifth
+  argument of `Book.read`. `reader::encryption` has `decrypt` and
+  `is_encrypted` on their own.
+- Rows and columns inserted or removed at many places in one pass:
+  `edit::{insert_rows_many, remove_rows_many, insert_columns_many,
+  remove_columns_many}`. Places are given as the sheet is before the call,
+  in any order, and the result is that of the single edits made from the
+  far end; removed blocks that overlap are merged. Insertions take a
+  `CopyOrigin` for each block. Every pass of an edit walked the whole
+  workbook, so subtotals over 40 000 rows and 4 000 groups took 75 seconds
+  one row at a time; the batch does it in 30 ms. The single edits are now
+  a batch of one. In JS: `insertRowsMany`, `removeRowsMany`,
+  `insertColumnsMany` and `removeColumnsMany`, places as `[at, count]`
+  pairs, 1-based.
+- In JS, `shapes` gives each shape's `rotation` (degrees), `flipH`, `flipV`
+  and the `fill`, `line` and `font` Excel shows, and `charts` the
+  `format` and `plotFormat` of the chart and plot area. Drawing colours come
+  resolved through the workbook theme as `#AARRGGBB`.
+- In JS, `setShapeFormat` and `setChartFormat` change that look with a patch
+  in the same shape: a field left out stays, `null` gives a fill or outline
+  back to the style, and a colour is `#RRGGBB`, `#AARRGGBB` or a theme name
+  such as `accent1`.
+- Ten functions from the 2026 specification (`docs/Excel_2026.md`):
+  `FLATTEN`, `HAS`, `HASANY` and `HASALL` for nested arrays, from
+  Microsoft's Beta Channel announcement, and six the specification proposes
+  and Excel does not have: `FILLDOWN`, `PARSEJSON`, `ROLLING`, `BINS`,
+  `TABLEJOIN`, `FUZZYLOOKUP`. A workbook that registered a custom function
+  under one of these names now gets the built-in one.
+- A sheet read row by row without building its grid:
+  `progress::Options::streaming(sheet, sink)` hands each row of an xlsx sheet
+  to the sink as a `RowBatch` (the row, the sheet so far, styles, epoch) and
+  drops its cells; the workbook comes back with everything but that sheet's
+  cells. In JS, `Book.forEachRow(bytes, name, sheet, callback, formatted?)`,
+  in both packages; a callback that throws stops the calls and its error
+  comes out of `forEachRow`. Other formats are read whole and their rows
+  then handed over the same way.
+- Shapes carry their look: `Shape::format` (fill and outline from
+  `xdr:spPr`, the chart's `ShapeFormat`), `Shape::font` (the first run's
+  family, size, bold, italic and colour as a `DiffFont`) and the turn of
+  `a:xfrm` (`rotation` in 60 000ths of a degree clockwise, `flip_h`,
+  `flip_v`). `effective_fill`, `effective_line` and `effective_font` answer
+  with what Excel shows, the shape's style (`xdr:style`) filling in what the
+  element leaves out. A changed fill or line rewrites only those children of
+  `xdr:spPr`, a changed turn the attributes of `a:xfrm`, a changed font the
+  runs of the new text; an untouched shape still goes back byte for byte, and
+  a new one is written with what it was given.
+- Charts carry the look of their chart area and plot area:
+  `Chart::format` (`c:chartSpace/c:spPr`) and `Chart::plot_format`
+  (`c:plotArea/c:spPr`), read out of the carried markup and rewritten the
+  way a series' `spPr` is.
+- A chart title or legend put by hand keeps its place: `Title::layout` and
+  `Legend::layout` (`ManualLayout`, the corner of a `c:manualLayout` in edge
+  mode as a share of the chart area, and its size when set). A layout in
+  factor mode stays in the markup.
+
+- Filtering a table: `edit::filter_table` sets a column's criterion and hides
+  the data rows the table's criteria reject, as Excel does; in JS,
+  `setTableFilter(name, column, { values } | { custom } | { top } |
+  { bottom })`.
+- In JS, objects over `Book` whose changing calls chain: `Workbook`, `Sheet`,
+  `Table`, `SheetRange` - `new Workbook().addSheet("Sales")
+  .addTableFromData(...).set(1, "Amount", 125).addFilter("Region", ...)
+  .records({ visible: true })`. Every `Book` method that takes the sheet
+  first is a `Sheet` method without it, every other a `Workbook` method;
+  what `Book` answers with nothing returns the object, so it chains. The
+  package's entry point is now `index.js`, which is the generated module
+  plus these four.
+- Both npm packages carry the browser build next to the Node one, under
+  `web/`, and `exports` hands it to everything but Node, so
+  `import init, { Book } from "@rosperitus/excelerate"` works in a browser
+  and in a bundler after `await init()`. `…/web` names it explicitly. The
+  published package used to be the Node build alone, which a browser cannot
+  load.
+
+### Changed
+
+- The crate declares `rust-version = "1.92"` and builds on it. It did not
+  before: `if let` guards in the formula engine need a newer compiler.
+- An insertion of rows or columns that would push a stored cell or a merged
+  area past the last row or column is refused with the new
+  `Error::WouldPushOffSheet`, and the workbook is left as it was, the way
+  Excel refuses it. Those cells used to vanish without a word. Row heights,
+  styles and column widths at the edge are still cut off silently, as Excel
+  does. `edit::insert_cells` reports the same error instead of
+  `Error::Xlsx`, and counts a merged area at the edge too.
+- `Shape` gains `rotation`, `flip_h`, `flip_v`, `format` and `font`: a
+  `Shape { .. }` literal needs them (or `Shape::new`).
+- `Title` and `Legend` gain `layout`: a literal needs it (or
+  `..Default::default()`).
+- `Chart` gains `format` and `plot_format`; `ChartMarkup::after_chart` and
+  `after_axes` no longer hold those `c:spPr` elements.
+- `Spreadsheet`, `Worksheet`, `Chart` and `Table` are `#[non_exhaustive]`,
+  so a field added later no longer breaks code outside the crate. They can
+  no longer be written as literals there: start from `Spreadsheet::new`,
+  `Worksheet::new`, `Chart::default()` or the new `Table::new(id, name,
+  range, columns)` and set fields.
+- `shared::{biff_functions, date_parse, odf_formula, palette, special}` and
+  `shared::unix_seconds` are no longer public; they were internals. `shared::date`
+  and `shared::codepage` stay.
+
+### Fixed
+
+- Outside an array formula, a reference that `IF`, `CHOOSE`, `OFFSET` or
+  `INDIRECT` hands back now narrows to the cell in the formula's row or
+  column, as Excel does: `=IF(TRUE,A1:A3,0)` in row 2 is A2, not A1.
+- Recalculation left the rest of an array formula's area (`{=...}` entered
+  over several cells) holding the old answer, and formulas reading those
+  cells read it too. The area now gets the new array, laid out as Excel lays
+  it: a single row or column repeats, a cell past the array is `#N/A`.
+  `recalculate_from` follows an edit through the area.
+- A number format written the Russian way, `# ##0,00` (a space between
+  placeholders groups, a comma before the decimals), rendered its comma as
+  thousands and its spaces as text. It now prints `1 234,50` with the
+  non-breaking space a Russian Windows uses. This is what `TEXT` gets in a
+  workbook typed in a Russian Excel. `0,000` still reads as English grouping.
+- `edit::insert_cells` refused to push cells down when the column just right
+  of the area (or the row just below, pushing right) had something at the
+  edge of the sheet: the edge it checked was one line too wide.
+- xlsx: an inline string (`t="inlineStr"`) written as `<r>` runs read as
+  plain text, so its fonts were lost on a rewrite. It now reads as
+  `CellValue::RichText`, the same as a rich string in the shared pool.
+
 ## 0.14.0
 
 ### Changed
@@ -42,6 +174,15 @@
 
 ### Fixed
 
+- A name bound by `LET` or held by a defined name calls the lambda it
+  stands for: `LET(f,LAMBDA(x,x*2),f(3))` is 6 and a Name Manager
+  `LAMBDA` (recursive ones too) works as a function; both were `#NAME?`.
+- `COUNT` counts only numbers inside an array constant, as inside a
+  reference: `COUNT({1,"2",TRUE})` is 1, not 3.
+- `SORT` honours its fourth argument and sorts columns.
+- Expressions nest at most 128 deep (was 256): a formula nested past about
+  245 levels overflowed a 2 MB stack in a debug build before the parser
+  refused it. Excel allows 64.
 - A grid edit left the newer rules in the sheet's `<extLst>` where they were:
   the `x14` half of a data bar kept its old range while the rule beside it
   moved, and a validation list on another sheet kept its old rows and name.

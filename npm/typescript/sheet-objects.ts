@@ -29,7 +29,10 @@ for (let sheet = 0; sheet < book.sheetNames().length; sheet += 1) {
     console.log(`  picture ${image.name} (${image.format}, ${bytes.length} bytes)`);
   });
   for (const shape of book.shapes(sheet)) {
-    console.log(`  shape ${shape.name} (${shape.geometry ?? "freeform"}) "${shape.text}"`);
+    // The fill is what Excel shows: the shape's own, or its style's.
+    const fill = shape.fill.type === "solid" ? shape.fill.color : shape.fill.type;
+    const turn = shape.rotation ? `, turned ${shape.rotation}°` : "";
+    console.log(`  shape ${shape.name} (${shape.geometry ?? "freeform"}, ${fill}${turn}) "${shape.text}"`);
   }
 }
 

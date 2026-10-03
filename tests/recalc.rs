@@ -540,3 +540,73 @@ fn an_edit_stands_on_the_values_already_stored() {
     assert_eq!(cached(&book, 0, "A3"), Some(5.0), "A3 was recomputed");
     assert_eq!(cached(&book, 0, "A4"), Some(50.0));
 }
+
+#[test]
+fn an_array_formula_lays_its_answer_over_its_area() {
+    // `{=A1:A3*2}` entered over B1:B4, as Ctrl+Shift+Enter leaves it: the
+    // formula in B1, the rest of the area holding values, and one cell more
+    // than the array has rows.
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("First").unwrap();
+    for (row, n) in [(1, 1.0), (2, 2.0), (3, 3.0)] {
+        sheet.set(at(&format!("A{row}")), n);
+    }
+    sheet.set(at("B1"), formula("A1:A3*2"));
+    sheet
+        .array_formulas
+        .push(excelerate::Range::parse("B1:B4").unwrap());
+    sheet.set(at("C1"), formula("SUM(B1:B3)"));
+    book.add_sheet(sheet).unwrap();
+
+    recalculate(&mut book, None, &Options::default());
+    assert_eq!(cached(&book, 0, "B1"), Some(2.0));
+    assert_eq!(cached(&book, 0, "B3"), Some(6.0));
+    assert_eq!(
+        book.sheet(0).unwrap().get(at("B4")).unwrap().value,
+        CellValue::Error(excelerate::CellError::Na),
+        "past the array's last row"
+    );
+    assert_eq!(cached(&book, 0, "C1"), Some(12.0));
+
+    // An edit of what the array reads reaches the whole area, and what reads
+    // the area sees the new values in the same pass.
+    book.sheet_mut(0).unwrap().set(at("A2"), 10.0);
+    recalculate_from(&mut book, &[(0, at("A2"))]);
+    assert_eq!(cached(&book, 0, "B2"), Some(20.0));
+    assert_eq!(cached(&book, 0, "C1"), Some(28.0));
+}
+
+/// A reference a function hands back at run time narrows like one written
+/// out: `IF`, `CHOOSE`, `OFFSET` and `INDIRECT` in row 2 over A1:A3 give A2.
+#[test]
+fn implicit_intersection_reaches_references_built_at_run_time() {
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("S").unwrap();
+    for (i, n) in [10.0, 20.0, 30.0].into_iter().enumerate() {
+        sheet.set(at(&format!("A{}", i + 1)), n);
+    }
+    sheet.set(at("B2"), formula("IF(TRUE,A1:A3,0)"));
+    sheet.set(at("C2"), formula("CHOOSE(2,0,A1:A3)"));
+    sheet.set(at("D2"), formula("OFFSET(A1,0,0,3,1)"));
+    sheet.set(at("E2"), formula("INDIRECT(\"A1:A3\")+1"));
+    sheet.set(at("F2"), formula("IF(FALSE,A1:A3,5)"));
+    sheet.set(at("G2"), formula("OFFSET(A1,2,0)*2"));
+    // An array parameter keeps the reference whole.
+    sheet.set(at("H2"), formula("SUM(IF(TRUE,A1:A3,0))"));
+    sheet.set(at("I9"), formula("OFFSET(A1,0,0,3,1)"));
+    book.add_sheet(sheet).unwrap();
+    recalculate(&mut book, None, &Options::default());
+
+    assert_eq!(cached(&book, 0, "B2"), Some(20.0));
+    assert_eq!(cached(&book, 0, "C2"), Some(20.0));
+    assert_eq!(cached(&book, 0, "D2"), Some(20.0));
+    assert_eq!(cached(&book, 0, "E2"), Some(21.0));
+    assert_eq!(cached(&book, 0, "F2"), Some(5.0));
+    assert_eq!(cached(&book, 0, "G2"), Some(60.0));
+    assert_eq!(cached(&book, 0, "H2"), Some(60.0));
+    assert!(matches!(
+        book.sheet(0).unwrap().get(at("I9")).map(|c| &c.value),
+        Some(CellValue::Formula { cached: Some(v), .. })
+            if **v == CellValue::Error(excelerate::error::CellError::Value)
+    ));
+}

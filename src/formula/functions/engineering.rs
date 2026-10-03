@@ -935,6 +935,7 @@ fn k_asymptotic(x: f64, n: u32) -> f64 {
 }
 
 /// Euler's constant, which every second-kind series carries.
+/// `f64::consts::EULER_GAMMA` is newer than the Rust 1.92 the crate builds on.
 const EULER: f64 = 0.577_215_664_901_532_9;
 
 /// The harmonic numbers `1 + 1/2 + ... + 1/k`, which is the part of these

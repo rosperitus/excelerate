@@ -257,18 +257,17 @@ fn a_chart_made_in_code_is_written() {
         },
         edit_as: None,
     };
-    book.sheet_mut(0).unwrap().charts.push(Chart {
-        name: "Выручка".into(),
-        anchor,
-        title: Some(Title {
-            text: Some(ChartText::text("Выручка\nпо кварталам")),
-            markup: String::new(),
-        }),
-        plots: vec![plot.clone()],
-        axes: vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)],
-        legend: Some(excelerate::model::chart::Legend::default()),
-        ..Chart::default()
+    let mut chart = Chart::default();
+    chart.name = "Выручка".into();
+    chart.anchor = anchor;
+    chart.title = Some(Title {
+        text: Some(ChartText::text("Выручка\nпо кварталам")),
+        ..Title::default()
     });
+    chart.plots = vec![plot.clone()];
+    chart.axes = vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)];
+    chart.legend = Some(excelerate::model::chart::Legend::default());
+    book.sheet_mut(0).unwrap().charts.push(chart);
 
     let back = cycle(&book);
     let sheet = back.sheet(0).unwrap();
@@ -396,10 +395,9 @@ fn a_plot_with_no_axes_is_refused() {
         values: Some(DataSource::numbers("Worksheet!$A$1:$A$3")),
         ..Series::default()
     });
-    book.sheet_mut(0).unwrap().charts.push(Chart {
-        plots: vec![plot],
-        ..Chart::default()
-    });
+    let mut chart = Chart::default();
+    chart.plots = vec![plot];
+    book.sheet_mut(0).unwrap().charts.push(chart);
     let mut bytes = Vec::new();
     assert!(write_xlsx_to(&book, Cursor::new(&mut bytes)).is_err());
 }
@@ -465,7 +463,7 @@ fn a_removed_waterfall_leaves_the_classic_charts() {
     book.sheet_mut(2).unwrap().extended_charts.clear();
     let back = cycle(&book);
     let sheet = back.sheet(2).unwrap();
-    assert!(sheet.extended_charts.is_empty());
+    assert_eq!(sheet.extended_charts, []);
     assert_eq!(sheet.charts, book.sheet(2).unwrap().charts);
 }
 
@@ -1277,4 +1275,65 @@ fn chart_caches_are_read_again_from_the_cells() {
         panic!("labels");
     };
     assert_eq!(points[3], (3, "Q4".to_owned()));
+}
+
+#[test]
+fn the_chart_and_plot_area_formatting_is_read_and_rewritten() {
+    let mut book = open("chart1.xlsx");
+    let path = "xl/charts/chart2.xml";
+    let chart = chart_at(&book, path);
+    let area = chart.format.as_ref().unwrap();
+    assert_eq!(area.fill, Some(Fill::None));
+    assert_eq!(area.line.as_ref().unwrap().width, Some(9525));
+    assert_eq!(chart.plot_format.as_ref().unwrap().fill, Some(Fill::None));
+    assert!(!chart.markup.after_chart.contains("spPr"));
+
+    let chart = chart_at_mut(&mut book, path);
+    chart.format.as_mut().unwrap().fill = Some(Fill::Solid(ChartColor::rgb(0xFF_EEDD)));
+    chart.plot_format = Some(ShapeFormat::solid(ChartColor::rgb(0x11_2233)));
+    let back = cycle(&book);
+    let chart = chart_at(&back, path);
+    let area = chart.format.as_ref().unwrap();
+    assert_eq!(area.fill, Some(Fill::Solid(ChartColor::rgb(0xFF_EEDD))));
+    // The outline the edit did not touch keeps its width.
+    assert_eq!(area.line.as_ref().unwrap().width, Some(9525));
+    assert_eq!(
+        chart.plot_format.as_ref().unwrap().fill,
+        Some(Fill::Solid(ChartColor::rgb(0x11_2233)))
+    );
+    // The chart space still has one `spPr`, and the plot area one too.
+    let text = text_of(&back, path);
+    let after = &text[text.find("</c:chart>").unwrap()..];
+    assert_eq!(after.matches("<c:spPr>").count(), 1);
+    let plot = &text[text.find("<c:plotArea>").unwrap()..text.find("</c:plotArea>").unwrap()];
+    assert!(plot.contains("112233"));
+}
+
+#[test]
+fn a_title_and_a_legend_put_by_hand_keep_their_place() {
+    use excelerate::model::chart::ManualLayout;
+    let mut book = open("chart1.xlsx");
+    let path = "xl/charts/chart2.xml";
+    let chart = chart_at_mut(&mut book, path);
+    let at = ManualLayout {
+        x: 12_500,
+        y: 80_000,
+        w: None,
+        h: None,
+    };
+    chart.legend.get_or_insert_default().layout = Some(at);
+    chart.title.get_or_insert_default().layout = Some(ManualLayout { x: 5_000, ..at });
+    let back = cycle(&book);
+    let chart = chart_at(&back, path);
+    assert_eq!(chart.legend.as_ref().unwrap().layout, Some(at));
+    assert_eq!(
+        chart.title.as_ref().unwrap().layout,
+        Some(ManualLayout { x: 5_000, ..at })
+    );
+    let text = text_of(&back, path);
+    let legend = &text[text.find("<c:legend>").unwrap()..text.find("</c:legend>").unwrap()];
+    assert!(legend.contains(r#"<c:x val="0.125"/>"#), "{legend}");
+    // The layout stands before the overlay, as the schema orders them.
+    let overlay = legend.find("<c:overlay").unwrap_or(legend.len());
+    assert!(legend.find("<c:layout>").unwrap() < overlay, "{legend}");
 }

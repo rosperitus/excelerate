@@ -135,6 +135,10 @@ export interface SheetChart {
   kinds: string[];
   seriesCount: number;
   anchor: ObjectAnchor;
+  /** The chart area's fill and outline; `null` leaves them to the chart style. */
+  format: DrawingFormat | null;
+  /** The plot area's, the same way. */
+  plotFormat: DrawingFormat | null;
 }
 /** A picture on the sheet, as `images` returns it. Bytes come from `imageData`. */
 export interface SheetImage {
@@ -151,6 +155,45 @@ export interface SheetShape {
   geometry: string | null;
   text: string;
   anchor: ObjectAnchor;
+  /** Degrees clockwise about the centre. */
+  rotation: number;
+  /** Mirrored left to right, before it is turned. */
+  flipH: boolean;
+  /** Mirrored top to bottom, before it is turned. */
+  flipV: boolean;
+  /** What Excel fills it with: its own, else its style's. */
+  fill: DrawingFill;
+  /** Its outline, the same way. */
+  line: DrawingLine;
+  /** The font of its text as the first run states it, the colour from the style if not. */
+  font: RunFont;
+}
+/**
+ * A colour of a drawing, resolved through the workbook theme to `#AARRGGBB` (`FF` for opaque);
+ * `null` for one no theme defines.
+ */
+export type DrawingColor = string | null;
+/** How a drawing object or chart area is filled. `position` is in percent, `angle` in degrees. */
+export type DrawingFill =
+  | { type: "none" }
+  | { type: "solid"; color: DrawingColor }
+  | {
+      type: "gradient";
+      stops: { position: number; color: DrawingColor }[];
+      angle: number | null;
+      path: "shape" | "circle" | "rect" | null;
+    }
+  | { type: "pattern"; preset: string | null; foreground: DrawingColor; background: DrawingColor }
+  | { type: "other" };
+/** An outline: `fill` is `null` and `width` (points) is `null` where the file is silent. */
+export interface DrawingLine {
+  fill: DrawingFill | null;
+  width: number | null;
+}
+/** The fill and outline an element states; `null` in either leaves it to the style. */
+export interface DrawingFormat {
+  fill: DrawingFill | null;
+  line: DrawingLine | null;
 }
 /**
  * A colour as the file states it: `null` when the file leaves it to the
@@ -221,11 +264,6 @@ export interface RangeStyles {
 #[wasm_bindgen(typescript_custom_section)]
 const WRITE_TYPES: &'static str = r#"
 /**
- * A style to write, as `setCellStyle` takes it. Every field is optional and
- * what is left out keeps the value the cell had, so `{ font: { bold: true } }`
- * makes a cell bold without touching its number format.
- */
-/**
  * What `setDocumentProperties` takes: a named field is set, `null` clears it,
  * a missing one stays. `custom` replaces the whole list; `type` is optional.
  */
@@ -234,6 +272,11 @@ export type DocumentPropertiesPatch = Partial<
 > & {
   custom?: { name: string; value: string | number | boolean; type?: CustomProperty["type"] }[];
 };
+/**
+ * A style to write, as `setCellStyle` takes it. Every field is optional and
+ * what is left out keeps the value the cell had, so `{ font: { bold: true } }`
+ * makes a cell bold without touching its number format.
+ */
 export interface CellStylePatch {
   numberFormat?: string;
   font?: Partial<{
@@ -281,5 +324,51 @@ export interface SortRangeOptions {
 export interface RangeStylesPatch {
   styles: CellStylePatch[];
   grid: (number | null)[][];
+}
+/**
+ * A colour to draw with: `#RRGGBB`, `#AARRGGBB` (the alpha is the opacity) or
+ * a theme colour by name - `accent1` to `accent6`, `tx1`, `tx2`, `bg1`,
+ * `bg2`, `hlink`, `folHlink` - which follows the workbook's theme.
+ */
+export type DrawingColorInput = string;
+/** A fill to write: the form `shapes` reads, without `other`. */
+export type DrawingFillInput =
+  | { type: "none" }
+  | { type: "solid"; color: DrawingColorInput }
+  | {
+      type: "gradient";
+      stops: { position: number; color: DrawingColorInput }[];
+      angle?: number | null;
+      path?: "shape" | "circle" | "rect" | null;
+    }
+  | { type: "pattern"; preset?: string | null; foreground?: DrawingColorInput; background?: DrawingColorInput };
+/**
+ * Fill and outline to lay over an object's own: a field left out stays,
+ * `null` gives it back to the style. `line.width` is in points.
+ */
+export interface DrawingFormatPatch {
+  fill?: DrawingFillInput | null;
+  line?: { fill?: DrawingFillInput | null; width?: number | null } | null;
+}
+/** What `setShapeFormat` takes. `rotation` is in degrees clockwise. */
+export interface ShapeFormatPatch extends DrawingFormatPatch {
+  font?: Pick<RunFont, "name" | "size" | "bold" | "italic" | "color">;
+  rotation?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+}
+/**
+ * What a table column keeps, as `setTableFilter` takes it: the shown values,
+ * one or two comparisons, or the largest or smallest few.
+ */
+export type TableFilter =
+  | { values: (string | number)[]; blank?: boolean }
+  | { custom: { op: "=" | "<>" | ">" | ">=" | "<" | "<="; value: string | number }[]; and?: boolean }
+  | { top: number; percent?: boolean }
+  | { bottom: number; percent?: boolean };
+/** What `setChartFormat` takes: the chart area and the plot area. */
+export interface ChartFormatPatch {
+  format?: DrawingFormatPatch | null;
+  plotFormat?: DrawingFormatPatch | null;
 }
 "#;

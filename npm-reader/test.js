@@ -3,17 +3,17 @@ const assert = require("node:assert");
 const { readFileSync } = require("node:fs");
 const { Book } = require("excelerate-reader");
 
-const bytes = readFileSync(`${__dirname}/../tests/corpus/test1.xlsx`);
+const bytes = readFileSync(`${__dirname}/../tests/fixtures/styles.xlsx`);
 
 test("reads a workbook and its sheets", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   assert.ok(book.sheetNames().length > 0);
   assert.ok(book.cellCount() > 0);
   assert.ok(book.usedRange(0).includes(":"));
 });
 
 test("the value, the displayed text and the formula text", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   const range = book.getRange(0, "A1:E5");
   assert.strictEqual(range.length, 5);
   // Formula cells answer with the value the file was saved with.
@@ -23,7 +23,7 @@ test("the value, the displayed text and the formula text", () => {
 });
 
 test("the style of a cell", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   const style = book.cellStyle(0, "A1");
   assert.strictEqual(typeof style.numberFormat, "string");
   assert.strictEqual(typeof style.font.name, "string");
@@ -37,7 +37,7 @@ test("the style of a cell", () => {
 });
 
 test("neither writing nor recalculation is in this build", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   for (const gone of [
     "toXlsx",
     "toOds",
@@ -53,7 +53,7 @@ test("neither writing nor recalculation is in this build", () => {
 });
 
 test("a whole row, boldness and merges in one call", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   const row = book.getRowAt(0, 1);
   assert.strictEqual(row.values.length, row.formatted.length);
   assert.strictEqual(row.values.length, row.bold.length);
@@ -96,14 +96,14 @@ test("what is on a sheet besides cells", () => {
 });
 
 test("the shape of a sheet without walking it", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   assert.strictEqual(book.usedRangeHint(0), book.usedRange(0));
   const width = book.columnWidth(0, 1);
   assert.ok(width == null || width > 0);
 });
 
 test("the rules and names a file states", () => {
-  const book = Book.read(bytes, "test1.xlsx");
+  const book = Book.read(bytes, "styles.xlsx");
   assert.ok(Array.isArray(book.definedNames()));
   assert.ok(Array.isArray(book.dataValidations(0)));
   assert.ok(Array.isArray(book.conditionalFormats(0)));
@@ -119,4 +119,46 @@ test("the rules and names a file states", () => {
 test("csv read with the delimiter stated", () => {
   const book = Book.readCsv(Buffer.from("a;1\nb;2\n"), { delimiter: ";" });
   assert.strictEqual(book.get(0, "B2"), 2);
+});
+
+test("forEachRow hands over what getRowAt answers, and keeps no grid", () => {
+  // Two sheets: the one streamed loses its cells, the other keeps them.
+  const bytes = readFileSync(`${__dirname}/../tests/fixtures/sample.xlsx`);
+  const whole = Book.read(bytes, "sample.xlsx");
+  let rows = 0;
+  const book = Book.forEachRow(bytes, "sample.xlsx", 0, (row, data) => {
+    rows += 1;
+    assert.deepStrictEqual(data, whole.getRowAt(0, row));
+  });
+  assert.ok(rows > 0);
+  assert.deepStrictEqual(book.sheetNames(), whole.sheetNames());
+  assert.strictEqual(book.getAt(0, 1, 1), null);
+  assert.deepStrictEqual(book.getRowAt(1, 1), whole.getRowAt(1, 1));
+});
+
+test("a callback that throws stops forEachRow with its error", () => {
+  let calls = 0;
+  assert.throws(
+    () => Book.forEachRow(bytes, "test1.xlsx", 0, () => {
+      calls += 1;
+      throw new Error("enough");
+    }),
+    /enough/,
+  );
+  assert.strictEqual(calls, 1);
+});
+
+test("forEachRow on a format that cannot stream hands over the same rows", () => {
+  const csv = new TextEncoder().encode("a,b\n\n1,2,3\n");
+  const seen = [];
+  const book = Book.forEachRow(csv, "rows.csv", 0, (row, data) => seen.push([row, data.values]));
+  assert.deepStrictEqual(seen, [[1, ["a", "b"]], [3, [1, 2, 3]]]);
+  assert.strictEqual(book.getAt(0, 1, 1), null);
+});
+
+test("a password opens an encrypted workbook", () => {
+  const encrypted = readFileSync(`${__dirname}/../tests/fixtures/encrypted.xlsx`);
+  assert.throws(() => Book.read(encrypted, "encrypted.xlsx"), /password/);
+  const book = Book.read(encrypted, "encrypted.xlsx", undefined, undefined, "пароль");
+  assert.deepStrictEqual(book.sheetNames(), ["Data", "Second"]);
 });
