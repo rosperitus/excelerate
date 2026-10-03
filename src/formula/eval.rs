@@ -108,6 +108,9 @@ pub struct Engine<'a> {
     /// The top left cells of the workbook's array formulas, built on first
     /// use.
     array_starts: Option<HashSet<(usize, CellRef)>>,
+    /// Every cell of an array formula's area but its top left one, and the
+    /// area, built on first use.
+    array_cells: Option<HashMap<(usize, CellRef), Range>>,
     /// Results other engines finished in a parallel pass, looked at before a
     /// formula cell is computed here.
     shared: Option<&'a Shared>,
@@ -195,6 +198,7 @@ impl<'a> Engine<'a> {
             parsed: HashMap::new(),
             implicit: false,
             array_starts: None,
+            array_cells: None,
             shared: None,
             stale: None,
         }
@@ -461,7 +465,19 @@ impl<'a> Engine<'a> {
     /// its own cell, and the rest of its range holds the rest as stored
     /// values; read through a reference, the whole array would otherwise be
     /// counted again for every cell. [`Engine::spilled`] has the array whole.
+    ///
+    /// The rest of that range is read from the array too, while its formula
+    /// is being computed in this pass: what the range stores is the answer to
+    /// the inputs before the edit.
     pub fn cell(&mut self, sheet: usize, at: CellRef) -> Value {
+        if let Some(area) = self.array_area(sheet, at)
+            && self
+                .stale
+                .is_none_or(|stale| stale.contains(&(sheet, area.start)))
+        {
+            let whole = self.spilled(sheet, area.start);
+            return area_value(&whole, area, at);
+        }
         match self.spilled(sheet, at) {
             Value::Array(rows) => rows
                 .first()
@@ -470,6 +486,32 @@ impl<'a> Engine<'a> {
                 .unwrap_or(Value::Blank),
             other => other,
         }
+    }
+
+    /// The area of the array formula `at` lies inside, when it is not the
+    /// formula's own cell.
+    fn array_area(&mut self, sheet: usize, at: CellRef) -> Option<Range> {
+        let book = self.book;
+        let cells = self.array_cells.get_or_insert_with(|| {
+            let mut cells = HashMap::new();
+            for (index, ws) in book.sheets().iter().enumerate() {
+                for &area in &ws.array_formulas {
+                    if !small_area(area)
+                        || !matches!(
+                            ws.get(area.start).map(|c| &c.value),
+                            Some(CellValue::Formula { .. })
+                        )
+                    {
+                        continue;
+                    }
+                    for cell in area.cells().skip(1) {
+                        cells.insert((index, cell), area);
+                    }
+                }
+            }
+            cells
+        });
+        cells.get(&(sheet, at)).copied()
     }
 
     /// What a cell's formula works out to, an array included, which is what
@@ -1404,13 +1446,74 @@ fn store(book: &mut Spreadsheet, results: Vec<(usize, CellRef, Value)>) -> usize
         };
         if let CellValue::Formula { cached, .. } = &mut sheet.entry(at).value {
             *cached = Some(Box::new(stored(&value)));
+        } else {
+            continue;
+        }
+        // The rest of an array formula's area holds the rest of its answer.
+        let Some(area) = sheet
+            .array_formulas
+            .iter()
+            .find(|area| area.start == at && area.start != area.end && small_area(**area))
+            .copied()
+        else {
+            continue;
+        };
+        for cell in area.cells().skip(1) {
+            sheet.entry(cell).value = stored(&area_value(&value, area, cell));
         }
     }
     computed
 }
 
-/// A computed value as it is stored in a cell: an array shows its top-left
-/// value, the way a single cell can only show one.
+/// The areas of the workbook's array formulas wider than one cell, by their
+/// top left cell.
+fn array_areas(book: &Spreadsheet) -> HashMap<(usize, CellRef), Range> {
+    book.sheets()
+        .iter()
+        .enumerate()
+        .flat_map(|(index, ws)| {
+            ws.array_formulas
+                .iter()
+                .filter(|area| area.start != area.end && small_area(**area))
+                .map(move |&area| ((index, area.start), area))
+        })
+        .collect()
+}
+
+/// Whether an array formula's area is small enough to lay an answer over: the
+/// area comes from the file, and one over a whole sheet is billions of cells.
+fn small_area(area: Range) -> bool {
+    u64::from(area.width()) * u64::from(area.height()) <= MAX_RANGE_CELLS as u64
+}
+
+/// What one cell of an array formula's area shows, the way Excel lays an
+/// answer over an area entered with Ctrl+Shift+Enter: a single row or column
+/// repeats across the area, a single value fills it, and a cell past the
+/// array's edge is `#N/A`.
+fn area_value(value: &Value, area: Range, at: CellRef) -> Value {
+    let Value::Array(rows) = value else {
+        return value.clone();
+    };
+    let offset = |a: u32, b: u32| usize::try_from(a - b).unwrap_or(usize::MAX);
+    let row = offset(at.row.index(), area.start.row.index());
+    let col = offset(at.col.index(), area.start.col.index());
+    let pick = |len: usize, i: usize| {
+        if len == 1 {
+            Some(0)
+        } else {
+            (i < len).then_some(i)
+        }
+    };
+    let width = rows.first().map_or(0, Vec::len);
+    match (pick(rows.len(), row), pick(width, col)) {
+        (Some(r), Some(c)) => rows[r]
+            .get(c)
+            .cloned()
+            .unwrap_or(Value::Error(CellError::Na)),
+        _ => Value::Error(CellError::Na),
+    }
+}
+
 /// Recomputes one formula and stores the result as that cell's cached value.
 /// Returns whether there was a formula there to compute.
 ///
@@ -1598,6 +1701,9 @@ struct Node {
     at: CellRef,
     reads: Vec<(usize, Range)>,
     always: bool,
+    /// The area an array formula lays its answer over, when that is more
+    /// than its own cell: a formula reading the area reads this one.
+    area: Option<Range>,
 }
 
 /// Functions whose answer does not follow from what `reads` holds: the clock
@@ -1679,7 +1785,9 @@ impl Dependencies {
         } else {
             vec![parse_chunk(&cells)]
         };
-        for (node, tree) in parts.into_iter().flatten() {
+        let areas = array_areas(book);
+        for (mut node, tree) in parts.into_iter().flatten() {
+            node.area = areas.get(&(node.sheet, node.at)).copied();
             formulas.push(node);
             trees.push(tree);
         }
@@ -1704,8 +1812,9 @@ impl Dependencies {
         self.formulas
             .retain(|node| node.sheet != sheet || node.at != at);
         if let Some(value) = book.sheet(sheet).and_then(|s| s.get(at)).map(|c| &c.value)
-            && let Some((node, _)) = node_of(&mut Refs::new(book), sheet, at, value)
+            && let Some((mut node, _)) = node_of(&mut Refs::new(book), sheet, at, value)
         {
+            node.area = array_areas(book).get(&(sheet, at)).copied();
             self.formulas.push(node);
         }
     }
@@ -1829,6 +1938,19 @@ impl Dependencies {
         graph.members = map_chunks(&graph.ranges, |&(sheet, range)| {
             formulas_in(&by_sheet, sheet, range)
         });
+        // An array formula stands in every rectangle its area touches, so a
+        // formula reading a cell of the area waits for it.
+        for &i in nodes {
+            let Some(area) = self.formulas[i].area else {
+                continue;
+            };
+            let sheet = self.formulas[i].sheet;
+            for (id, &(s, range)) in graph.ranges.iter().enumerate() {
+                if s == sheet && range.intersects(&area) && !graph.members[id].contains(&i) {
+                    graph.members[id].push(i);
+                }
+            }
+        }
         for (id, members) in graph.members.iter().enumerate() {
             for &j in members {
                 graph.member_of[j].push(id);
@@ -2028,6 +2150,7 @@ fn node_of(
             at,
             reads,
             always,
+            area: None,
         },
         expr,
     ))

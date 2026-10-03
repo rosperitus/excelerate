@@ -101,6 +101,11 @@
 
 ### Fixed
 
+- Recalculation left the rest of an array formula's area (`{=...}` entered
+  over several cells) holding the old answer, and formulas reading those
+  cells read it too. The area now gets the new array, laid out as Excel lays
+  it: a single row or column repeats, a cell past the array is `#N/A`.
+  `recalculate_from` follows an edit through the area.
 - A number format written the Russian way, `# ##0,00` (a space between
   placeholders groups, a comma before the decimals), rendered its comma as
   thousands and its spaces as text. It now prints `1 234,50` with the

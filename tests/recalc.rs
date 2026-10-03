@@ -540,3 +540,36 @@ fn an_edit_stands_on_the_values_already_stored() {
     assert_eq!(cached(&book, 0, "A3"), Some(5.0), "A3 was recomputed");
     assert_eq!(cached(&book, 0, "A4"), Some(50.0));
 }
+
+#[test]
+fn an_array_formula_lays_its_answer_over_its_area() {
+    // `{=A1:A3*2}` entered over B1:B4, as Ctrl+Shift+Enter leaves it: the
+    // formula in B1, the rest of the area holding values, and one cell more
+    // than the array has rows.
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("First").unwrap();
+    for (row, n) in [(1, 1.0), (2, 2.0), (3, 3.0)] {
+        sheet.set(at(&format!("A{row}")), n);
+    }
+    sheet.set(at("B1"), formula("A1:A3*2"));
+    sheet.array_formulas.push(excelerate::Range::parse("B1:B4").unwrap());
+    sheet.set(at("C1"), formula("SUM(B1:B3)"));
+    book.add_sheet(sheet).unwrap();
+
+    recalculate(&mut book, None, &Options::default());
+    assert_eq!(cached(&book, 0, "B1"), Some(2.0));
+    assert_eq!(cached(&book, 0, "B3"), Some(6.0));
+    assert_eq!(
+        book.sheet(0).unwrap().get(at("B4")).unwrap().value,
+        CellValue::Error(excelerate::CellError::Na),
+        "past the array's last row"
+    );
+    assert_eq!(cached(&book, 0, "C1"), Some(12.0));
+
+    // An edit of what the array reads reaches the whole area, and what reads
+    // the area sees the new values in the same pass.
+    book.sheet_mut(0).unwrap().set(at("A2"), 10.0);
+    recalculate_from(&mut book, &[(0, at("A2"))]);
+    assert_eq!(cached(&book, 0, "B2"), Some(20.0));
+    assert_eq!(cached(&book, 0, "C1"), Some(28.0));
+}
