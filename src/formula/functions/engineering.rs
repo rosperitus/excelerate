@@ -934,9 +934,6 @@ fn k_asymptotic(x: f64, n: u32) -> f64 {
     (std::f64::consts::PI / (2.0 * x)).sqrt() * (-x).exp() * total
 }
 
-/// Euler's constant, which every second-kind series carries.
-const EULER: f64 = 0.577_215_664_901_532_9;
-
 /// The harmonic numbers `1 + 1/2 + ... + 1/k`, which is the part of these
 /// series that the first kinds do not have.
 fn harmonic(k: u32) -> f64 {
@@ -958,7 +955,8 @@ fn y0(x: f64) -> f64 {
             break;
         }
     }
-    2.0 / std::f64::consts::PI * ((half.ln() + EULER) * series(x, 0, -1.0) - sum)
+    2.0 / std::f64::consts::PI
+        * ((half.ln() + std::f64::consts::EULER_GAMMA) * series(x, 0, -1.0) - sum)
 }
 
 /// `Y1(x)`, the same shape with the extra `-1/x` the order brings.
@@ -979,7 +977,9 @@ fn y1(x: f64) -> f64 {
         }
     }
     2.0 / std::f64::consts::PI
-        * ((half.ln() + EULER) * series(x, 1, -1.0) - 1.0 / x - half * sum / 2.0)
+        * ((half.ln() + std::f64::consts::EULER_GAMMA) * series(x, 1, -1.0)
+            - 1.0 / x
+            - half * sum / 2.0)
 }
 
 /// `K0(x)`: the modified second kind is the same series without the
@@ -997,7 +997,7 @@ fn k0(x: f64) -> f64 {
             break;
         }
     }
-    -(half.ln() + EULER) * series(x, 0, 1.0) + sum
+    -(half.ln() + std::f64::consts::EULER_GAMMA) * series(x, 0, 1.0) + sum
 }
 
 /// `K1(x)`.
@@ -1016,7 +1016,7 @@ fn k1(x: f64) -> f64 {
             break;
         }
     }
-    (half.ln() + EULER) * series(x, 1, 1.0) + 1.0 / x - half * sum / 2.0
+    (half.ln() + std::f64::consts::EULER_GAMMA) * series(x, 1, 1.0) + 1.0 / x - half * sum / 2.0
 }
 
 /// Shared body of the two: a value and a whole non-negative order.

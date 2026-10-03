@@ -110,7 +110,7 @@ fn a_removed_row_narrows_the_table() {
 
     let mut all = read_xlsx_from(Cursor::new(fixture())).unwrap();
     remove_rows(&mut all, 0, row(1), 5).unwrap();
-    assert!(all.sheets()[0].tables.is_empty());
+    assert_eq!(all.sheets()[0].tables, []);
 }
 
 /// A chart keeps its series as formulas naming cells of a sheet. The part is

@@ -88,6 +88,9 @@
 - `edit::insert_cells` refused to push cells down when the column just right
   of the area (or the row just below, pushing right) had something at the
   edge of the sheet: the edge it checked was one line too wide.
+- xlsx: an inline string (`t="inlineStr"`) written as `<r>` runs read as
+  plain text, so its fonts were lost on a rewrite. It now reads as
+  `CellValue::RichText`, the same as a rich string in the shared pool.
 
 ## 0.14.0
 

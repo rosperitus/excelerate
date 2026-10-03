@@ -2022,33 +2022,7 @@ fn read_sheet<R: Read + Seek>(
 ) -> Result<Worksheet> {
     let part = super::zipxml::open_part(zip, path).map_err(Error::Xlsx)?;
     let sheet = Worksheet::new(name)?;
-    let mut state = SheetReader {
-        sheet,
-        sheet_dir: path.rsplit_once('/').map_or("", |(dir, _)| dir),
-        shared,
-        links,
-        at: None,
-        kind: CellKind::Number,
-        style: StyleId::default(),
-        value: String::new(),
-        formula: String::new(),
-        in_value: false,
-        in_formula: false,
-        in_phonetic: false,
-        shared_index: None,
-        masters: HashMap::new(),
-        header_part: None,
-        breaks_are_rows: true,
-        in_scale: false,
-        in_cf_formula: false,
-        validation: None,
-        in_formula1: false,
-        in_formula2: false,
-        filter_col: None,
-        in_filter: false,
-        root_namespaces: Vec::new(),
-        ext_depth: 0,
-    };
+    let mut state = SheetReader::new(sheet, path, shared, links);
 
     // The part is parsed as it is inflated rather than read into memory
     // first. The one stretch kept as text is the sheet's own `<extLst>`, which
@@ -2206,6 +2180,11 @@ struct SheetReader<'a> {
     /// Inside `<rPh>` of an inline string: a reading guide for the text, not
     /// part of it.
     in_phonetic: bool,
+    /// The `<r>` runs of an inline string, read as the shared string pool
+    /// reads them; empty for a cell written with a bare `<t>`.
+    runs: Vec<TextRun>,
+    /// Inside `<rPr>` of such a run.
+    in_run_font: bool,
     /// `si` of the shared formula this cell takes part in, and the master cell
     /// of each group: xlsx writes the text once and leaves every other cell of
     /// the run to offset it.
@@ -2242,6 +2221,45 @@ struct SheetReader<'a> {
     /// `<x14:conditionalFormatting>` read as a `<conditionalFormatting>`
     /// becomes a rule with no range that the writer then puts in the sheet.
     ext_depth: u32,
+}
+
+impl<'a> SheetReader<'a> {
+    fn new(
+        sheet: Worksheet,
+        path: &'a str,
+        shared: &'a [CellValue],
+        links: &'a HashMap<String, Relationship>,
+    ) -> Self {
+        SheetReader {
+            sheet,
+            sheet_dir: path.rsplit_once('/').map_or("", |(dir, _)| dir),
+            shared,
+            links,
+            at: None,
+            kind: CellKind::Number,
+            style: StyleId::default(),
+            value: String::new(),
+            formula: String::new(),
+            in_value: false,
+            in_formula: false,
+            in_phonetic: false,
+            runs: Vec::new(),
+            in_run_font: false,
+            shared_index: None,
+            masters: HashMap::new(),
+            header_part: None,
+            breaks_are_rows: true,
+            in_scale: false,
+            in_cf_formula: false,
+            validation: None,
+            in_formula1: false,
+            in_formula2: false,
+            filter_col: None,
+            in_filter: false,
+            root_namespaces: Vec::new(),
+            ext_depth: 0,
+        }
+    }
 }
 
 impl SheetReader<'_> {
@@ -2281,6 +2299,7 @@ impl SheetReader<'_> {
                 self.value.clear();
                 self.formula.clear();
                 self.shared_index = None;
+                self.runs.clear();
                 for attr in e.attributes().flatten() {
                     let v = attr
                         .normalized_value(quick_xml::XmlVersion::Implicit1_0)
@@ -2314,10 +2333,20 @@ impl SheetReader<'_> {
             // its data validations - be swallowed as formula source.
             "v" => self.in_value = !empty,
             // `t="inlineStr"` keeps its text in `<is><t>`, or in a `<t>` per
-            // run of `<is><r>`; the runs are joined and their fonts dropped.
-            // ponytail: rich inline text reads as plain; parse `<r>` like the
-            // shared string pool does if a file needs the formatting.
+            // run of `<is><r>`, each with its own `<rPr>`.
             "rPh" => self.in_phonetic = !empty,
+            "r" if self.kind == CellKind::InlineString && !self.in_phonetic => {
+                self.runs.push(TextRun::default());
+            }
+            "rPr" if self.kind == CellKind::InlineString => {
+                if let Some(run) = self.runs.last_mut() {
+                    run.font = Some(DiffFont::default());
+                    self.in_run_font = !empty;
+                }
+            }
+            name if self.in_run_font => {
+                apply_run_font(self.runs.last_mut().and_then(|r| r.font.as_mut()), name, e);
+            }
             "t" if self.at.is_some()
                 && self.kind == CellKind::InlineString
                 && !self.in_phonetic =>
@@ -2585,6 +2614,7 @@ impl SheetReader<'_> {
         match name {
             "v" | "t" => self.in_value = false,
             "rPh" => self.in_phonetic = false,
+            "rPr" => self.in_run_font = false,
             "f" => self.in_formula = false,
             "colorScale" | "dataBar" | "iconSet" => self.in_scale = false,
             "formula" => self.in_cf_formula = false,
@@ -2607,8 +2637,13 @@ impl SheetReader<'_> {
                         at,
                         &self.formula,
                     );
+                    let value = if self.runs.is_empty() {
+                        build_value(self.kind, &self.value, &text, self.shared)
+                    } else {
+                        pooled(&std::mem::take(&mut self.runs))
+                    };
                     let cell = Cell {
-                        value: build_value(self.kind, &self.value, &text, self.shared),
+                        value,
                         style: self.style,
                     };
                     // An empty cell carrying only a style still matters:
@@ -2650,7 +2685,10 @@ impl SheetReader<'_> {
             return header_slot(&mut self.sheet, self.header_part.as_deref());
         }
         if self.in_value {
-            return Some(&mut self.value);
+            return Some(match self.runs.last_mut() {
+                Some(run) => &mut run.text,
+                None => &mut self.value,
+            });
         }
         if self.in_formula {
             return Some(&mut self.formula);
@@ -3557,6 +3595,15 @@ mod tests {
             Some("Bold part".to_owned()),
             "runs join, phonetics do not"
         );
+        let Some(CellValue::RichText(runs)) = sheet
+            .get(CellRef::parse("B1").unwrap())
+            .map(|c| c.value.clone())
+        else {
+            panic!("runs with a font read as rich text");
+        };
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].font, None);
+        assert_eq!(runs[1].font.as_ref().and_then(|f| f.bold), Some(true));
         assert_eq!(text("C1"), None);
         assert_eq!(
             sheet
@@ -3606,7 +3653,7 @@ mod tests {
         let sheet = book.sheet(0).expect("one sheet");
         assert_eq!(sheet.conditional_formats.len(), 1);
         assert_eq!(sheet.conditional_formats[0].rules[0].formulas, ["A1>0"]);
-        assert!(sheet.data_validations.is_empty());
+        assert_eq!(sheet.data_validations, []);
         assert!(
             sheet
                 .extensions

@@ -465,7 +465,7 @@ fn a_removed_waterfall_leaves_the_classic_charts() {
     book.sheet_mut(2).unwrap().extended_charts.clear();
     let back = cycle(&book);
     let sheet = back.sheet(2).unwrap();
-    assert!(sheet.extended_charts.is_empty());
+    assert_eq!(sheet.extended_charts, []);
     assert_eq!(sheet.charts, book.sheet(2).unwrap().charts);
 }
 

@@ -45,7 +45,7 @@ fn a_report_is_read_with_its_cache() {
     // middle - as indexes into the cache's fields.
     assert_eq!(table.row_fields, [0, 1]);
     assert_eq!(table.column_fields, [2]);
-    assert!(table.page_fields.is_empty());
+    assert_eq!(table.page_fields, []);
     assert_eq!(table.fields[0].axis, PivotAxis::Row);
     assert_eq!(table.fields[2].axis, PivotAxis::Column);
     assert!(table.fields[3].data_field);
@@ -319,7 +319,7 @@ fn a_removed_report_takes_its_part() {
         .to_owned();
     book.sheet_mut(0).unwrap().pivot_tables.clear();
     let (back, _) = cycle(&book);
-    assert!(back.sheet(0).unwrap().pivot_tables.is_empty());
+    assert_eq!(back.sheet(0).unwrap().pivot_tables, []);
     assert!(part(&back, &path).is_none());
     assert_eq!(back.pivot_caches, book.pivot_caches);
 }
