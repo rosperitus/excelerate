@@ -48,9 +48,13 @@ jobs:
           key: ${{ runner.os }}-wasm-${{ matrix.package }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-wasm-${{ matrix.package }}-
 
+      # Two builds per package: Node at its root, the browser under web/. The
+      # second reuses the compiled crate; only the bindings differ.
       - name: Build
         run: |
-          if [ "${{ matrix.package }}" = full ]; then ./build-npm.sh; else ./build-npm-reader.sh; fi
+          script=$([ "${{ matrix.package }}" = full ] && echo ./build-npm.sh || echo ./build-npm-reader.sh)
+          $script
+          $script web
 
       - name: The size of the wasm
         run: |

@@ -38,6 +38,22 @@ book.getRowAt(0, 3, false);   // the same without the displayed text, which is
                               // a string per cell nobody asked for
 ```
 
+## In the browser
+
+The package carries a second build for browsers and bundlers, and the same
+import picks it there. The module has to be started first, which fetches the
+`.wasm`; the rest is the same as in Node:
+
+```js
+import init, { Book } from "excelerate-reader";
+
+await init();
+const book = Book.read(new Uint8Array(await file.arrayBuffer()), file.name);
+```
+
+The server should send the `.wasm` as `application/wasm`. Without a bundler,
+an import map pointing at `@rosperitus/excelerate-reader/web/excelerate.js` does the same.
+
 ## Layout
 
 Reading a sheet usually means asking the same few things of every row, so each

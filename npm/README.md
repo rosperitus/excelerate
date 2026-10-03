@@ -74,6 +74,27 @@ book.setRange(0, "F1", [["Jan", "Кв1", 1], [null, null, 3]]);
 book.fillSeries(0, "F1:H6", "down");   // Feb..Jun, Кв2..Кв6, 5, 7, 9, 11
 ```
 
+## In the browser
+
+The package carries a second build for browsers and bundlers (Vite, webpack,
+esbuild), and the same import picks it there. The one difference from Node:
+the module has to be started first, which fetches the `.wasm`:
+
+```ts
+import init, { Book } from "@rosperitus/excelerate";
+
+await init();
+const file = document.querySelector("input[type=file]") as HTMLInputElement;
+const book = Book.read(new Uint8Array(await file.files![0].arrayBuffer()));
+const blob = new Blob([book.toXlsx()]);
+```
+
+The `.wasm` is fetched from beside the module, so the server should send it as
+`application/wasm`; then the browser compiles it as it streams. Without a
+bundler, an import map pointing at `@rosperitus/excelerate/web/index.js` does
+the same. `@rosperitus/excelerate/web` names the browser build explicitly,
+which also runs in Node given the bytes: `await init({ module_or_path: bytes })`.
+
 ## Objects and chains
 
 `Book` is one flat class addressed by sheet index. Over it sit `Workbook`,
