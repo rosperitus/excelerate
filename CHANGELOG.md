@@ -93,6 +93,11 @@
 
 ### Fixed
 
+- A number format written the Russian way, `# ##0,00` (a space between
+  placeholders groups, a comma before the decimals), rendered its comma as
+  thousands and its spaces as text. It now prints `1 234,50` with the
+  non-breaking space a Russian Windows uses. This is what `TEXT` gets in a
+  workbook typed in a Russian Excel. `0,000` still reads as English grouping.
 - `edit::insert_cells` refused to push cells down when the column just right
   of the area (or the row just below, pushing right) had something at the
   edge of the sheet: the edge it checked was one line too wide.

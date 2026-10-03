@@ -362,6 +362,8 @@ fn render_number(section: &str, value: f64, epoch: Epoch) -> String {
     if let Some(text) = render_fraction(section, value) {
         return text;
     }
+    let russian = russian_numbers(section);
+    let section = russian.as_deref().unwrap_or(section);
     let spec = scan(section);
     let mut n = value;
     for _ in 0..spec.percent {
@@ -377,6 +379,18 @@ fn render_number(section: &str, value: f64, epoch: Epoch) -> String {
 
     let mut out = String::new();
     let negative = n < 0.0 && !digits.chars().all(|c| c == '0' || c == '.' || c == ',');
+    let digits = if russian.is_some() {
+        digits
+            .chars()
+            .map(|c| match c {
+                '.' => ',',
+                ',' => RUSSIAN_GROUP,
+                c => c,
+            })
+            .collect()
+    } else {
+        digits
+    };
     let mut placed = false;
     // Whether the previous character belonged to the run of placeholders that
     // the number was rendered from.
@@ -440,6 +454,51 @@ fn render_number(section: &str, value: f64, epoch: Epoch) -> String {
         in_run = run_char;
     }
     out
+}
+
+/// The digit group separator a Russian Windows uses, which Excel prints.
+const RUSSIAN_GROUP: char = '\u{a0}';
+
+/// A number section written the Russian way, `# ##0,00`, turned into the one
+/// this module reads, `#,##0.00`; `None` for any other section.
+///
+/// Excel reads a `TEXT` format in the language it runs in, so a Russian
+/// workbook holds a space where English puts the group comma and a comma for
+/// the decimal point. Russian it is when a space stands between placeholders,
+/// or when a comma stands before a run of placeholders that is not three long
+/// and the section has no point.
+///
+/// ponytail: guesses from the section, because nothing records the language
+/// the workbook was typed in. `0,000` reads as English grouping, and a
+/// scientific mantissa keeps its point; a locale on the workbook would settle
+/// both.
+fn russian_numbers(section: &str) -> Option<String> {
+    let chars: Vec<char> = section.chars().collect();
+    let code = code_mask(&chars);
+    let placeholder = |i: usize| code[i] && matches!(chars[i], '0' | '#' | '?');
+    let between =
+        |i: usize| i > 0 && placeholder(i - 1) && i + 1 < chars.len() && placeholder(i + 1);
+    if (0..chars.len()).any(|i| code[i] && chars[i] == '.') {
+        return None;
+    }
+    let spaces = (0..chars.len()).any(|i| code[i] && chars[i] == ' ' && between(i));
+    let decimal = (0..chars.len()).find(|&i| code[i] && chars[i] == ',' && between(i));
+    let short_run =
+        decimal.is_some_and(|i| (i + 1..chars.len()).take_while(|&j| placeholder(j)).count() != 3);
+    if !spaces && !short_run {
+        return None;
+    }
+    Some(
+        chars
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| match c {
+                ',' if Some(i) == decimal => '.',
+                ' ' if code[i] && between(i) => ',',
+                c => c,
+            })
+            .collect(),
+    )
 }
 
 /// Renders a fraction format: `# ?/?`, `# ??/100`, `?/???`.
@@ -1263,6 +1322,18 @@ mod tests {
         assert_eq!(render(0.5, "0"), "1");
         assert_eq!(render(2.5, "0"), "3");
         assert_eq!(render(-2.5, "0"), "-3");
+    }
+
+    #[test]
+    fn a_russian_number_format_groups_with_spaces_and_a_decimal_comma() {
+        // What a Russian workbook holds in `TEXT(A1;"# ##0,00")`.
+        assert_eq!(render(1_234_567.891, "# ##0,00"), "1\u{a0}234\u{a0}567,89");
+        assert_eq!(render(-0.5, "0,0"), "-0,5");
+        assert_eq!(render(1234.5, r#"# ##0,00" руб.""#), "1\u{a0}234,50 руб.");
+        // English codes keep their meaning.
+        assert_eq!(render(1234.5, "#,##0"), "1,235");
+        assert_eq!(render(1234.5, "#,##0.00"), "1,234.50");
+        assert_eq!(render(1_234_567.0, "#,##0,"), "1,235");
     }
 
     #[test]

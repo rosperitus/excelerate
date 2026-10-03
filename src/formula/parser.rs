@@ -374,13 +374,14 @@ fn lex_quoted(c: &[char], i: &mut usize, quote: char, unterminated: &str) -> Res
 
 /// An error literal, `#` first.
 fn lex_error(c: &[char], i: &mut usize) -> Result<Tok> {
-    // FIXME: this builds a `String` for every `#`, where a prefix comparison
-    // would do. Error literals are rare enough that it has not been worth it.
-    let rest: String = c[*i..].iter().collect();
+    let rest = &c[*i..];
     let found = ERROR_LITERALS
         .iter()
-        .find(|lit| rest.starts_with(**lit))
-        .ok_or_else(|| Error::InvalidFormula(format!("unknown error literal {rest}")))?;
+        .find(|lit| rest.iter().copied().take(lit.len()).eq(lit.chars()))
+        .ok_or_else(|| {
+            let rest: String = rest.iter().collect();
+            Error::InvalidFormula(format!("unknown error literal {rest}"))
+        })?;
     *i += found.chars().count();
     CellError::parse(found)
         .map(Tok::Err)
