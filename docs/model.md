@@ -216,12 +216,11 @@ plot.series.push(Series {
 });
 plot.axis_ids = vec![1, 2];
 if let Some(sheet) = book.sheet_mut(0) {
-    sheet.charts.push(Chart {
-        name: "Revenue".into(),
-        plots: vec![plot],
-        axes: vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)],
-        ..Chart::default()
-    });
+    let mut chart = Chart::default();
+    chart.name = "Revenue".into();
+    chart.plots = vec![plot];
+    chart.axes = vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)];
+    sheet.charts.push(chart);
 }
 // Fill in the caches from the cells: one chart changed.
 assert_eq!(excelerate::formula::chart::refresh_caches(&mut book, None), 1);

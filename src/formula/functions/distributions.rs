@@ -1,6 +1,6 @@
 //! The statistical distributions.
 //!
-//! Each one is a thin shell over [`crate::shared::special`]: the normal is the
+//! Each one is a thin shell over `shared::special`: the normal is the
 //! error function, the chi-squared and the Poisson are the incomplete gamma,
 //! and the t, the F and the binomial are the incomplete beta. What is left here
 //! is Excel's own part - which argument order it uses, where it wants the

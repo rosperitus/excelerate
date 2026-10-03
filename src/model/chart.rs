@@ -31,6 +31,7 @@ use crate::model::DefinedName;
 
 /// A chart on a sheet.
 #[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
 pub struct Chart {
     /// The name the frame carries, which is what the selection pane shows.
     pub name: String,

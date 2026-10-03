@@ -1546,6 +1546,7 @@ impl SheetVisibility {
 
 /// A sheet of a workbook.
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 pub struct Worksheet {
     title: String,
     /// Whether the sheet has a tab, and whether that tab can be unhidden.
@@ -2057,6 +2058,7 @@ impl Worksheet {
 
 /// A workbook: its sheets and the tables they share.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Spreadsheet {
     sheets: Vec<Worksheet>,
     active: usize,

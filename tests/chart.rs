@@ -257,18 +257,17 @@ fn a_chart_made_in_code_is_written() {
         },
         edit_as: None,
     };
-    book.sheet_mut(0).unwrap().charts.push(Chart {
-        name: "Выручка".into(),
-        anchor,
-        title: Some(Title {
-            text: Some(ChartText::text("Выручка\nпо кварталам")),
-            ..Title::default()
-        }),
-        plots: vec![plot.clone()],
-        axes: vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)],
-        legend: Some(excelerate::model::chart::Legend::default()),
-        ..Chart::default()
+    let mut chart = Chart::default();
+    chart.name = "Выручка".into();
+    chart.anchor = anchor;
+    chart.title = Some(Title {
+        text: Some(ChartText::text("Выручка\nпо кварталам")),
+        ..Title::default()
     });
+    chart.plots = vec![plot.clone()];
+    chart.axes = vec![ChartAxis::category(1, 2), ChartAxis::value(2, 1)];
+    chart.legend = Some(excelerate::model::chart::Legend::default());
+    book.sheet_mut(0).unwrap().charts.push(chart);
 
     let back = cycle(&book);
     let sheet = back.sheet(0).unwrap();
@@ -396,10 +395,9 @@ fn a_plot_with_no_axes_is_refused() {
         values: Some(DataSource::numbers("Worksheet!$A$1:$A$3")),
         ..Series::default()
     });
-    book.sheet_mut(0).unwrap().charts.push(Chart {
-        plots: vec![plot],
-        ..Chart::default()
-    });
+    let mut chart = Chart::default();
+    chart.plots = vec![plot];
+    book.sheet_mut(0).unwrap().charts.push(chart);
     let mut bytes = Vec::new();
     assert!(write_xlsx_to(&book, Cursor::new(&mut bytes)).is_err());
 }

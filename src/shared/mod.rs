@@ -1,12 +1,18 @@
 //! Shared helper subsystems.
 
-pub mod biff_functions;
+// The writers and the formula engine are what use most of these; a build
+// with neither leaves part of them idle, and that is not dead code to delete.
+#[cfg_attr(not(any(feature = "write", feature = "formulas")), allow(dead_code))]
+pub(crate) mod biff_functions;
 pub mod codepage;
 pub mod date;
-pub mod date_parse;
-pub mod odf_formula;
-pub mod palette;
-pub mod special;
+pub(crate) mod date_parse;
+#[cfg_attr(not(any(feature = "write", feature = "formulas")), allow(dead_code))]
+pub(crate) mod odf_formula;
+#[cfg_attr(not(any(feature = "write", feature = "formulas")), allow(dead_code))]
+pub(crate) mod palette;
+#[cfg_attr(not(any(feature = "write", feature = "formulas")), allow(dead_code))]
+pub(crate) mod special;
 
 /// Seconds since the Unix epoch, as the clock of whatever platform this runs
 /// on reports them.
@@ -16,7 +22,7 @@ pub mod special;
 /// caller (`TODAY`, `NOW`, `RAND`, a date written without a year) only needs
 /// the wall clock, not monotonicity.
 #[must_use]
-pub fn unix_seconds() -> f64 {
+pub(crate) fn unix_seconds() -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
         js_sys::Date::now() / 1000.0

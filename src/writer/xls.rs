@@ -11,7 +11,7 @@
 //! format, font, fill, borders, alignment and protection - merges, column
 //! widths and row heights, and the workbook's base date.
 //!
-//! Colours go through the 56-entry palette ([`crate::shared::palette`]): a
+//! Colours go through the 56-entry palette (`shared::palette`): a
 //! colour the default palette has keeps its entry, one it lacks takes over an
 //! entry no other colour of the workbook uses and a `PALETTE` record is
 //! written, and past 56 distinct colours the rest get the nearest entry. Theme

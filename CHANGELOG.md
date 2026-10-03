@@ -82,6 +82,14 @@
   `..Default::default()`).
 - `Chart` gains `format` and `plot_format`; `ChartMarkup::after_chart` and
   `after_axes` no longer hold those `c:spPr` elements.
+- `Spreadsheet`, `Worksheet`, `Chart` and `Table` are `#[non_exhaustive]`,
+  so a field added later no longer breaks code outside the crate. They can
+  no longer be written as literals there: start from `Spreadsheet::new`,
+  `Worksheet::new`, `Chart::default()` or the new `Table::new(id, name,
+  range, columns)` and set fields.
+- `shared::{biff_functions, date_parse, odf_formula, palette, special}` and
+  `shared::unix_seconds` are no longer public; they were internals. `shared::date`
+  and `shared::codepage` stay.
 
 ### Fixed
 

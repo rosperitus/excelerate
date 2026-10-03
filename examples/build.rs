@@ -11,7 +11,7 @@
 
 use excelerate::formula::eval::recalculate;
 use excelerate::model::protection::PasswordHash;
-use excelerate::model::table::{Table, TableColumn};
+use excelerate::model::table::Table;
 use excelerate::model::{
     AutoFilter, CellValue, Comment, Hyperlink, LinkTarget, Spreadsheet, TextRun, Worksheet,
 };
@@ -96,30 +96,10 @@ fn main() {
     }
 
     // A table, so that Excel draws banding and structured references work.
-    sheet.tables.push(Table {
-        id: 1,
-        name: "Продажи".to_owned(),
-        display_name: "Продажи".to_owned(),
-        range: Range::new(at("A2"), at(&format!("C{}", total - 1))),
-        header_row_count: None,
-        totals_row_count: None,
-        auto_filter: Some(AutoFilter::new(Range::new(
-            at("A2"),
-            at(&format!("C{}", total - 1)),
-        ))),
-        sort_state: None,
-        columns: ["Товар", "Штук", "Сумма"]
-            .into_iter()
-            .enumerate()
-            .map(|(index, name)| TableColumn {
-                id: u32::try_from(index).expect("three columns") + 1,
-                name: name.to_owned(),
-                ..TableColumn::default()
-            })
-            .collect(),
-        style: None,
-        extensions: None,
-    });
+    let area = Range::new(at("A2"), at(&format!("C{}", total - 1)));
+    let mut table = Table::new(1, "Продажи", area, ["Товар", "Штук", "Сумма"]);
+    table.auto_filter = Some(AutoFilter::new(area));
+    sheet.tables.push(table);
 
     sheet.comments.insert(
         at("C1"),
