@@ -189,7 +189,7 @@ fn directory(placed: &[(&str, usize, usize)], sectors: usize) -> Vec<u8> {
         (upper.len(), upper)
     });
     let mut links = vec![(FREE, FREE, true); placed.len()];
-    let depth = placed.len().bit_width();
+    let depth = usize::BITS - placed.len().leading_zeros();
     let perfect = (placed.len() + 1).is_power_of_two();
     let root = tree(&order, 1, depth, perfect, &mut links);
     write_entry(

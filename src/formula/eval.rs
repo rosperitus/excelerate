@@ -594,39 +594,40 @@ impl<'a> Engine<'a> {
             return Value::Error(CellError::Ref);
         };
         let stored = ws.get(at).map(|c| c.value.clone());
-        let value = match stored {
-            None | Some(CellValue::Empty) => Value::Blank,
-            Some(CellValue::Number(n)) => Value::Number(n),
-            Some(CellValue::Text(t)) => Value::Text(t.to_string()),
+        // A formula cell answered without computing it here: finished by
+        // another engine of a parallel pass, outside this pass and so as
+        // stored, or claimed from another engine now.
+        let ready = match &stored {
+            Some(CellValue::Formula { cached, .. }) => {
+                if let Some(done) = self.shared.and_then(|sh| sh.get(sheet, at)) {
+                    Some(done.clone())
+                } else if let Some(cached) = cached
+                    && self
+                        .stale
+                        .is_some_and(|stale| !stale.contains(&(sheet, at)))
+                {
+                    Some(stored_value(cached))
+                } else {
+                    self.shared
+                        .and_then(|sh| sh.slot(sheet, at).and_then(|slot| sh.claim(slot)))
+                        .cloned()
+                }
+            }
+            _ => None,
+        };
+        let value = match (ready, stored) {
+            (Some(done), _) => done,
+            (None, None | Some(CellValue::Empty)) => Value::Blank,
+            (None, Some(CellValue::Number(n))) => Value::Number(n),
+            (None, Some(CellValue::Text(t))) => Value::Text(t.to_string()),
             // Formatting inside the cell is presentation; a formula reads the
             // text it spells.
-            Some(rich @ CellValue::RichText(_)) => {
+            (None, Some(rich @ CellValue::RichText(_))) => {
                 Value::Text(rich.plain_text().unwrap_or_default())
             }
-            Some(CellValue::Bool(b)) => Value::Bool(b),
-            Some(CellValue::Error(e)) => Value::Error(e),
-            Some(CellValue::Formula { .. })
-                if let Some(done) = self.shared.and_then(|sh| sh.get(sheet, at)) =>
-            {
-                done.clone()
-            }
-            Some(CellValue::Formula {
-                cached: Some(cached),
-                ..
-            }) if self
-                .stale
-                .is_some_and(|stale| !stale.contains(&(sheet, at))) =>
-            {
-                stored_value(&cached)
-            }
-            Some(CellValue::Formula { .. })
-                if let Some(sh) = self.shared
-                    && let Some(slot) = sh.slot(sheet, at)
-                    && let Some(done) = sh.claim(slot) =>
-            {
-                done.clone()
-            }
-            Some(CellValue::Formula { formula, .. }) => {
+            (None, Some(CellValue::Bool(b))) => Value::Bool(b),
+            (None, Some(CellValue::Error(e))) => Value::Error(e),
+            (None, Some(CellValue::Formula { formula, .. })) => {
                 // A formula that refers back to its own cell would recurse for
                 // ever. Excel answers 0 and warns; making it visible is more
                 // use than a silent zero.

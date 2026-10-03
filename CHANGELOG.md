@@ -86,6 +86,8 @@
 
 ### Changed
 
+- The crate declares `rust-version = "1.92"` and builds on it. It did not
+  before: `if let` guards in the formula engine need a newer compiler.
 - An insertion of rows or columns that would push a stored cell or a merged
   area past the last row or column is refused with the new
   `Error::WouldPushOffSheet`, and the workbook is left as it was, the way
