@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- A copy of a workbook shares the cells of its sheets in chunks of 1024
+  rows, and a change after the copy copies the chunk it lands in rather than
+  the whole sheet. An editor keeping a copy of the book per undo step paid
+  for every cell of the sheet on each step: on two million cells, ten steps
+  of a copy and one changed cell took 0.6 s and 1.1 GB, and now take 3 ms
+  and 6 MB. Reading and walking a sheet cost what they did.
+
 ## 0.15.0
 
 ### Added

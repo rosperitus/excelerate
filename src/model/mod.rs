@@ -1544,6 +1544,84 @@ impl SheetVisibility {
     }
 }
 
+/// Rows in one chunk of a [`RowMap`].
+const CHUNK_ROWS: u32 = 1024;
+
+/// The cells of one row, sorted by column.
+type Line = Vec<(Col, Cell)>;
+
+/// The rows of a sheet, cut into chunks of [`CHUNK_ROWS`] rows, each shared
+/// and copied on its first change.
+///
+/// A copy of the sheet costs a count per chunk, and a change after it copies
+/// the one chunk it lands in. One shared map for the whole sheet copied all
+/// of it instead: an editor keeping a copy of the book per undo step paid a
+/// hundred megabytes a step on a sheet of two million cells.
+///
+/// No chunk is empty, so the first and the last row are at the ends of the
+/// first and the last chunk.
+#[derive(Debug, Clone, Default)]
+struct RowMap(Arc<BTreeMap<u32, Arc<BTreeMap<Row, Line>>>>);
+
+impl RowMap {
+    const fn chunk(row: Row) -> u32 {
+        row.index() / CHUNK_ROWS
+    }
+
+    fn get(&self, row: Row) -> Option<&Line> {
+        self.0.get(&Self::chunk(row))?.get(&row)
+    }
+
+    fn first(&self) -> Option<(&Row, &Line)> {
+        self.0.values().next()?.first_key_value()
+    }
+
+    fn last(&self) -> Option<(&Row, &Line)> {
+        self.0.values().next_back()?.last_key_value()
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&Row, &Line)> {
+        self.0.values().flat_map(|chunk| chunk.iter())
+    }
+
+    /// The row at `row` for modification, created with room for `width`
+    /// cells if absent.
+    fn line_mut(&mut self, row: Row, width: usize) -> &mut Line {
+        let chunk = Arc::make_mut(&mut self.0)
+            .entry(Self::chunk(row))
+            .or_default();
+        Arc::make_mut(chunk)
+            .entry(row)
+            .or_insert_with(|| Vec::with_capacity(width))
+    }
+
+    /// Removes the cell at `index` of row `row`, dropping the row and its
+    /// chunk once they are empty. `None` if the row is absent.
+    fn remove(&mut self, row: Row, index: usize) -> Option<Cell> {
+        let chunks = Arc::make_mut(&mut self.0);
+        let key = Self::chunk(row);
+        let chunk = Arc::make_mut(chunks.get_mut(&key)?);
+        let line = chunk.get_mut(&row)?;
+        if index >= line.len() {
+            return None;
+        }
+        let (_, cell) = line.remove(index);
+        if line.is_empty() {
+            chunk.remove(&row);
+            if chunk.is_empty() {
+                chunks.remove(&key);
+            }
+        }
+        Some(cell)
+    }
+
+    fn lines_mut(&mut self) -> impl Iterator<Item = &mut Line> {
+        Arc::make_mut(&mut self.0)
+            .values_mut()
+            .flat_map(|chunk| Arc::make_mut(chunk).values_mut())
+    }
+}
+
 /// A sheet of a workbook.
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -1559,11 +1637,9 @@ pub struct Worksheet {
     /// cost in memory. A row is read and written in column order, so appending
     /// is the common insert.
     ///
-    /// Shared, and copied on the first change: the xlsx writer clones the
-    /// workbook to rewrite a changed chart's parts, and on a sheet of a
-    /// million cells a copy of them was hundreds of megabytes it never
-    /// touched.
-    cells: Arc<BTreeMap<Row, Vec<(Col, Cell)>>>,
+    /// Shared, and copied on the first change a chunk of rows at a time: see
+    /// [`RowMap`].
+    cells: RowMap,
     /// How many cells `cells` holds, kept rather than counted.
     count: usize,
     /// The columns cells have been written in: the leftmost and the rightmost
@@ -1694,7 +1770,7 @@ impl Worksheet {
     /// The cell at `at`. A missing cell is indistinguishable from an empty one.
     #[must_use]
     pub fn get(&self, at: CellRef) -> Option<&Cell> {
-        let line = self.cells.get(&at.row)?;
+        let line = self.cells.get(at.row)?;
         line.binary_search_by_key(&at.col, |(col, _)| *col)
             .ok()
             .map(|i| &line[i].1)
@@ -1796,11 +1872,8 @@ impl Worksheet {
         // holds: rows of one sheet tend to be alike, and a row grown by pushes
         // to nine cells holds room for sixteen, which over a million rows was
         // most of the memory reading a sheet peaked at.
-        let cells = Arc::make_mut(&mut self.cells);
-        let width = cells.last_key_value().map_or(0, |(_, line)| line.len());
-        let line = cells
-            .entry(at.row)
-            .or_insert_with(|| Vec::with_capacity(width));
+        let width = self.cells.last().map_or(0, |(_, line)| line.len());
+        let line = self.cells.line_mut(at.row, width);
         // Cells arrive in column order when a sheet is read, so the end of
         // the row is checked before a search.
         let index = match line.last() {
@@ -1824,14 +1897,10 @@ impl Worksheet {
 
     /// Removes the cell at `at`, returning it.
     pub fn remove(&mut self, at: CellRef) -> Option<Cell> {
-        let line = self.cells.get(&at.row)?;
+        // Searched before the chunk is copied: a miss copies nothing.
+        let line = self.cells.get(at.row)?;
         let index = line.binary_search_by_key(&at.col, |(col, _)| *col).ok()?;
-        let cells = Arc::make_mut(&mut self.cells);
-        let line = cells.get_mut(&at.row)?;
-        let (_, cell) = line.remove(index);
-        if line.is_empty() {
-            cells.remove(&at.row);
-        }
+        let cell = self.cells.remove(at.row, index)?;
         self.count -= 1;
         if self.count == 0 {
             self.col_span = None;
@@ -1850,9 +1919,7 @@ impl Worksheet {
     /// What a streaming read does once it has handed a row over: the row is
     /// the caller's now, and holding it is what makes a big sheet expensive.
     pub fn clear_cells(&mut self) {
-        if self.count > 0 {
-            Arc::make_mut(&mut self.cells).clear();
-        }
+        self.cells = RowMap::default();
         self.count = 0;
         self.col_span = None;
         self.span_stale = false;
@@ -1881,7 +1948,7 @@ impl Worksheet {
     /// The cells of one row, in column order.
     pub fn row_cells(&self, row: Row) -> impl Iterator<Item = (Col, &Cell)> {
         self.cells
-            .get(&row)
+            .get(row)
             .into_iter()
             .flat_map(|line| line.iter().map(|(col, cell)| (*col, cell)))
     }
@@ -1890,7 +1957,7 @@ impl Worksheet {
     /// once a sheet is complete: a row grown to nine cells by pushes holds
     /// room for sixteen.
     pub fn shrink_to_fit(&mut self) {
-        for line in Arc::make_mut(&mut self.cells).values_mut() {
+        for line in self.cells.lines_mut() {
             line.shrink_to_fit();
         }
     }
@@ -2029,8 +2096,8 @@ impl Worksheet {
     /// ```
     #[must_use]
     pub fn dimension_hint(&self) -> Option<Range> {
-        let (&first_row, _) = self.cells.first_key_value()?;
-        let (&last_row, _) = self.cells.last_key_value()?;
+        let (&first_row, _) = self.cells.first()?;
+        let (&last_row, _) = self.cells.last()?;
         let (min_col, max_col) = self.col_span?;
         Some(Range::new(
             CellRef::new(min_col, first_row),
@@ -2049,14 +2116,14 @@ impl Worksheet {
         if !self.span_stale {
             return self.dimension_hint();
         }
-        let (&first_row, _) = self.cells.first_key_value()?;
-        let (&last_row, _) = self.cells.last_key_value()?;
+        let (&first_row, _) = self.cells.first()?;
+        let (&last_row, _) = self.cells.last()?;
         // Rows are sorted by column, so each gives its extremes at its ends:
         // a walk of the rows, not of the cells.
         let mut columns = self
             .cells
-            .values()
-            .filter_map(|line| Some((line.first()?.0, line.last()?.0)));
+            .iter()
+            .filter_map(|(_, line)| Some((line.first()?.0, line.last()?.0)));
         let (mut min_col, mut max_col) = columns.next()?;
         for (first, last) in columns {
             min_col = min_col.min(first);
@@ -2386,6 +2453,48 @@ mod tests {
         assert_eq!(sheet.dimension(), Some(Range::parse("A1:C2").unwrap()));
 
         assert_eq!(sheet.row_cells(Row::new(1).unwrap()).count(), 3);
+    }
+
+    /// A copy of a sheet shares its cells, and a change to one cell copies
+    /// the chunk of rows that holds it, not the sheet: undo keeps a copy of
+    /// the book per step, and a sheet of two million cells cost a hundred
+    /// megabytes a step.
+    #[test]
+    fn a_change_after_a_copy_copies_one_chunk_of_rows() {
+        let mut sheet = Worksheet::new("S").unwrap();
+        for row in 1..=10_000 {
+            sheet.set_at(row, 1, f64::from(row)).unwrap();
+            sheet.set_at(row, 2, "x").unwrap();
+        }
+        let copy = sheet.clone();
+        let chunks = |s: &Worksheet| s.cells.0.values().cloned().collect::<Vec<_>>();
+        let shared = |a: &Worksheet, b: &Worksheet| {
+            chunks(a)
+                .iter()
+                .zip(chunks(b).iter())
+                .filter(|(x, y)| std::sync::Arc::ptr_eq(x, y))
+                .count()
+        };
+        let total = chunks(&sheet).len();
+        assert!(total > 5, "the sheet spans several chunks");
+        assert_eq!(shared(&sheet, &copy), total);
+
+        sheet.set_at(5_000, 1, "changed").unwrap();
+        assert_eq!(shared(&sheet, &copy), total - 1);
+        assert_eq!(
+            copy.get_at(5_000, 1).and_then(|c| c.value.as_number()),
+            Some(5_000.0)
+        );
+
+        // Order, edges and removal across chunk boundaries.
+        assert!(sheet.remove(CellRef::from_row_col(1, 1).unwrap()).is_some());
+        assert!(sheet.remove(CellRef::from_row_col(1, 2).unwrap()).is_some());
+        let rows: Vec<u32> = sheet.iter().map(|(at, _)| at.row.one_based()).collect();
+        assert!(rows.windows(2).all(|w| w[0] <= w[1]));
+        assert_eq!(rows.len(), 19_998);
+        assert_eq!(sheet.dimension(), Some(Range::parse("A2:B10000").unwrap()));
+        assert_eq!(copy.len(), 20_000);
+        assert_eq!(copy.dimension(), Some(Range::parse("A1:B10000").unwrap()));
     }
 
     use super::{CellValue, MAX_STRING_LENGTH, Spreadsheet, Worksheet};
