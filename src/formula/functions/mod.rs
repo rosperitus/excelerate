@@ -327,6 +327,15 @@ fn is_reference(e: &Expr) -> bool {
     }
 }
 
+/// The fewest and the most arguments a built-in function takes, as Excel's
+/// function table gives them; `None` for a name the table does not hold.
+///
+/// For an editor that hints how many arguments a call wants.
+#[must_use]
+pub fn arity(name: &str) -> Option<(u8, u8)> {
+    crate::shared::biff_functions::by_name(name).map(|f| (f.min, f.max))
+}
+
 /// Whether a function of this name exists yet.
 #[must_use]
 pub fn is_known(name: &str) -> bool {
@@ -1112,5 +1121,14 @@ pub(crate) fn one(args: &[Arg], f: impl Fn(f64) -> Value) -> Value {
             Err(e) => Value::Error(e),
         },
         _ => Value::Error(CellError::Value),
+    }
+}
+
+#[cfg(test)]
+mod arity_tests {
+    #[test]
+    fn arity_comes_from_the_function_table() {
+        assert_eq!(super::arity("ROUND"), Some((2, 2)));
+        assert_eq!(super::arity("NO.SUCH.FUNCTION"), None);
     }
 }

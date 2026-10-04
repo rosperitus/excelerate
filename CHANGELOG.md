@@ -83,6 +83,9 @@
   and in a bundler after `await init()`. `…/web` names it explicitly. The
   published package used to be the Node build alone, which a browser cannot
   load.
+- `formula::functions::arity(name)`: the fewest and most arguments of a
+  built-in function, from Excel's function table, for an editor hinting a
+  call now that `shared::biff_functions` is internal.
 
 ### Changed
 
