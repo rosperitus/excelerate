@@ -373,6 +373,13 @@ values area and a placeholder for the laid-out rows, with the cache marked
 from the source range. A changed cache is written without its records. A
 report removed from the sheet takes its part with it.
 
+`edit::refresh_pivot(&mut book, sheet, table, &PivotCaptions::default())`
+lays a report out in the cells, as Excel's Refresh does: it reads the source,
+writes labels and numbers in Excel's tabular form from the report's top-left
+corner, clears the old report and brings the definition and its cache up to
+date. `PivotCaptions` carries the words ("Grand Total", "Sum of {}"), English
+by default.
+
 ```rust
 # use excelerate::Range;
 # use excelerate::model::Spreadsheet;

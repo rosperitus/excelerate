@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Added
+
+- Refreshing a pivot table: `edit::refresh_pivot(book, sheet, table,
+  &PivotCaptions)` reads the source range its cache names (a sheet and
+  range, a table or a defined name), lays the report out in the cells from
+  the old top-left corner in Excel's tabular form, clears the old report and
+  returns the new range. Several row and column fields, several value fields
+  (the values field `-2` goes on the columns when there are two or more), all
+  eleven functions, subtotals of outer fields, both grand totals and a page
+  filter's item. Items sort as Excel's pivot does, numbers first and blanks
+  last; an error among the values is the cell's value. The definition and
+  its cache are brought up to date: location, header sizes, captions of value
+  fields, field names and the shared items of the fields on an axis.
+  `PivotCaptions` holds the words, English by default.
+- `PivotField::page_item`: the item a page filter shows, read from
+  `<pageField item>` and written back.
+
+### Fixed
+
+- A pivot table saved by Excel 2010 or later read with an empty name, cache
+  id 0 and no grand totals: the `<x14:pivotTableDefinition>` in its
+  `<extLst>` overwrote the root's attributes.
+- `GETPIVOTDATA` took the grand total row from `row_grand_totals`; in the
+  file that flag is the column of row totals, and the row is
+  `column_grand_totals`. The model's documentation of the two said the same
+  wrong thing.
+
 ### Changed
 
 - A copy of a workbook shares the cells of its sheets in chunks of 1024

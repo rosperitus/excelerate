@@ -213,11 +213,12 @@ impl Report<'_> {
             }
         }
         // Nothing asked about the rows, or the columns: the answer is then the
-        // grand total, which the report puts last.
-        if !narrowed_rows && self.table.row_grand_totals && rows.len() > 1 {
+        // grand total, which the report puts last: the row of column totals,
+        // the column of row totals.
+        if !narrowed_rows && self.table.column_grand_totals && rows.len() > 1 {
             rows = rows.split_off(rows.len() - 1);
         }
-        if !narrowed_cols && self.table.column_grand_totals && cols.len() > 1 {
+        if !narrowed_cols && self.table.row_grand_totals && cols.len() > 1 {
             cols = cols.split_off(cols.len() - 1);
         }
         self.total_rows(&mut rows, asked, &label_cols);
