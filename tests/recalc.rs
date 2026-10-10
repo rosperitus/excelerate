@@ -718,3 +718,39 @@ fn reference_expressions_resolve_to_a_sheet_and_range() {
     };
     assert_eq!(engine.offset_area(origin, &args), Ok((None, range("B2"))));
 }
+
+/// A reference that lands on one cell through a defined name or `INDEX`,
+/// positions computed, is a reference all the same.
+#[test]
+fn reference_of_resolves_single_cells_through_names_and_index() {
+    use excelerate::coordinate::Range;
+    use excelerate::formula::eval::{Engine, Origin};
+    use excelerate::formula::parser::parse;
+    use excelerate::model::DefinedName;
+
+    let mut book = book();
+    for (name, formula) in [("Section", "Second!$C$19"), ("List", "First!$D$1:$D$9")] {
+        book.defined_names.push(DefinedName {
+            name: name.to_owned(),
+            sheet: None,
+            formula: formula.to_owned(),
+            hidden: false,
+        });
+    }
+    let mut engine = Engine::new(&book);
+    let origin = Origin::new(0, at("A1"));
+    let mut of = |text: &str| engine.reference_of(origin, &parse(text).unwrap());
+    let range = |r: &str| Range::parse(r).unwrap();
+    assert_eq!(of("Section"), Some((Some("Second".into()), range("C19"))));
+    assert_eq!(
+        of("INDEX(List,2)"),
+        Some((Some("First".into()), range("D2")))
+    );
+    // A1:A4 holds four values.
+    assert_eq!(
+        of("INDEX(List,COUNTA(A:A))"),
+        Some((Some("First".into()), range("D4")))
+    );
+    assert_eq!(of("CHOOSE(2,A1,$B$7)"), Some((None, range("B7"))));
+    assert_eq!(engine.area_of(origin, &parse("Section").unwrap()), None);
+}

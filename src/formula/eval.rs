@@ -301,7 +301,7 @@ impl<'a> Engine<'a> {
         if !self.implicit {
             return None;
         }
-        let (sheet, area) = self.area_within(origin, expr, 0)?;
+        let (sheet, area) = self.area_within(origin, expr, 0, false)?;
         let at = origin.at;
         let col = if area.width() == 1 {
             area.start.col
@@ -368,7 +368,7 @@ impl<'a> Engine<'a> {
     /// `None` is the formula's own. `None` overall for a single cell or for
     /// anything that has to be computed to be known.
     pub fn area_of(&mut self, origin: Origin, expr: &Expr) -> Option<(Option<String>, Range)> {
-        self.area_within(origin, expr, 0)
+        self.area_within(origin, expr, 0, false)
     }
 
     /// The sheet and rectangle any reference expression means, one cell
@@ -377,18 +377,7 @@ impl<'a> Engine<'a> {
     /// form control's linked cell or input range points at. `None` for an
     /// expression that is not a reference.
     pub fn reference_of(&mut self, origin: Origin, expr: &Expr) -> Option<(Option<String>, Range)> {
-        match expr {
-            Expr::Range { sheet, range, .. } => Some((sheet.clone(), *range)),
-            Expr::Structured(reference) => {
-                let (sheet, range) = self.resolve_table(origin, reference).ok()?;
-                Some((Some(sheet), range))
-            }
-            Expr::Call { name, args } if name == "OFFSET" => self.offset_area(origin, args).ok(),
-            Expr::Call { name, args } if name == "INDIRECT" => {
-                crate::formula::functions::lookup::indirect_area(self, origin, args).ok()
-            }
-            _ => self.area_within(origin, expr, 0),
-        }
+        self.area_within(origin, expr, 0, true)
     }
 
     /// The sheet and rectangle `OFFSET(reference, rows, cols, [height],
@@ -411,9 +400,12 @@ impl<'a> Engine<'a> {
         origin: Origin,
         expr: &Expr,
         depth: u8,
+        single: bool,
     ) -> Option<(Option<String>, Range)> {
         let (sheet, area) = match expr {
-            Expr::Range { sheet, range, .. } if range.start != range.end => (sheet.clone(), *range),
+            Expr::Range { sheet, range, .. } if single || range.start != range.end => {
+                (sheet.clone(), *range)
+            }
             Expr::Structured(reference) => {
                 let (sheet, range) = self.resolve_table(origin, reference).ok()?;
                 (Some(sheet), range)
@@ -426,11 +418,20 @@ impl<'a> Engine<'a> {
                 let found = self.defined_name(bare, scope)?;
                 let book = self.book;
                 let tree = self.parsed(book.defined_names[found].formula.as_str())?;
-                return self.area_within(origin, &tree, depth + 1);
+                return self.area_within(origin, &tree, depth + 1, single);
             }
             Expr::Call { name, args } if name == "INDEX" => {
-                let (sheet, area) = self.area_within(origin, args.first()?, depth)?;
-                let (mut row, mut col) = (position(args.get(1))?, position(args.get(2))?);
+                let (sheet, area) = self.area_within(origin, args.first()?, depth, single)?;
+                // A single cell may be asked for by computed positions; an
+                // area is told from literal ones only.
+                let (mut row, mut col) = if single {
+                    (
+                        self.index_position(origin, args.get(1))?,
+                        self.index_position(origin, args.get(2))?,
+                    )
+                } else {
+                    (position(args.get(1))?, position(args.get(2))?)
+                };
                 // `INDEX(B5:F5, 3)` picks the column, as the function does.
                 if args.len() == 2 && area.height() == 1 {
                     (row, col) = (1, row);
@@ -449,7 +450,7 @@ impl<'a> Engine<'a> {
                 (sheet, area)
             }
             Expr::Call { name, args } if name == "IF" && args.len() >= 2 => {
-                if !args[1..].iter().any(may_be_area) {
+                if !single && !args[1..].iter().any(may_be_area) {
                     return None;
                 }
                 // ponytail: when the branch taken is not a reference after
@@ -459,10 +460,10 @@ impl<'a> Engine<'a> {
                     Ok(false) => args.get(2)?,
                     Err(_) => return None,
                 };
-                return self.area_within(origin, taken, depth);
+                return self.area_within(origin, taken, depth, single);
             }
             Expr::Call { name, args } if name == "CHOOSE" && args.len() >= 2 => {
-                if !args[1..].iter().any(may_be_area) {
+                if !single && !args[1..].iter().any(may_be_area) {
                     return None;
                 }
                 let index = self.eval_value(origin, &args[0]).number().ok()?;
@@ -475,7 +476,7 @@ impl<'a> Engine<'a> {
                     reason = "at least 1, and an index past the list misses it"
                 )]
                 let taken = args.get(index as usize)?;
-                return self.area_within(origin, taken, depth);
+                return self.area_within(origin, taken, depth, single);
             }
             // Built at run time, so a single cell is returned too: the caller
             // would otherwise compute the reference a second time to read it.
@@ -487,7 +488,17 @@ impl<'a> Engine<'a> {
             }
             _ => return None,
         };
-        (area.start != area.end).then_some((sheet, area))
+        (single || area.start != area.end).then_some((sheet, area))
+    }
+
+    /// An `INDEX` position computed: 0 or left out for the whole row or
+    /// column, a fraction truncated as Excel does.
+    fn index_position(&mut self, origin: Origin, e: Option<&Expr>) -> Option<u32> {
+        let n = match e {
+            None | Some(Expr::Missing) => return Some(0),
+            Some(e) => self.eval_value(origin, e).number().ok()?,
+        };
+        position(Some(&Expr::Number(n)))
     }
 
     /// `value`, read from the reference `expr`, with the cells whose formula
@@ -497,7 +508,7 @@ impl<'a> Engine<'a> {
     pub(crate) fn without_totals(&mut self, origin: Origin, expr: &Expr, value: Value) -> Value {
         let found = match expr {
             Expr::Range { sheet, range, .. } => Some((sheet.clone(), *range)),
-            _ => self.area_within(origin, expr, 0),
+            _ => self.area_within(origin, expr, 0, false),
         };
         let Some((sheet, range)) = found else {
             return value;

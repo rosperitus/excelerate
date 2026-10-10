@@ -84,6 +84,9 @@
 
 ### Fixed
 
+- `Engine::reference_of` resolves a single cell reached through a defined
+  name, `INDEX`, `IF` or `CHOOSE` (it returned `None`), and computes
+  `INDEX` positions instead of taking literals only. `area_of` is unchanged.
 - xls: a control's anchor took a column run's width, which already holds the
   padding, plus five more pixels.
 - A pivot table saved by Excel 2010 or later read with an empty name, cache
