@@ -18,6 +18,31 @@
   `PivotCaptions` holds the words, English by default.
 - `PivotField::page_item`: the item a page filter shows, read from
   `<pageField item>` and written back.
+- `style::format::format_with_fill(value, code, epoch) -> (String,
+  Option<Repeat>)`: the repeat code `*x` is left out of the text and answered
+  apart - the character and the byte offset where it repeats to the width of
+  the cell, so `_($* #,##0_)` puts `$` at the left edge and the number at the
+  right. `format` still renders it as one space.
+- `SparklineGroup::color(name)`, `attribute(name)`, `custom_min()`,
+  `custom_max()`: a group's colours (`colorSeries` to `colorLow`), its other
+  attributes (`displayEmptyCellsAs`, axis types) and its fixed axis bounds,
+  read out of what the file wrote.
+- `Style::checkbox`: the check box cell of Excel 365, read from the
+  `xfpb:xfComplement` of its `<xf>` and written back when the book carries
+  its feature property bag.
+- `CfScale::DataBar` gains the 2010 look kept in the sheet's `<extLst>`:
+  `gradient`, `border_color`, `negative_fill_color`,
+  `negative_border_color`, `axis_position` (`DataBarAxis`) and
+  `axis_color`. Read through the rule's `x14:id`; a changed look rewrites
+  only that `x14:dataBar`, and a bar made in code with a non-default look
+  gets both halves.
+- `Dependencies::readers(sheet, at)`: the formulas that read a cell, by name
+  or through a range holding it, from the index without parsing again.
+
+### Changed
+
+- `Style` and `CfScale::DataBar` have new fields, so code building them
+  field by field must add them (`..Style::default()` covers `Style`).
 
 ### Fixed
 

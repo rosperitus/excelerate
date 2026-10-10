@@ -610,3 +610,26 @@ fn implicit_intersection_reaches_references_built_at_run_time() {
             if **v == CellValue::Error(excelerate::error::CellError::Value)
     ));
 }
+
+#[test]
+fn readers_are_the_formulas_naming_a_cell_or_a_range_holding_it() {
+    use excelerate::formula::eval::Dependencies;
+
+    let mut book = book();
+    book.sheet_mut(0)
+        .unwrap()
+        .set(at("C1"), formula("SUM(A1:A3)"));
+    let mut deps = Dependencies::of(&book);
+    assert_eq!(deps.readers(0, at("A1")), [(0, at("A3")), (0, at("C1"))]);
+    assert_eq!(
+        deps.readers(0, at("A3")),
+        [(0, at("A4")), (0, at("C1")), (1, at("A1"))]
+    );
+    assert_eq!(deps.readers(0, at("B1")), []);
+    // The second sheet's A3 is not the first one's.
+    assert_eq!(deps.readers(1, at("A3")), []);
+
+    book.sheet_mut(0).unwrap().set(at("C1"), 5.0);
+    deps.note(&book, 0, at("C1"));
+    assert_eq!(deps.readers(0, at("A1")), [(0, at("A3"))]);
+}

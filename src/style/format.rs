@@ -180,6 +180,88 @@ pub fn format(value: Value<'_>, code: &str, epoch: Epoch) -> String {
     }
 }
 
+/// The repeat code of a format: `*x` fills the cell with `x`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Repeat {
+    /// The character to repeat.
+    pub ch: char,
+    /// The byte offset in the rendered text where the repeats go.
+    pub at: usize,
+}
+
+/// Renders a value like [`format`], but leaves the repeat code out of the
+/// text and answers where it stands, so the caller can repeat it to the width
+/// of the cell: `_($* #,##0_)` gives `$` at the left edge and the number at
+/// the right. Without a repeat code the text is what [`format`] gives.
+///
+/// Excel honours one repeat per section; any later one comes out as a space,
+/// as in [`format`].
+#[must_use]
+pub fn format_with_fill(value: Value<'_>, code: &str, epoch: Epoch) -> (String, Option<Repeat>) {
+    // Each `*x` becomes the escaped marker followed by the escaped `x`, which
+    // every renderer copies through as literals; the marker then tells where
+    // the fill stood and which character it repeats.
+    const MARK: char = '\u{F8FE}';
+    if code.contains(MARK) {
+        return (format(value, code, epoch), None);
+    }
+    let mut marked = String::with_capacity(code.len() + 8);
+    let mut chars = code.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                marked.push(c);
+                for q in chars.by_ref() {
+                    marked.push(q);
+                    if q == '"' {
+                        break;
+                    }
+                }
+            }
+            '\\' | '_' => {
+                marked.push(c);
+                marked.extend(chars.next());
+            }
+            '[' => {
+                marked.push(c);
+                for b in chars.by_ref() {
+                    marked.push(b);
+                    if b == ']' {
+                        break;
+                    }
+                }
+            }
+            '*' => match chars.next() {
+                Some(x) => {
+                    marked.push('\\');
+                    marked.push(MARK);
+                    marked.push('\\');
+                    marked.push(x);
+                }
+                None => marked.push(c),
+            },
+            c => marked.push(c),
+        }
+    }
+    let rendered = format(value, &marked, epoch);
+    let mut out = String::with_capacity(rendered.len());
+    let mut fill = None;
+    let mut chars = rendered.chars();
+    while let Some(c) = chars.next() {
+        if c != MARK {
+            out.push(c);
+            continue;
+        }
+        let Some(ch) = chars.next() else { break };
+        if fill.is_none() {
+            fill = Some(Repeat { ch, at: out.len() });
+        } else {
+            out.push(' ');
+        }
+    }
+    (out, fill)
+}
+
 /// The sections of a format string.
 struct Sections<'a> {
     parts: Vec<&'a str>,
@@ -1309,6 +1391,28 @@ mod tests {
     /// Compares two floats within a tolerance finer than any value under test.
     fn close(a: f64, b: f64) -> bool {
         (a - b).abs() < 1e-9
+    }
+
+    #[test]
+    fn the_repeat_code_is_answered_apart_from_the_text() {
+        use super::{Repeat, format_with_fill};
+        let accounting = r#"_($* #,##0_);_($* (#,##0);_($* "-"_);_(@_)"#;
+        let (text, fill) = format_with_fill(Value::Number(1234.0), accounting, Epoch::Windows1900);
+        assert_eq!(text, " $1,234 ");
+        assert_eq!(fill, Some(Repeat { ch: ' ', at: 2 }));
+        assert_eq!(render(1234.0, accounting), " $ 1,234 ");
+        let (text, fill) = format_with_fill(Value::Number(-5.0), "0*-\"x\"", Epoch::Windows1900);
+        assert_eq!(
+            (text.as_str(), fill),
+            ("-5x", Some(Repeat { ch: '-', at: 2 }))
+        );
+        let (text, fill) = format_with_fill(Value::Number(5.0), "0", Epoch::Windows1900);
+        assert_eq!((text.as_str(), fill), ("5", None));
+        let (text, fill) = format_with_fill(Value::Text("ab"), "@*.", Epoch::Windows1900);
+        assert_eq!(
+            (text.as_str(), fill),
+            ("ab", Some(Repeat { ch: '.', at: 2 }))
+        );
     }
 
     #[test]

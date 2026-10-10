@@ -366,6 +366,7 @@ fn style_components_survive() {
             locked: ProtectionState::Off,
             hidden: ProtectionState::On,
         },
+        checkbox: false,
     };
     let id = book.styles.intern(style.clone());
     let cell = sheet.entry(at("A1"));
@@ -772,6 +773,7 @@ fn protection_and_filters_survive() {
 fn conditional_formatting_survives() {
     use excelerate::model::{
         CfOperator, CfRule, CfRuleType, CfScale, CfValue, CfValueType, ConditionalFormat,
+        DataBarAxis,
     };
     use excelerate::style::{Color, DiffFill, DiffFont, DifferentialStyle, Pattern};
 
@@ -873,6 +875,12 @@ fn conditional_formatting_survives() {
                     min_length: Some(10),
                     max_length: Some(90),
                     show_value: false,
+                    gradient: true,
+                    border_color: None,
+                    negative_fill_color: None,
+                    negative_border_color: None,
+                    axis_position: DataBarAxis::Automatic,
+                    axis_color: None,
                 }),
                 ..CfRule::default()
             },
@@ -1730,5 +1738,115 @@ fn the_tab_bar_keeps_its_settings_but_not_a_first_tab_past_the_active_one() {
             ("tabRatio".to_owned(), "750".to_owned()),
             ("showSheetTabs".to_owned(), "0".to_owned()),
         ]
+    );
+}
+
+/// A check box cell of Excel 365: its format points into the feature property
+/// bag, which travels as a carried part.
+#[test]
+fn a_check_box_cell_survives_the_cycle() {
+    use excelerate::model::{Attachment, OpaquePart};
+    let bag = concat!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+        r#"<FeaturePropertyBags xmlns="http://schemas.microsoft.com/office/spreadsheetml/2022/featurepropertybag">"#,
+        r#"<bag type="Checkbox"/><bag type="XFControls"><bagId k="CellControl">0</bagId></bag>"#,
+        r#"<bag type="XFComplement"><bagId k="XFControls">1</bagId></bag>"#,
+        r#"<bag type="XFComplements" extRef="XFComplementsMapperExtRef">"#,
+        r#"<a k="MappedFeaturePropertyBags"><bagId>2</bagId></a></bag></FeaturePropertyBags>"#,
+    );
+    let mut book = Spreadsheet::new();
+    book.attachments.push(Attachment {
+        kind: "http://schemas.microsoft.com/office/2022/11/relationships/FeaturePropertyBag".into(),
+        target: "xl/featurePropertyBag/featurePropertyBag.xml".into(),
+    });
+    book.parts.push(OpaquePart {
+        path: "xl/featurePropertyBag/featurePropertyBag.xml".into(),
+        content_type: Some("application/vnd.ms-excel.featurepropertybag+xml".into()),
+        data: bag.as_bytes().to_vec(),
+    });
+    let style = book.styles.intern(Style {
+        checkbox: true,
+        ..Style::default()
+    });
+    let cell = book.sheet_mut(0).unwrap().entry(at("A1"));
+    cell.value = CellValue::Bool(true);
+    cell.style = style;
+    let once = cycle(&book);
+    let twice = cycle(&once);
+    for book in [once, twice] {
+        let cell = book.sheets()[0].get(at("A1")).unwrap();
+        assert!(book.styles.get(cell.style).unwrap().checkbox);
+    }
+}
+
+/// The 2010 look of a data bar lives in the sheet's `<extLst>`, linked to the
+/// rule by an id: a bar made in code gets both halves, and a changed one has
+/// its half rewritten in place.
+#[test]
+fn the_2010_look_of_a_data_bar_survives_the_cycle() {
+    use excelerate::model::{
+        CfRule, CfRuleType, CfScale, CfValue, CfValueType, ConditionalFormat, DataBarAxis,
+    };
+    use excelerate::style::Color;
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.conditional_formats.push(ConditionalFormat {
+        sqref: vec![Range::parse("A1:A5").unwrap()],
+        rules: vec![CfRule {
+            kind: CfRuleType::DataBar,
+            priority: 1,
+            scale: Some(CfScale::DataBar {
+                values: vec![
+                    CfValue {
+                        kind: CfValueType::Min,
+                        ..CfValue::default()
+                    },
+                    CfValue {
+                        kind: CfValueType::Number,
+                        value: "10".into(),
+                        ..CfValue::default()
+                    },
+                ],
+                color: Color::Argb(0xFF63_8EC6),
+                min_length: None,
+                max_length: None,
+                show_value: true,
+                gradient: false,
+                border_color: Some(Color::Argb(0xFF00_2060)),
+                negative_fill_color: Some(Color::Argb(0xFFFF_0000)),
+                negative_border_color: None,
+                axis_position: DataBarAxis::Middle,
+                axis_color: Some(Color::Argb(0xFF00_0000)),
+            }),
+            ..CfRule::default()
+        }],
+    });
+    let scale = |book: &Spreadsheet| {
+        book.sheets()[0].conditional_formats[0].rules[0]
+            .scale
+            .clone()
+    };
+    let once = cycle(&book);
+    assert_eq!(scale(&once), scale(&book));
+
+    let mut edited = once;
+    if let Some(CfScale::DataBar {
+        gradient,
+        axis_position,
+        negative_fill_color,
+        ..
+    }) = &mut edited.sheet_mut(0).unwrap().conditional_formats[0].rules[0].scale
+    {
+        *gradient = true;
+        *axis_position = DataBarAxis::None;
+        *negative_fill_color = None;
+    }
+    let twice = cycle(&edited);
+    assert_eq!(scale(&twice), scale(&edited));
+    let ext = twice.sheets()[0].extensions.as_deref().unwrap();
+    assert_eq!(ext.matches("<x14:dataBar").count(), 1, "{ext}");
+    assert_eq!(
+        cycle(&twice).sheets()[0].extensions,
+        twice.sheets()[0].extensions
     );
 }

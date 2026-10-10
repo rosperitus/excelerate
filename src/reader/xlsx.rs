@@ -1592,6 +1592,15 @@ impl StylesReader {
             self.ext_depth += 1;
         }
         if self.ext_depth > 0 {
+            // ponytail: any feature property bag on a cell format is taken
+            // for a check box, the only cell control Excel has; resolve the
+            // index through `featurePropertyBag.xml` once there is a second.
+            if name == "xfComplement"
+                && self.section == Section::CellXfs
+                && let Some(xf) = self.xfs.last_mut()
+            {
+                xf.checkbox = true;
+            }
             return;
         }
         if self.start_section(name) || self.start_number_format(name, e) {
@@ -1765,6 +1774,7 @@ impl StylesReader {
                     .unwrap_or_default(),
                 alignment: xf.alignment,
                 protection: xf.protection,
+                checkbox: xf.checkbox,
             })
             .collect();
         let mut table = StyleTable::from_styles(styles);
@@ -1973,6 +1983,7 @@ struct Xf {
     border: u32,
     alignment: Alignment,
     protection: Protection,
+    checkbox: bool,
 }
 
 fn read_xf(e: &quick_xml::events::BytesStart<'_>) -> Xf {
@@ -2064,7 +2075,7 @@ fn apply_font_child(font: &mut Font, name: &str, e: &quick_xml::events::BytesSta
 }
 
 /// Reads a colour element, in the order of precedence xlsx uses.
-fn read_color(e: &quick_xml::events::BytesStart<'_>) -> Color {
+pub(crate) fn read_color(e: &quick_xml::events::BytesStart<'_>) -> Color {
     if let Some(rgb) = attr(e, "rgb")
         && let Some(c) = Color::from_argb_str(&rgb)
     {
@@ -2701,6 +2712,9 @@ impl SheetReader<'_> {
                 .as_deref()
                 .map(crate::model::sparkline::read)
                 .unwrap_or_default();
+            if let Some(text) = &text {
+                apply_data_bar_looks(&mut self.sheet, text);
+            }
             self.sheet.extensions = text;
         } else if let Some(rule) = last_rule(&mut self.sheet) {
             rule.extensions = text;
@@ -2909,6 +2923,13 @@ fn new_scale(tag: &str, e: &quick_xml::events::BytesStart<'_>) -> CfScale {
             max_length: number("maxLength"),
             // Both are written only when false.
             show_value: attr(e, "showValue").is_none_or(|v| is_true(&v)),
+            // The rest is the 2010 look, filled from the sheet's `<extLst>`.
+            gradient: true,
+            border_color: None,
+            negative_fill_color: None,
+            negative_border_color: None,
+            axis_position: crate::model::DataBarAxis::Automatic,
+            axis_color: None,
         },
         "iconSet" => CfScale::IconSet {
             values: Vec::new(),
@@ -2940,6 +2961,175 @@ fn push_cfvo(rule: &mut CfRule, e: &quick_xml::events::BytesStart<'_>) {
             | CfScale::IconSet { values, .. },
         ) => values.push(stop),
         None => {}
+    }
+}
+
+/// The `x14` half of a data bar: what the 2007 `<dataBar>` cannot say.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct BarLook {
+    pub gradient: bool,
+    pub border_color: Option<Color>,
+    pub negative_fill_color: Option<Color>,
+    pub negative_border_color: Option<Color>,
+    pub axis_position: crate::model::DataBarAxis,
+    pub axis_color: Option<Color>,
+}
+
+impl BarLook {
+    /// The look a bar has in the model, `None` for another scale.
+    #[cfg(feature = "write")]
+    pub(crate) fn of(scale: &CfScale) -> Option<Self> {
+        match scale {
+            CfScale::DataBar {
+                gradient,
+                border_color,
+                negative_fill_color,
+                negative_border_color,
+                axis_position,
+                axis_color,
+                ..
+            } => Some(Self {
+                gradient: *gradient,
+                border_color: border_color.clone(),
+                negative_fill_color: negative_fill_color.clone(),
+                negative_border_color: negative_border_color.clone(),
+                axis_position: *axis_position,
+                axis_color: axis_color.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// What a bar with no `x14` half looks like.
+    #[cfg(feature = "write")]
+    pub(crate) fn plain() -> Self {
+        Self {
+            gradient: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// The `{GUID}` a rule's own `<extLst>` links it to its `x14` half by.
+pub(crate) fn x14_id(rule_extensions: &str) -> Option<&str> {
+    let from = rule_extensions.find("x14:id>")? + "x14:id>".len();
+    let to = from + rule_extensions[from..].find('<')?;
+    Some(rule_extensions[from..to].trim())
+}
+
+/// Every `x14:dataBar` in a sheet's `<extLst>`, by the id of its rule.
+pub(crate) fn data_bar_looks(extensions: &str) -> Vec<(String, BarLook)> {
+    let mut reader = quick_xml::Reader::from_str(extensions);
+    let mut out: Vec<(String, BarLook)> = Vec::new();
+    let mut id: Option<String> = None;
+    let mut bar = false;
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(ref e) | quick_xml::events::Event::Empty(ref e)) => {
+                match e.local_name().as_ref() {
+                    "cfRule" => id = attr(e, "id"),
+                    "dataBar" => {
+                        let Some(id) = id.clone() else { continue };
+                        let flag = |name: &str, default: bool| {
+                            attr(e, name).map_or(default, |v| is_true(&v))
+                        };
+                        let border = flag("border", false);
+                        let negative_fill = !flag("negativeBarColorSameAsPositive", false);
+                        let negative_border =
+                            border && !flag("negativeBarBorderColorSameAsPositive", true);
+                        let axis = attr(e, "axisPosition")
+                            .map(|v| crate::model::DataBarAxis::parse(&v))
+                            .unwrap_or_default();
+                        // Colours the flags switch off are dropped as they
+                        // are read; a sentinel says which may be kept.
+                        out.push((
+                            id,
+                            BarLook {
+                                gradient: flag("gradient", true),
+                                border_color: border.then_some(Color::Auto),
+                                negative_fill_color: negative_fill.then_some(Color::Auto),
+                                negative_border_color: negative_border.then_some(Color::Auto),
+                                axis_position: axis,
+                                axis_color: Some(Color::Auto),
+                            },
+                        ));
+                        bar = true;
+                    }
+                    name if bar => {
+                        let Some((_, look)) = out.last_mut() else {
+                            continue;
+                        };
+                        let slot = match name {
+                            "borderColor" => &mut look.border_color,
+                            "negativeFillColor" => &mut look.negative_fill_color,
+                            "negativeBorderColor" => &mut look.negative_border_color,
+                            "axisColor" => &mut look.axis_color,
+                            _ => continue,
+                        };
+                        if slot.is_some() {
+                            *slot = Some(read_color(e));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) if e.local_name().as_ref() == "dataBar" => {
+                bar = false;
+                // A colour switched on but never given has nothing to show.
+                if let Some((_, look)) = out.last_mut() {
+                    for slot in [
+                        &mut look.border_color,
+                        &mut look.negative_fill_color,
+                        &mut look.negative_border_color,
+                        &mut look.axis_color,
+                    ] {
+                        if *slot == Some(Color::Auto) {
+                            *slot = None;
+                        }
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    out
+}
+
+/// Gives each data bar of a sheet the look its `x14` half states.
+fn apply_data_bar_looks(sheet: &mut Worksheet, extensions: &str) {
+    let looks = data_bar_looks(extensions);
+    if looks.is_empty() {
+        return;
+    }
+    for rule in sheet
+        .conditional_formats
+        .iter_mut()
+        .flat_map(|f| &mut f.rules)
+    {
+        let Some(id) = rule.extensions.as_deref().and_then(x14_id) else {
+            continue;
+        };
+        let Some((_, look)) = looks.iter().find(|(i, _)| i == id) else {
+            continue;
+        };
+        if let Some(CfScale::DataBar {
+            gradient,
+            border_color,
+            negative_fill_color,
+            negative_border_color,
+            axis_position,
+            axis_color,
+            ..
+        }) = &mut rule.scale
+        {
+            *gradient = look.gradient;
+            border_color.clone_from(&look.border_color);
+            negative_fill_color.clone_from(&look.negative_fill_color);
+            negative_border_color.clone_from(&look.negative_border_color);
+            *axis_position = look.axis_position;
+            axis_color.clone_from(&look.axis_color);
+        }
     }
 }
 

@@ -834,6 +834,10 @@ fn styles(book: &Spreadsheet) -> String {
         r#"<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>"#,
     );
 
+    let bag = book
+        .attachments
+        .iter()
+        .any(|a| a.role() == "FeaturePropertyBag");
     let _ = write!(s, r#"<cellXfs count="{}">"#, all.len());
     for (i, style) in all.iter().enumerate() {
         s.push_str(&cell_xf_xml(
@@ -844,6 +848,7 @@ fn styles(book: &Spreadsheet) -> String {
                 fill_ids[i],
                 border_ids[i],
             ],
+            bag,
         ));
     }
     s.push_str("</cellXfs>");
@@ -923,7 +928,11 @@ fn component_table<T>(
 
 /// One `<xf>`: a style as the indices it is assembled from, with an `apply*`
 /// flag for each part that is not the default.
-fn cell_xf_xml(style: &crate::style::Style, [fmt, font, fill, border]: [u32; 4]) -> String {
+fn cell_xf_xml(
+    style: &crate::style::Style,
+    [fmt, font, fill, border]: [u32; 4],
+    bag: bool,
+) -> String {
     let al = alignment_xml(&style.alignment);
     let pr = protection_xml(style.protection);
     let mut out = String::new();
@@ -945,11 +954,23 @@ fn cell_xf_xml(style: &crate::style::Style, [fmt, font, fill, border]: [u32; 4])
         aa = u8::from(!al.is_empty()),
         ap = u8::from(!pr.is_empty()),
     );
+    // A check box points into the feature property bag, so it is written
+    // only when the book carries one; index 0 is where Excel maps it when
+    // check boxes are the book's only feature.
+    let ext = if style.checkbox && bag {
+        concat!(
+            r#"<extLst><ext uri="{C7286773-470A-42A8-94C5-96B5CB345126}""#,
+            r#" xmlns:xfpb="http://schemas.microsoft.com/office/spreadsheetml/2022/featurepropertybag">"#,
+            r#"<xfpb:xfComplement i="0"/></ext></extLst>"#
+        )
+    } else {
+        ""
+    };
     // An empty <xf/> collapses; otherwise the diff against the source is noise.
-    if al.is_empty() && pr.is_empty() {
+    if al.is_empty() && pr.is_empty() && ext.is_empty() {
         out.push_str("/>");
     } else {
-        let _ = write!(out, ">{al}{pr}</xf>");
+        let _ = write!(out, ">{al}{pr}{ext}</xf>");
     }
     out
 }
@@ -1204,14 +1225,14 @@ fn worksheet(
     }
 
     // `<conditionalFormatting>` sits between them in the schema's fixed order.
-    for block in &sheet.conditional_formats {
+    for (f, block) in sheet.conditional_formats.iter().enumerate() {
         let _ = write!(
             s,
             r#"<conditionalFormatting sqref="{}">"#,
             sqref(&block.sqref)
         );
-        for rule in &block.rules {
-            s.push_str(&cf_rule_xml(rule));
+        for (r, rule) in block.rules.iter().enumerate() {
+            s.push_str(&cf_rule_xml(rule, f, r));
         }
         s.push_str("</conditionalFormatting>");
     }
@@ -1240,10 +1261,176 @@ fn worksheet(
     s
 }
 
+/// The sheet's `<extLst>`, with the `x14` halves of the data bars brought in
+/// line with the model: one whose look changed is rewritten, one that has
+/// none yet is added, and the rest stays byte for byte.
+fn sheet_extensions(sheet: &crate::model::Worksheet) -> Option<std::borrow::Cow<'_, str>> {
+    use crate::reader::xlsx::{BarLook, data_bar_looks, x14_id};
+    use std::borrow::Cow;
+    const URI: &str = "{78C0D931-6437-407d-A8EE-F0AAD7539E65}";
+    let mut text = sparkline_extensions(sheet);
+    let carried = text.as_deref().map(data_bar_looks).unwrap_or_default();
+    let mut added = String::new();
+    for (f, block) in sheet.conditional_formats.iter().enumerate() {
+        for (r, rule) in block.rules.iter().enumerate() {
+            let Some(scale) = &rule.scale else { continue };
+            let Some(look) = BarLook::of(scale) else {
+                continue;
+            };
+            let id = match rule.extensions.as_deref() {
+                // ponytail: a rule whose own `<extLst>` holds something else
+                // but no `x14:id` keeps the 2007 look; add the id beside it if
+                // such files turn up.
+                Some(ext) => match x14_id(ext) {
+                    Some(id) => id.to_owned(),
+                    None => continue,
+                },
+                None if needs_x14_half(rule) => new_bar_id(f, r),
+                None => continue,
+            };
+            let bar = x14_data_bar_xml(scale, &look);
+            match carried.iter().find(|(i, _)| *i == id) {
+                Some((_, old)) if *old == look => {}
+                Some(_) => {
+                    let Some(current) = text.as_deref() else {
+                        continue;
+                    };
+                    let Some(at) = current.find(&format!(r#"id="{id}""#)) else {
+                        continue;
+                    };
+                    let Some(from) = current[at..].find("<x14:dataBar").map(|i| at + i) else {
+                        continue;
+                    };
+                    let end = "</x14:dataBar>";
+                    let Some(to) = current[from..].find(end).map(|i| from + i + end.len()) else {
+                        continue;
+                    };
+                    let spliced = format!("{}{bar}{}", &current[..from], &current[to..]);
+                    text = Some(Cow::Owned(spliced));
+                }
+                None => {
+                    let _ = write!(
+                        added,
+                        concat!(
+                            r#"<x14:conditionalFormatting xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main">"#,
+                            r#"<x14:cfRule type="dataBar" id="{}">{}</x14:cfRule>"#,
+                            "<xm:sqref>{}</xm:sqref></x14:conditionalFormatting>"
+                        ),
+                        escape(&id),
+                        bar,
+                        sqref(&block.sqref)
+                    );
+                }
+            }
+        }
+    }
+    if added.is_empty() {
+        return text;
+    }
+    let current = text.as_deref().unwrap_or_default();
+    let close = "</x14:conditionalFormattings>";
+    let spliced = if let Some(at) = current
+        .find(URI)
+        .and_then(|at| current[at..].find(close).map(|i| at + i))
+    {
+        format!("{}{added}{}", &current[..at], &current[at..])
+    } else {
+        let ext = format!(
+            concat!(
+                r#"<ext uri="{}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">"#,
+                "<x14:conditionalFormattings>{}</x14:conditionalFormattings></ext>"
+            ),
+            URI, added
+        );
+        match current.rfind("</extLst>") {
+            Some(at) => format!("{}{ext}{}", &current[..at], &current[at..]),
+            None => format!("<extLst>{ext}</extLst>"),
+        }
+    };
+    Some(Cow::Owned(spliced))
+}
+
+/// Whether a rule is a data bar whose look the 2007 `<dataBar>` cannot hold.
+fn needs_x14_half(rule: &crate::model::CfRule) -> bool {
+    rule.scale
+        .as_ref()
+        .and_then(crate::reader::xlsx::BarLook::of)
+        .is_some_and(|look| look != crate::reader::xlsx::BarLook::plain())
+}
+
+/// The id a data bar made in code links its two halves by: fixed by its
+/// place, so writing the same book twice gives the same bytes.
+fn new_bar_id(block: usize, index: usize) -> String {
+    format!(
+        "{{7E5A0000-0000-4000-8000-{:06X}{:06X}}}",
+        block & 0xFF_FFFF,
+        index & 0xFF_FFFF
+    )
+}
+
+/// The `x14:dataBar` element of a bar.
+fn x14_data_bar_xml(scale: &crate::model::CfScale, look: &crate::reader::xlsx::BarLook) -> String {
+    use crate::model::{CfScale, DataBarAxis};
+    let CfScale::DataBar {
+        values,
+        color,
+        min_length,
+        max_length,
+        ..
+    } = scale
+    else {
+        return String::new();
+    };
+    let mut s = String::from("<x14:dataBar");
+    if let Some(min) = min_length {
+        let _ = write!(s, r#" minLength="{min}""#);
+    }
+    if let Some(max) = max_length {
+        let _ = write!(s, r#" maxLength="{max}""#);
+    }
+    if look.border_color.is_some() {
+        s.push_str(r#" border="1""#);
+    }
+    if !look.gradient {
+        s.push_str(r#" gradient="0""#);
+    }
+    if look.negative_fill_color.is_none() {
+        s.push_str(r#" negativeBarColorSameAsPositive="1""#);
+    }
+    if look.negative_border_color.is_some() {
+        s.push_str(r#" negativeBarBorderColorSameAsPositive="0""#);
+    }
+    if look.axis_position != DataBarAxis::Automatic {
+        let _ = write!(s, r#" axisPosition="{}""#, look.axis_position.as_str());
+    }
+    s.push('>');
+    for v in values {
+        let _ = write!(s, r#"<x14:cfvo type="{}""#, v.kind.as_str());
+        if v.value.is_empty() {
+            s.push_str("/>");
+        } else {
+            let _ = write!(s, "><xm:f>{}</xm:f></x14:cfvo>", escape(&v.value));
+        }
+    }
+    let _ = write!(s, "<x14:fillColor{}/>", color_attr(color));
+    for (name, value) in [
+        ("borderColor", &look.border_color),
+        ("negativeFillColor", &look.negative_fill_color),
+        ("negativeBorderColor", &look.negative_border_color),
+        ("axisColor", &look.axis_color),
+    ] {
+        if let Some(c) = value {
+            let _ = write!(s, "<x14:{name}{}/>", color_attr(c));
+        }
+    }
+    s.push_str("</x14:dataBar>");
+    s
+}
+
 /// The sheet's `<extLst>`: as it was read, unless the sparkline groups in the
 /// model no longer say what it says. Then only their `<ext>` is replaced, and
 /// the extensions beside it stay byte for byte.
-fn sheet_extensions(sheet: &crate::model::Worksheet) -> Option<std::borrow::Cow<'_, str>> {
+fn sparkline_extensions(sheet: &crate::model::Worksheet) -> Option<std::borrow::Cow<'_, str>> {
     use crate::model::sparkline::{EXTENSION_URI, read};
     use std::borrow::Cow;
     let carried = sheet.extensions.as_deref();
@@ -1609,7 +1796,7 @@ fn dxf_xml(dxf: &crate::style::DifferentialStyle) -> String {
 }
 
 /// Renders one `<cfRule>`.
-fn cf_rule_xml(rule: &crate::model::CfRule) -> String {
+fn cf_rule_xml(rule: &crate::model::CfRule, block: usize, index: usize) -> String {
     let mut s = format!(r#"<cfRule type="{}""#, rule.kind.as_str());
     if let Some(dxf) = rule.dxf {
         let _ = write!(s, r#" dxfId="{dxf}""#);
@@ -1644,7 +1831,20 @@ fn cf_rule_xml(rule: &crate::model::CfRule) -> String {
     if !rule.above_average {
         s.push_str(r#" aboveAverage="0""#);
     }
-    if rule.formulas.is_empty() && rule.scale.is_none() && rule.extensions.is_none() {
+    // A data bar made in code with a 2010 look links to its `x14` half,
+    // which `sheet_extensions` writes under the same id.
+    let link = (rule.extensions.is_none() && needs_x14_half(rule)).then(|| {
+        format!(
+            concat!(
+                r#"<extLst><ext uri="{{B025F937-C7B1-47D3-B67F-A62EFF666E3E}}""#,
+                r#" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main">"#,
+                "<x14:id>{}</x14:id></ext></extLst>"
+            ),
+            new_bar_id(block, index)
+        )
+    });
+    let extensions = rule.extensions.as_deref().or(link.as_deref());
+    if rule.formulas.is_empty() && rule.scale.is_none() && extensions.is_none() {
         s.push_str("/>");
         return s;
     }
@@ -1655,7 +1855,7 @@ fn cf_rule_xml(rule: &crate::model::CfRule) -> String {
     if let Some(scale) = &rule.scale {
         s.push_str(&cf_scale_xml(scale));
     }
-    if let Some(extensions) = &rule.extensions {
+    if let Some(extensions) = extensions {
         s.push_str(extensions);
     }
     s.push_str("</cfRule>");
@@ -1697,6 +1897,7 @@ fn cf_scale_xml(scale: &crate::model::CfScale) -> String {
             min_length,
             max_length,
             show_value,
+            ..
         } => {
             let mut s = String::from("<dataBar");
             if let Some(min) = min_length {

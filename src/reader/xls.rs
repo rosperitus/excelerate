@@ -960,6 +960,7 @@ impl<'a> Reader<'a> {
                     ProtectionState::Inherit
                 },
             },
+            checkbox: false,
         }
     }
 }

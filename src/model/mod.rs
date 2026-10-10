@@ -1341,6 +1341,40 @@ impl Default for CfValue {
     }
 }
 
+/// Where a data bar puts zero: the `axisPosition` of `x14:dataBar`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DataBarAxis {
+    /// Between the smallest and largest value, when some are negative.
+    #[default]
+    Automatic,
+    /// In the middle of the cell.
+    Middle,
+    /// No axis: negative bars run the same way as positive ones.
+    None,
+}
+
+impl DataBarAxis {
+    /// The attribute value.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Middle => "middle",
+            Self::None => "none",
+        }
+    }
+
+    /// Reads the attribute; anything unknown is the default.
+    #[must_use]
+    pub fn parse(value: &str) -> Self {
+        match value {
+            "middle" => Self::Middle,
+            "none" => Self::None,
+            _ => Self::Automatic,
+        }
+    }
+}
+
 /// The graphical part of a rule, for the three kinds that have one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -1364,6 +1398,20 @@ pub enum CfScale {
         max_length: Option<u32>,
         /// Whether the number is shown beside the bar.
         show_value: bool,
+        /// A bar fading out to the right rather than a solid one. `true`,
+        /// the 2007 look, unless the `x14` extension says otherwise.
+        gradient: bool,
+        /// The bar's outline, `None` for no outline. From the `x14`
+        /// extension, like the fields below.
+        border_color: Option<Color>,
+        /// The fill of bars below zero; `None` paints them like the others.
+        negative_fill_color: Option<Color>,
+        /// The outline of bars below zero; `None` uses the bar's outline.
+        negative_border_color: Option<Color>,
+        /// Where zero sits in the cell.
+        axis_position: DataBarAxis,
+        /// The colour of the zero line.
+        axis_color: Option<Color>,
     },
     /// An icon beside the value.
     IconSet {

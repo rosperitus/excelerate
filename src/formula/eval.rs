@@ -1863,6 +1863,24 @@ impl Dependencies {
         self.formulas.is_empty()
     }
 
+    /// The formulas that read a cell directly, by name or through a range
+    /// holding it, as (sheet index, cell) in sheet and address order.
+    ///
+    /// Only what the formulas spell out counts: a reference `INDIRECT` or
+    /// `OFFSET` builds at evaluation time is not seen, as in Excel's Trace
+    /// Dependents. One look at every formula, no parsing.
+    #[must_use]
+    pub fn readers(&self, sheet: usize, at: CellRef) -> Vec<(usize, CellRef)> {
+        let mut out: Vec<(usize, CellRef)> = self
+            .formulas
+            .iter()
+            .filter(|n| n.reads.iter().any(|&(s, r)| s == sheet && r.contains(at)))
+            .map(|n| (n.sheet, n.at))
+            .collect();
+        out.sort_unstable();
+        out
+    }
+
     /// Brings one cell up to date, after its formula was written, changed or
     /// removed. A cell that only changed value needs no call.
     pub fn note(&mut self, book: &Spreadsheet, sheet: usize, at: CellRef) {
