@@ -1912,3 +1912,73 @@ fn the_2010_look_of_a_data_bar_survives_the_cycle() {
         twice.sheets()[0].extensions
     );
 }
+
+/// A control with no parts behind it - read from xls, or made in code - is
+/// written the way Excel 2010 writes a new one: a VML shape, a `ctrlProp`
+/// part, and a `<control>` in the sheet pointing at both.
+#[test]
+fn form_controls_without_parts_are_written_and_read_back() {
+    use excelerate::model::chart::{Anchor, Marker};
+    use excelerate::model::control::{CheckState, ControlKind, FormControl, ScrollValues};
+    use excelerate::style::{Color, Font};
+    use std::io::Read as _;
+
+    let marker = |col: u32, row: u32, offset: i64| Marker {
+        col: excelerate::coordinate::Col::new(col).unwrap(),
+        col_offset: offset,
+        row: excelerate::coordinate::Row::new(row).unwrap(),
+        row_offset: offset,
+    };
+    let anchor = |col: u32, row: u32| Anchor::TwoCell {
+        from: marker(col, row, 9525 * 3),
+        to: marker(col + 2, row + 1, 9525 * 10),
+        edit_as: None,
+    };
+    let mut tick = FormControl::new(ControlKind::CheckBox, anchor(1, 1));
+    tick.text = Some("Tick <me>".into());
+    tick.checked = Some(CheckState::Checked);
+    tick.linked_cell = Some("$A$1".into());
+    tick.font = Some(Font {
+        name: "Arial".into(),
+        size: 1000,
+        bold: true,
+        color: Color::Argb(0xFF00_00FF),
+        ..Font::default()
+    });
+    let mut spin = FormControl::new(ControlKind::Spinner, anchor(1, 4));
+    spin.scroll = Some(ScrollValues {
+        value: 5,
+        min: 1,
+        max: 30,
+        step: 2,
+        page: 10,
+    });
+    spin.linked_cell = Some("$A$2".into());
+    let mut go = FormControl::new(ControlKind::Button, anchor(4, 1));
+    go.text = Some("Go".into());
+    go.macro_name = Some("[0]!Macro1".into());
+    let mut book = Spreadsheet::new();
+    book.sheet_mut(0).unwrap().controls = vec![tick, spin, go];
+
+    let mut bytes = Vec::new();
+    write_xlsx_to(&book, Cursor::new(&mut bytes)).unwrap();
+    let back = read_xlsx_from(Cursor::new(&bytes)).unwrap();
+    assert_eq!(back.sheets()[0].controls, book.sheets()[0].controls);
+
+    let mut zip = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut text = |name: &str| {
+        let mut s = String::new();
+        zip.by_name(name).unwrap().read_to_string(&mut s).unwrap();
+        s
+    };
+    let sheet = text("xl/worksheets/sheet1.xml");
+    let rels = text("xl/worksheets/_rels/sheet1.xml.rels");
+    let props = text("xl/ctrlProps/ctrlProp2.xml");
+    assert!(sheet.contains(r#"<control shapeId="1026" r:id="rId3" name="Spinner 1">"#));
+    assert!(rels.contains(r#"Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/ctrlProp" Target="../ctrlProps/ctrlProp2.xml""#));
+    assert!(props.contains(
+        r#"objectType="Spin" fmlaLink="$A$2" inc="2" max="30" min="1" page="10" val="5""#
+    ));
+    // Written again, the controls come from the VML that now holds them.
+    assert_eq!(cycle(&back).sheets()[0].controls, book.sheets()[0].controls);
+}

@@ -10,7 +10,7 @@ use crate::coordinate::{CellRef, Col, Range, Row};
 use crate::formula::eval::{same_name, spanned};
 use crate::formula::parser::{BinaryOp, Expr, parse};
 use crate::model::Spreadsheet;
-use crate::model::chart::{Chart, ChartText, DataSource};
+use crate::model::chart::{Chart, ChartText, DataSource, Dimension};
 use crate::reader::chart::children;
 use crate::reader::zipxml::is_true;
 use crate::style::format::GENERAL;
@@ -97,6 +97,38 @@ pub fn source_numbers(
         count: Some(count),
         points,
     })
+}
+
+/// What the cells a 2016 chart's dimension reads show, by point index: a
+/// number through its format, text as it is, the way the labels of the
+/// chart read. `sheet` is the chart's own sheet. Hidden rows and columns are
+/// left out and the points numbered among the visible ones; empty cells are
+/// gaps.
+///
+/// `None` when the dimension has no reference, or one that does not point
+/// into the book. The hidden name Excel writes in place of the range
+/// (`_xlchart.v1.0`) is looked through.
+#[must_use]
+pub fn dimension_strings(
+    book: &Spreadsheet,
+    sheet: usize,
+    dimension: &Dimension,
+) -> Option<Vec<(u32, String)>> {
+    let reader = Reader {
+        book,
+        sheet,
+        changed: None,
+        visible_only: true,
+    };
+    let areas = reader.areas(dimension.reference(&book.defined_names)?)?;
+    let mut out = Vec::new();
+    for_cells(book, &areas, true, |sheet, at, index| {
+        let shown = reader.shown(sheet, at);
+        if !shown.is_empty() {
+            out.push((index, shown));
+        }
+    });
+    Some(out)
 }
 
 fn refresh_chart(

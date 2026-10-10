@@ -2,11 +2,15 @@
 //! draws over the cells (Developer > Insert > Form Controls).
 //!
 //! Read from xls (`OBJ` records) and from xlsx (the VML part behind
-//! `<legacyDrawing>`). Not written: an xlsx read keeps its VML and `ctrlProp`
-//! parts and they go back as bytes; controls read from xls are dropped on
-//! write. `ActiveX` controls are not modelled.
+//! `<legacyDrawing>`). Written to xlsx when the sheet's VML holds no controls
+//! yet - a workbook read from xls, or controls made in code: a VML shape, a
+//! `ctrlProp` part and the sheet's `<controls>`, the way Excel writes them.
+//! An xlsx read keeps its VML and `ctrlProp` parts and they go back as bytes.
+//! The xls writer writes no drawing at all, so controls are dropped there.
+//! `ActiveX` controls are not modelled.
 
 use super::chart::Anchor;
+use crate::style::Font;
 
 /// What sort of form control it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +50,39 @@ impl ControlKind {
             "Label" => Self::Label,
             _ => return None,
         })
+    }
+
+    /// The name VML gives the kind in `<x:ClientData ObjectType>`.
+    #[cfg(feature = "write")]
+    pub(crate) const fn vml_name(self) -> &'static str {
+        match self {
+            Self::Button => "Button",
+            Self::CheckBox => "Checkbox",
+            Self::OptionButton => "Radio",
+            Self::ComboBox => "Drop",
+            Self::ListBox => "List",
+            Self::Spinner => "Spin",
+            Self::ScrollBar => "Scroll",
+            Self::GroupBox => "GBox",
+            Self::Label => "Label",
+        }
+    }
+
+    /// The name a `ctrlProp` part gives the kind in `objectType`, and the
+    /// one Excel numbers new controls with.
+    #[cfg(feature = "write")]
+    pub(crate) const fn names(self) -> (&'static str, &'static str) {
+        match self {
+            Self::Button => ("Button", "Button"),
+            Self::CheckBox => ("CheckBox", "Check Box"),
+            Self::OptionButton => ("Radio", "Option Button"),
+            Self::ComboBox => ("Drop", "Drop Down"),
+            Self::ListBox => ("List", "List Box"),
+            Self::Spinner => ("Spin", "Spinner"),
+            Self::ScrollBar => ("Scroll", "Scroll Bar"),
+            Self::GroupBox => ("GBox", "Group Box"),
+            Self::Label => ("Label", "Label"),
+        }
     }
 
     /// The kind BIFF names in `ftCmo.ot`.
@@ -123,6 +160,10 @@ pub struct FormControl {
     pub scroll: Option<ScrollValues>,
     /// The macro the control runs when clicked.
     pub macro_name: Option<String>,
+    /// The font of the caption, as the file gives it: the `TXO` run's font
+    /// in xls, `<font>` in the VML text box. `None` draws it in the
+    /// workbook's default font.
+    pub font: Option<Font>,
 }
 
 impl FormControl {
@@ -138,6 +179,7 @@ impl FormControl {
             checked: None,
             scroll: None,
             macro_name: None,
+            font: None,
         }
     }
 }

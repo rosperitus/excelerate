@@ -9,6 +9,7 @@ use crate::coordinate::{Col, Row};
 use crate::model::chart::{Anchor, Marker};
 use crate::model::control::{CheckState, ControlKind, FormControl, ScrollValues};
 use crate::reader::html::unescape;
+use crate::style::{Color, Font};
 
 /// One comment box: a `<v:shape>` whose client data says `Note`.
 #[derive(Debug, Clone, PartialEq)]
@@ -122,6 +123,7 @@ pub(crate) fn controls(xml: &str) -> Vec<FormControl> {
         control.input_range = text("FmlaRange");
         control.macro_name = text("FmlaMacro");
         control.text = textbox(body);
+        control.font = textbox_font(body);
         let number = |tag: &str| element(body, tag).and_then(|t| t.trim().parse::<i32>().ok());
         if matches!(kind, ControlKind::CheckBox | ControlKind::OptionButton) {
             let state = number("Checked").and_then(|n| u32::try_from(n).ok());
@@ -162,6 +164,31 @@ fn textbox(body: &str) -> Option<String> {
     out.push_str(&unescape(rest));
     let out = out.trim().to_owned();
     (!out.is_empty()).then_some(out)
+}
+
+/// The first `<font>` of `<v:textbox>`: face, size in twentieths of a point,
+/// colour; bold and italic when the text sits in `<b>` or `<i>`.
+fn textbox_font(body: &str) -> Option<Font> {
+    let inner = &body[body.find("<v:textbox")?..];
+    let inner = &inner[..inner.find("</v:textbox>")?];
+    let open = inner.find("<font ")?;
+    let tag = &inner[open..open + inner[open..].find('>')?];
+    let mut font = Font::default();
+    if let Some(face) = attribute(tag, "face") {
+        font.name = unescape(face);
+    }
+    if let Some(size) = attribute(tag, "size").and_then(|s| s.parse::<u32>().ok()) {
+        font.size = size.saturating_mul(5);
+    }
+    if let Some(color) = attribute(tag, "color") {
+        font.color = color
+            .strip_prefix('#')
+            .and_then(Color::from_argb_str)
+            .unwrap_or(Color::Auto);
+    }
+    font.bold = inner.contains("<b>");
+    font.italic = inner.contains("<i>");
+    Some(font)
 }
 
 /// The value of an attribute somewhere in a shape, double-quoted.
@@ -239,7 +266,7 @@ mod tests {
         use crate::model::control::{CheckState, ControlKind, ScrollValues};
         let xml = concat!(
             r#"<xml><v:shape id="_x0000_s1025" style='position:absolute'>"#,
-            r#"<v:textbox><div style='text-align:center'><font face="Calibri">Run &amp; go</font></div></v:textbox>"#,
+            r##"<v:textbox><div style='text-align:center'><font face="Calibri" size="220" color="#FF0000"><b>Run &amp; go</b></font></div></v:textbox>"##,
             r#"<x:ClientData ObjectType="Button"><x:Anchor>1, 2, 3, 4, 5, 6, 7, 8</x:Anchor>"#,
             r#"<x:FmlaMacro>[0]!Macro1</x:FmlaMacro></x:ClientData></v:shape>"#,
             r#"<v:shape id="_x0000_s1026"><v:textbox><div>Tick</div></v:textbox>"#,
@@ -255,6 +282,13 @@ mod tests {
         assert_eq!(found[0].kind, ControlKind::Button);
         assert_eq!(found[0].text.as_deref(), Some("Run & go"));
         assert_eq!(found[0].macro_name.as_deref(), Some("[0]!Macro1"));
+        let font = found[0].font.as_ref().expect("the caption's font");
+        assert_eq!(
+            (font.name.as_str(), font.size, font.bold),
+            ("Calibri", 1100, true)
+        );
+        assert_eq!(font.color, crate::style::Color::Argb(0xFFFF_0000));
+        assert_eq!(found[1].font, None, "no <font>, no font");
         assert_eq!(found[1].checked, Some(CheckState::Checked));
         assert_eq!(found[1].linked_cell.as_deref(), Some("$A$1"));
         assert_eq!(

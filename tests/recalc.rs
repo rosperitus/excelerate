@@ -633,3 +633,88 @@ fn readers_are_the_formulas_naming_a_cell_or_a_range_holding_it() {
     deps.note(&book, 0, at("C1"));
     assert_eq!(deps.readers(0, at("A1")), [(0, at("A3"))]);
 }
+
+/// A table reference reads the cells the table has: its readers are known,
+/// and resolving it gives the sheet and rectangle.
+#[test]
+fn table_references_are_resolved_and_have_readers() {
+    use excelerate::coordinate::Range;
+    use excelerate::formula::eval::{Dependencies, Engine, Origin, resolve_table};
+    use excelerate::formula::parser::{Expr, parse};
+    use excelerate::model::table::Table;
+
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("Data").unwrap();
+    // Header in row 1, body A2:B4, totals in row 5.
+    let mut table = Table::new(1, "Sales", Range::parse("A1:B5").unwrap(), ["Item", "Qty"]);
+    table.totals_row_count = Some(1);
+    sheet.tables.push(table);
+    for row in 2..=4 {
+        sheet.set(at(&format!("B{row}")), f64::from(row));
+    }
+    sheet.set(at("D1"), formula("SUM(Sales[Qty])"));
+    sheet.set(at("D2"), formula("Sales[[#Headers],[Item]:[Qty]]"));
+    sheet.set(at("D3"), formula("Sales[[#Totals],[Qty]]"));
+    book.add_sheet(sheet).unwrap();
+
+    let origin = Origin::new(0, at("D1"));
+    let area = |text: &str| {
+        let Ok(Expr::Structured(reference)) = parse(text) else {
+            panic!("{text} is a structured reference");
+        };
+        resolve_table(&book, origin, &reference)
+    };
+    assert_eq!(area("Sales[Qty]"), Ok((0, Range::parse("B2:B4").unwrap())));
+    assert_eq!(
+        area("Sales[#Headers]"),
+        Ok((0, Range::parse("A1:B1").unwrap()))
+    );
+    assert_eq!(
+        area("Sales[[#Totals],[Qty]]"),
+        Ok((0, Range::parse("B5").unwrap()))
+    );
+    assert_eq!(
+        area("Sales[[#Headers],[#Data],[Item]]"),
+        Ok((0, Range::parse("A1:A4").unwrap()))
+    );
+    let mut engine = Engine::new(&book);
+    assert_eq!(
+        engine.area_of(origin, &parse("Sales[Qty]").unwrap()),
+        Some((Some("Data".to_owned()), Range::parse("B2:B4").unwrap()))
+    );
+
+    let deps = Dependencies::of(&book);
+    assert_eq!(deps.readers(0, at("B3")), [(0, at("D1"))]);
+    assert_eq!(deps.readers(0, at("A1")), [(0, at("D2"))]);
+    assert_eq!(deps.readers(0, at("B5")), [(0, at("D3"))]);
+    assert_eq!(
+        deps.readers(0, at("A3")),
+        [],
+        "the Item body is read by none"
+    );
+}
+
+/// What a reference expression points at, single cells and `OFFSET` with
+/// negative sizes included.
+#[test]
+fn reference_expressions_resolve_to_a_sheet_and_range() {
+    use excelerate::coordinate::Range;
+    use excelerate::formula::eval::{Engine, Origin};
+    use excelerate::formula::parser::{Expr, parse};
+
+    let book = book();
+    let mut engine = Engine::new(&book);
+    let origin = Origin::new(0, at("A1"));
+    let mut of = |text: &str| engine.reference_of(origin, &parse(text).unwrap());
+    let range = |r: &str| Range::parse(r).unwrap();
+    assert_eq!(of("$C$15"), Some((None, range("C15"))));
+    assert_eq!(of("Second!A1"), Some((Some("Second".into()), range("A1"))));
+    // Two rows up and three columns left of E10, after a move of one down.
+    assert_eq!(of("OFFSET(E10,1,0,-2,-3)"), Some((None, range("C10:E11"))));
+    assert_eq!(of("OFFSET(A1,0,0,0,1)"), None, "a zero height is #REF!");
+    assert_eq!(of("1+2"), None);
+    let Ok(Expr::Call { args, .. }) = parse("OFFSET(B2,0,0,-1,-1)") else {
+        panic!("a call");
+    };
+    assert_eq!(engine.offset_area(origin, &args), Ok((None, range("B2"))));
+}

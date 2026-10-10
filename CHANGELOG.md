@@ -8,9 +8,34 @@
   button, check box, option button, combo box, list box, spinner, scroll bar,
   group box or label - its kind, two-cell anchor, caption, linked cell, input
   range, check state, spinner/scroll bar numbers and macro. Read from xls
-  (`OBJ`, `MSODRAWING` anchors, `TXO` captions) and from the VML part of xlsx;
-  not written - an xlsx's VML and `ctrlProp` parts still travel as bytes.
+  (`OBJ`, `MSODRAWING` anchors, `TXO` captions) and from the VML part of xlsx.
+  Written to xlsx when the sheet's VML holds no controls yet (read from xls,
+  or made in code): a VML shape, a `ctrlProp` part and the sheet's
+  `<controls>` behind `mc:AlternateContent`, as Excel 2010 writes them. An
+  xlsx's own VML and `ctrlProp` parts still travel as bytes; the xls writer
+  writes no drawings, so controls are dropped there.
+- `FormControl::font`: the caption's font - the `TXO` run's font in xls,
+  the `<font>` of the VML text box in xlsx.
 - xls: the sheet zoom (`SCL`) is read into `view.zoom_scale` and written back.
+- xls: `DEFCOLWIDTH` and `DEFAULTROWHEIGHT` are read into
+  `default_column_width` (rounded up to a multiple of eight pixels, as Excel
+  draws it) and `default_row_height`; control anchors measure against them.
+- 2016 charts: `ExSeries::points` (`cx:dataPt` fills), `labels` (`ExLabels`:
+  position and what `cx:dataLabels` shows), `binning` (`Binning`: closed
+  side, underflow and overflow, bin width or count) and `subtotals` (a
+  waterfall's total bars); `ChartEx::legend` (`ExLegend`). Read, written for
+  a new chart, and spliced into the part of a changed one. `ExSeries::new`.
+- `Dimension::strings(&book, sheet)` and
+  `formula::chart::dimension_strings`: what the cells a 2016 chart dimension
+  reads show now, by point index, through the hidden `_xlchart` name.
+- `formula::eval::resolve_table(book, origin, &Structured)`: the sheet index
+  and rectangle a structured reference means (`Table[Column]`, `[#Headers]`,
+  `[#Totals]`, `[@Column]` and their combinations); `Engine::resolve_table`
+  (sheet by name) and `Engine::area_of` are public.
+- `Engine::reference_of(origin, &expr)`: the sheet and range any reference
+  expression means, single cells included (ranges, tables, names, `INDEX`,
+  `OFFSET`, `INDIRECT`, `IF`/`CHOOSE`), and `Engine::offset_area(origin,
+  &args)` for `OFFSET` alone, negative height and width growing up and left.
 
 - Refreshing a pivot table: `edit::refresh_pivot(book, sheet, table,
   &PivotCaptions)` reads the source range its cache names (a sheet and
@@ -49,11 +74,18 @@
 
 ### Changed
 
+- `Dependencies` indexes a structured reference as the cells its table
+  covers: `readers` finds formulas reading a table, and such a formula is no
+  longer recomputed on every edit. After resizing, adding or removing a table
+  build the index again.
+- `ExSeries` is no longer `Eq` (bin edges are `f64`).
 - `Style` and `CfScale::DataBar` have new fields, so code building them
   field by field must add them (`..Style::default()` covers `Style`).
 
 ### Fixed
 
+- xls: a control's anchor took a column run's width, which already holds the
+  padding, plus five more pixels.
 - A pivot table saved by Excel 2010 or later read with an empty name, cache
   id 0 and no grand totals: the `<x14:pivotTableDefinition>` in its
   `<extLst>` overwrote the root's attributes.

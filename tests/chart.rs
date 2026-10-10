@@ -15,9 +15,9 @@ use excelerate::model::Spreadsheet;
 use excelerate::model::chart::{
     Anchor, AxisKind, BarDirection, Chart, ChartAxis, ChartColor, ChartEx, ChartLines, ChartText,
     ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint, DataSource, Dimension,
-    DimensionRole, ExSeries, Fill, GradientPath, GradientStop, Grouping, LabelPosition,
-    LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, Series, SeriesLayout,
-    SeriesMarker, ShapeFormat, Title, UpDownBars,
+    DimensionRole, ExLabels, ExLegend, ExSeries, Fill, GradientPath, GradientStop, Grouping,
+    LabelPosition, LegendPosition, LineFormat, Marker, MarkerSymbol, Plot, PlotKind, Series,
+    SeriesLayout, SeriesMarker, ShapeFormat, Title, UpDownBars,
 };
 use excelerate::reader::xlsx::read_xlsx_from;
 use excelerate::writer::xlsx::write_xlsx_to;
@@ -1336,4 +1336,153 @@ fn a_title_and_a_legend_put_by_hand_keep_their_place() {
     // The layout stands before the overlay, as the schema orders them.
     let overlay = legend.find("<c:overlay").unwrap_or(legend.len());
     assert!(legend.find("<c:layout>").unwrap() < overlay, "{legend}");
+}
+
+/// What a waterfall needs drawn beyond its data: the colour of each bar, the
+/// totals, what the labels show.
+#[test]
+fn a_waterfall_reads_its_points_totals_and_labels() {
+    let book = open("chart1.xlsx");
+    let chart = &book.sheet(0).unwrap().extended_charts[0];
+    let series = &chart.series[0];
+    assert_eq!(series.subtotals, [7]);
+    assert_eq!(
+        series.points.iter().map(|p| p.index).collect::<Vec<_>>(),
+        (0..8).collect::<Vec<_>>()
+    );
+    assert!(series.points.iter().all(|p| p.format.fill.is_some()));
+    assert_eq!(
+        series.labels,
+        Some(ExLabels {
+            position: Some(LabelPosition::OutsideEnd),
+            value: true,
+            ..ExLabels::default()
+        })
+    );
+    assert_eq!(series.binning, None);
+    assert_eq!(chart.legend, None);
+}
+
+#[test]
+fn a_waterfall_keeps_changed_points_totals_labels_and_legend() {
+    let mut book = open("chart1.xlsx");
+    let chart = &mut book.sheet_mut(0).unwrap().extended_charts[0];
+    let path = chart.part.clone();
+    chart.legend = Some(ExLegend {
+        position: LegendPosition::Bottom,
+        overlay: false,
+    });
+    let series = &mut chart.series[0];
+    series.subtotals = vec![0, 7];
+    series.points[0].format = ShapeFormat::solid(ChartColor::rgb(0xFF_0000));
+    series.points.pop();
+    let labels = series.labels.as_mut().unwrap();
+    labels.category_name = true;
+    labels.position = Some(LabelPosition::InsideEnd);
+    let wanted = chart.clone();
+
+    let back = cycle(&book);
+    let after = &back.sheet(0).unwrap().extended_charts[0];
+    assert_eq!(after.legend, wanted.legend);
+    let (now, was) = (&after.series[0], &wanted.series[0]);
+    assert_eq!(now.subtotals, was.subtotals);
+    assert_eq!(now.labels, was.labels);
+    let fills = |s: &ExSeries| -> Vec<_> {
+        s.points
+            .iter()
+            .map(|p| (p.index, p.format.fill.clone()))
+            .collect()
+    };
+    assert_eq!(fills(now), fills(was));
+    let text = std::str::from_utf8(part(&back, &path)).unwrap();
+    assert!(
+        text.contains("<cx:separator>, </cx:separator>"),
+        "what the labels do not model stays"
+    );
+    // Read again, it is a fixed point.
+    assert_eq!(
+        cycle(&back).sheet(0).unwrap().extended_charts[0],
+        after.clone()
+    );
+}
+
+#[test]
+fn a_histogram_keeps_its_bins() {
+    use excelerate::model::chart::{BinEdge, Binning, Bins};
+    let mut book = Spreadsheet::new();
+    let values = Dimension {
+        role: DimensionRole::Values,
+        numeric: true,
+        formula: Some("Sheet1!$A$1:$A$9".into()),
+        levels: Vec::new(),
+    };
+    let mut chart = ChartEx::new(
+        SeriesLayout::ClusteredColumn,
+        vec![values],
+        Anchor::default(),
+    );
+    chart.series[0].binning = Some(Binning {
+        closed_left: true,
+        underflow: Some(BinEdge::Value(1.5)),
+        overflow: Some(BinEdge::Auto),
+        bins: Some(Bins::Count(5)),
+    });
+    chart.legend = Some(ExLegend::default());
+    book.sheet_mut(0).unwrap().extended_charts.push(chart);
+
+    let back = cycle(&book);
+    let read = &back.sheet(0).unwrap().extended_charts[0];
+    assert_eq!(
+        read.series[0].binning,
+        book.sheet(0).unwrap().extended_charts[0].series[0].binning
+    );
+    assert_eq!(read.legend, Some(ExLegend::default()));
+
+    // Changed, the bins are rewritten in place.
+    let mut edited = back.clone();
+    let bins = &mut edited.sheet_mut(0).unwrap().extended_charts[0].series[0].binning;
+    *bins = Some(Binning {
+        bins: Some(Bins::Width(2.5)),
+        ..Binning::default()
+    });
+    let wanted = *bins;
+    let again = cycle(&edited);
+    assert_eq!(
+        again.sheet(0).unwrap().extended_charts[0].series[0].binning,
+        wanted
+    );
+}
+
+/// A 2016 chart's categories read from the cells, through the hidden name
+/// Excel puts in place of the range.
+#[test]
+fn a_dimension_reads_its_labels_from_the_cells() {
+    use excelerate::model::{CellValue, DefinedName};
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    for (row, value) in [
+        (0, CellValue::from("North")),
+        (2, CellValue::Number(2024.0)),
+    ] {
+        sheet.set(
+            excelerate::CellRef::new(Col::new(0).unwrap(), Row::new(row).unwrap()),
+            value,
+        );
+    }
+    book.defined_names.push(DefinedName {
+        name: "_xlchart.v1.0".into(),
+        sheet: None,
+        formula: "Worksheet!$A$1:$A$3".into(),
+        hidden: true,
+    });
+    let dimension = Dimension {
+        role: DimensionRole::Categories,
+        numeric: false,
+        formula: Some("_xlchart.v1.0".into()),
+        levels: Vec::new(),
+    };
+    assert_eq!(
+        dimension.strings(&book, 0),
+        Some(vec![(0, "North".to_owned()), (2, "2024".to_owned())])
+    );
 }

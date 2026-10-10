@@ -62,9 +62,12 @@ pub fn write_xlsx_to_with<W: Write + Seek>(
     // Charts and pictures are applied to the parts first; an untouched book
     // passes through.
     let charts = super::pivot::prepare(super::chart_ex::prepare(super::chart::prepare(book)?)?)?;
-    let prepared = super::properties::prepare(super::comment::prepare(super::shape::prepare(
-        super::image::prepare(charts),
-    )));
+    // Controls go into the VML after the comment boxes, and the sheet parts
+    // take the `<controls>` element each sheet's new ones need.
+    let (prepared, controls) = super::control::prepare(super::comment::prepare(
+        super::shape::prepare(super::image::prepare(charts)),
+    ));
+    let prepared = super::properties::prepare(prepared);
     let book: &Spreadsheet = &prepared;
     let mut zip = zip::ZipWriter::new(sink);
     let opts = zip::write::SimpleFileOptions::default()
@@ -113,7 +116,12 @@ pub fn write_xlsx_to_with<W: Write + Seek>(
         let outside = external_links(sheet);
         part(
             &format!("xl/worksheets/sheet{}.xml", i + 1),
-            &worksheet(sheet, &strings, &outside),
+            &worksheet(
+                sheet,
+                &strings,
+                &outside,
+                controls.get(i).map_or("", String::as_str),
+            ),
         )?;
         // The notes are modelled, so their part is rebuilt rather than
         // carried; the VML that places them travels whole in `parts`.
@@ -1142,6 +1150,7 @@ fn worksheet(
     sheet: &crate::model::Worksheet,
     pool: &StringPool<'_>,
     outside: &[&crate::model::Hyperlink],
+    controls: &str,
 ) -> String {
     let mut s = format!(
         concat!(
@@ -1251,7 +1260,7 @@ fn worksheet(
     }
 
     s.push_str(&print_tail_xml(sheet, outside));
-    s.push_str(&attached_parts_xml(sheet));
+    s.push_str(&attached_parts_xml(sheet, controls));
     // `<extLst>` closes the element, and what is in it came from the file
     // unread, except for the sparklines.
     if let Some(extensions) = sheet_extensions(sheet) {
@@ -1593,7 +1602,10 @@ fn table_xml(table: &crate::model::table::Table) -> String {
 ///
 /// Each is a pointer at a relationship rather than content, and the schema
 /// fixes their order at the end of the sheet.
-fn attached_parts_xml(sheet: &crate::model::Worksheet) -> String {
+///
+/// `controls` is the `<controls>` element of new form controls, which the
+/// schema puts after the legacy drawing and before the tables.
+fn attached_parts_xml(sheet: &crate::model::Worksheet, controls: &str) -> String {
     // The external hyperlinks take the first relationship ids, so a sheet's
     // own parts are numbered after them.
     let first = external_links(sheet).len() + 1;
@@ -1609,6 +1621,7 @@ fn attached_parts_xml(sheet: &crate::model::Worksheet) -> String {
         };
         let _ = write!(s, r#"<{tag} r:id="rId{}"/>"#, first + i);
     }
+    s.push_str(controls);
     // `<tableParts>` is last but for `<extLst>`. Without the element the part
     // is still in the package and still related, and Excel shows the cells as
     // an ordinary range - the table is gone.
@@ -1944,7 +1957,7 @@ fn cf_scale_xml(scale: &crate::model::CfScale) -> String {
 
 /// The hyperlinks of a sheet that point outside the workbook, in the order
 /// their relationship ids are handed out.
-fn external_links(sheet: &crate::model::Worksheet) -> Vec<&crate::model::Hyperlink> {
+pub(super) fn external_links(sheet: &crate::model::Worksheet) -> Vec<&crate::model::Hyperlink> {
     sheet
         .hyperlinks
         .iter()
@@ -2839,7 +2852,7 @@ mod tests {
         });
         let empty = crate::model::Spreadsheet::empty();
         let pool = super::collect_shared_strings(&empty);
-        let xml = worksheet(&sheet, &pool, &[]);
+        let xml = worksheet(&sheet, &pool, &[], "");
         assert!(
             xml.contains(r#"<tableParts count="1"><tablePart r:id="rId1"/></tableParts>"#),
             "{xml}"
@@ -2882,7 +2895,7 @@ mod tests {
         sheet.set_row_hidden(row(9), true);
         let empty = crate::model::Spreadsheet::empty();
         let pool = super::collect_shared_strings(&empty);
-        let xml = worksheet(&sheet, &pool, &[]);
+        let xml = worksheet(&sheet, &pool, &[], "");
         let rows: Vec<&str> = xml
             .split("<row r=\"")
             .skip(1)
@@ -2910,7 +2923,7 @@ mod tests {
         let empty = crate::model::Spreadsheet::empty();
         let pool = super::collect_shared_strings(&empty);
         let started = std::time::Instant::now();
-        let xml = worksheet(&sheet, &pool, &[]);
+        let xml = worksheet(&sheet, &pool, &[], "");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
             "took {:?}",
@@ -2951,7 +2964,7 @@ mod tests {
         let empty = crate::model::Spreadsheet::empty();
         let pool = super::collect_shared_strings(&empty);
         let started = std::time::Instant::now();
-        let xml = worksheet(&sheet, &pool, &[]);
+        let xml = worksheet(&sheet, &pool, &[], "");
         assert!(
             started.elapsed() < std::time::Duration::from_secs(2),
             "took {:?}",
@@ -3175,7 +3188,7 @@ mod tests {
         let sheet = crowded_sheet();
         let empty = crate::model::Spreadsheet::empty();
         let pool = super::collect_shared_strings(&empty);
-        let xml = worksheet(&sheet, &pool, &[]);
+        let xml = worksheet(&sheet, &pool, &[], "");
         let written = children_of(&xml, "worksheet");
         assert!(
             written.len() >= 18,

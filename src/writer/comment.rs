@@ -23,8 +23,8 @@ use crate::model::{Attachment, Comment, Spreadsheet, Worksheet};
 use crate::reader::vml::{NoteShape, note_shapes, style_of};
 use std::borrow::Cow;
 
-const VML_TYPE: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
-const VML_REL: &str =
+pub(super) const VML_TYPE: &str = "application/vnd.openxmlformats-officedocument.vmlDrawing";
+pub(super) const VML_REL: &str =
     "http://schemas.openxmlformats.org/officeDocument/2006/relationships/vmlDrawing";
 
 /// The shape type every comment box refers to, declared once per part.
@@ -208,7 +208,7 @@ const fn visibility(visible: bool) -> &'static str {
 }
 
 /// A package path for a new VML part that no part has taken.
-fn free_name(book: &Spreadsheet) -> String {
+pub(super) fn free_name(book: &Spreadsheet) -> String {
     // One more name than there are parts is always enough to find a free one.
     (1..=book.parts.len() + 1)
         .map(|n| format!("xl/drawings/vmlDrawing{n}.vml"))
@@ -217,7 +217,7 @@ fn free_name(book: &Spreadsheet) -> String {
 }
 
 /// The largest `_x0000_sN` shape id in the part.
-fn max_shape_id(xml: &str) -> Option<usize> {
+pub(super) fn max_shape_id(xml: &str) -> Option<usize> {
     xml.match_indices("_x0000_s")
         .filter_map(|(i, m)| {
             let digits = &xml[i + m.len()..];
@@ -288,7 +288,7 @@ fn anchor_text(sheet: &Worksheet, start: [u32; 4], (width, height): (f64, f64)) 
 
 /// Where a run of `pixels` starting at `offset` into unit `index` ends, as a
 /// unit and an offset into it. Hidden units measure nothing and are crossed.
-fn walk(
+pub(super) fn walk(
     mut index: u32,
     offset: u32,
     pixels: u32,
@@ -325,7 +325,7 @@ fn points_to_pixels(points: f64) -> u32 {
     clippy::cast_sign_loss,
     reason = "clamped to a u32 range first"
 )]
-fn column_pixels(sheet: &Worksheet, index: u32) -> u32 {
+pub(super) fn column_pixels(sheet: &Worksheet, index: u32) -> u32 {
     let Some(col) = crate::coordinate::Col::new(index) else {
         return 0;
     };
@@ -338,7 +338,7 @@ fn column_pixels(sheet: &Worksheet, index: u32) -> u32 {
 }
 
 /// A row in pixels at 96 dpi.
-fn row_pixels(sheet: &Worksheet, index: u32) -> u32 {
+pub(super) fn row_pixels(sheet: &Worksheet, index: u32) -> u32 {
     let Some(row) = crate::coordinate::Row::new(index) else {
         return 0;
     };

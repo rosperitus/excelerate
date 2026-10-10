@@ -99,6 +99,10 @@ mod record {
     pub const PANE: u16 = 0x0041;
     /// The cursor and the selected areas of one pane.
     pub const SELECTION: u16 = 0x001D;
+    /// The sheet's default column width, in characters without padding.
+    pub const DEFCOLWIDTH: u16 = 0x0055;
+    /// The sheet's default row height, in twips.
+    pub const DEFAULTROWHEIGHT: u16 = 0x0225;
     /// Zoom of the sheet window, as a fraction.
     pub const SCL: u16 = 0x00A0;
     /// A piece of the sheet's drawing: shape properties and anchors.
@@ -230,6 +234,14 @@ impl Drawing {
     }
 }
 
+/// `DEFCOLWIDTH` as a column width: characters of the 7-pixel digit plus
+/// five pixels of padding, which Excel rounds up to a multiple of eight
+/// pixels - 8 is the 64 pixels of a new sheet - in 256ths of a character.
+fn default_width(chars: u16) -> f64 {
+    let pixels = (u32::from(chars) * 7 + 5).div_ceil(8) * 8;
+    (f64::from(pixels) / 7.0 * 256.0).trunc() / 256.0
+}
+
 /// The zoom an `SCL` record holds as a fraction, in percent; Excel allows 10
 /// to 400.
 fn zoom(data: &[u8]) -> Option<u32> {
@@ -263,24 +275,21 @@ fn client_anchor(data: &[u8]) -> Option<[u16; 8]> {
 /// A BIFF anchor in EMU. Column offsets count 1024ths of the column, row
 /// offsets 256ths of the row.
 ///
-/// ponytail: widths come from the sheet's column runs, or 8.43 characters
-/// at 7 pixels each, heights from the rows, or 15 points; a workbook with
-/// another default font or `DEFCOLWIDTH` lands a few pixels off.
+/// ponytail: a column is its width at the 7-pixel digit of Calibri 11 and
+/// Arial 10; a workbook whose default font is wider lands a few pixels off.
 fn biff_anchor(sheet: &Worksheet, place: [u16; 8]) -> Anchor {
     const EMU_PER_PIXEL: i32 = 9525;
+    // Sixty-four pixels when neither the column nor `DEFCOLWIDTH` says.
     let width = |col: u16| -> f64 {
-        let chars = sheet
-            .columns
-            .iter()
-            .find(|run| column(col).is_ok_and(|c| run.first <= c && c <= run.last))
-            .and_then(|run| run.width)
-            .unwrap_or(8.43);
-        (chars * 7.0 + 5.0).trunc()
+        column(col)
+            .ok()
+            .and_then(|c| sheet.column_width(c))
+            .map_or(64.0, |chars| (chars * 7.0).round())
     };
     let height = |r: u16| -> f64 {
         let points = row(r)
             .ok()
-            .and_then(|r| sheet.rows.get(&r)?.height)
+            .and_then(|r| sheet.row_height(r))
             .unwrap_or(15.0);
         points * 4.0 / 3.0
     };
@@ -645,6 +654,14 @@ impl<'a> Reader<'a> {
             match record.id {
                 record::EOF => break,
                 record::SCL => sheet.view.zoom_scale = zoom(record.data),
+                record::DEFCOLWIDTH => {
+                    sheet.default_column_width = Some(default_width(u16_at(record.data, 0)));
+                }
+                // Flags first, then the height; bit 1 of the flags hides
+                // empty rows, which leaves the height meaningless.
+                record::DEFAULTROWHEIGHT if u16_at(record.data, 0) & 2 == 0 => {
+                    sheet.default_row_height = Some(f64::from(u16_at(record.data, 2)) / 20.0);
+                }
                 record::MSODRAWING | record::OBJ | record::TXO => {
                     self.drawing_record(&mut drawing, &record, &mut at);
                 }
@@ -751,20 +768,31 @@ impl<'a> Reader<'a> {
             }
             // The `TXO` after a control's `OBJ` is its caption; the
             // characters are in the `CONTINUE` that follows, after a byte
-            // saying how wide they are.
+            // saying how wide they are, and the formatting runs in the next:
+            // eight bytes each, the font index after the character position.
             _ if drawing.caption => {
                 drawing.caption = false;
                 let count = usize::from(u16_at(record.data, 10));
+                let mut font = u16_at(record.data, 14);
+                let mut text = None;
                 if let Some(next) = record_at(self.stream, *at)
                     && next.id == record::CONTINUE
                     && count > 0
                 {
                     *at = next.next;
                     let wide = next.data.first().is_some_and(|f| f & 1 != 0);
-                    let (text, _) = read_chars(next.data, 1, count, wide);
-                    if let Some((_, control)) = drawing.controls.last_mut() {
-                        control.text = Some(text);
+                    text = Some(read_chars(next.data, 1, count, wide).0);
+                    if let Some(runs) = record_at(self.stream, *at)
+                        && runs.id == record::CONTINUE
+                        && runs.data.len() >= 8
+                    {
+                        *at = runs.next;
+                        font = u16_at(runs.data, 2);
                     }
+                }
+                if let Some((_, control)) = drawing.controls.last_mut() {
+                    control.text = text;
+                    control.font = self.font_record(font).map(|f| f.font(&self.palette));
                 }
             }
             _ => {}
@@ -1998,10 +2026,14 @@ mod tests {
 
     /// The zoom (`SCL`) and the form controls (`OBJ` with its anchor and its
     /// `TXO` caption), as Excel 2003 wrote them into a real workbook.
-    #[test]
-    fn zoom_and_form_controls_are_read() {
+    /// A workbook stream of one sheet, `S`, whose records follow; the globals
+    /// hold one font, Arial 10 bold.
+    fn one_sheet(sheet: &[u8]) -> Vec<u8> {
         let mut globals = Vec::new();
         push(&mut globals, record::BOF, &[0x00, 0x06, 0x05, 0x00]);
+        let mut font = vec![200, 0, 0, 0, 0xFF, 0x7F, 0xBC, 0x02, 0, 0, 0, 0, 0, 0, 5, 0];
+        font.extend_from_slice(b"Arial");
+        push(&mut globals, 0x0031, &font);
         let boundsheet_at = globals.len() + 4;
         push(
             &mut globals,
@@ -2011,7 +2043,45 @@ mod tests {
         push(&mut globals, record::EOF, &[]);
         let start = u32::try_from(globals.len()).unwrap();
         globals[boundsheet_at..boundsheet_at + 4].copy_from_slice(&start.to_le_bytes());
+        globals.extend_from_slice(sheet);
+        globals
+    }
 
+    /// `DEFCOLWIDTH` and `DEFAULTROWHEIGHT` are the sheet's defaults, and a
+    /// control's offsets are measured against them.
+    #[test]
+    fn default_sizes_are_read_and_place_controls() {
+        let mut sheet = Vec::new();
+        push(&mut sheet, record::BOF, &[0x00, 0x06, 0x10, 0x00]);
+        // 20 points; ten characters, which Excel draws 80 pixels wide.
+        push(&mut sheet, record::DEFAULTROWHEIGHT, &[0, 0, 0x90, 0x01]);
+        push(&mut sheet, record::DEFCOLWIDTH, &[10, 0]);
+        push(
+            &mut sheet,
+            record::MSODRAWING,
+            &drawing([0, 512, 0, 128, 2, 0, 2, 0]),
+        );
+        push(
+            &mut sheet,
+            record::OBJ,
+            &hex("1500120007000f00014000000000000000000de53d950000000000"),
+        );
+        push(&mut sheet, record::EOF, &[]);
+        let book = Reader::new(&one_sheet(&sheet)).read().unwrap();
+        let sheet = &book.sheets()[0];
+        assert_eq!(sheet.default_row_height, Some(20.0));
+        assert_eq!(sheet.default_column_width, Some(11.425_781_25));
+        let Anchor::TwoCell { from, .. } = sheet.controls[0].anchor else {
+            panic!("a BIFF anchor is a two-cell one");
+        };
+        // Half of 80 pixels, a half of 26 2/3, at 9525 EMU to the pixel.
+        assert_eq!((from.col_offset, from.row_offset), (381_000, 127_000));
+        // The same records, with the default of a new sheet: 64 pixels.
+        assert_eq!(default_width(8), 9.140_625);
+    }
+
+    #[test]
+    fn zoom_and_form_controls_are_read() {
         let mut sheet = Vec::new();
         push(&mut sheet, record::BOF, &[0x00, 0x06, 0x10, 0x00]);
         // 4/5: 80 percent.
@@ -2054,11 +2124,11 @@ mod tests {
         txo.truncate(18);
         push(&mut sheet, record::TXO, &txo);
         push(&mut sheet, record::CONTINUE, &[0, b'G', b'o']);
+        // The runs: from the first character in font 0, then the end.
         push(&mut sheet, record::CONTINUE, &[0; 16]);
         push(&mut sheet, record::EOF, &[]);
-        globals.extend_from_slice(&sheet);
 
-        let book = Reader::new(&globals).read().unwrap();
+        let book = Reader::new(&one_sheet(&sheet)).read().unwrap();
         let sheet = &book.sheets()[0];
         assert_eq!(sheet.view.zoom_scale, Some(80));
         assert_eq!(sheet.controls.len(), 2);
@@ -2083,6 +2153,15 @@ mod tests {
         let button = &sheet.controls[1];
         assert_eq!(button.kind, ControlKind::Button);
         assert_eq!(button.text.as_deref(), Some("Go"));
+        let font = button
+            .font
+            .as_ref()
+            .expect("the caption's run names a font");
+        assert_eq!(
+            (font.name.as_str(), font.size, font.bold),
+            ("Arial", 1000, true)
+        );
+        assert_eq!(combo.font, None, "a combo box has no caption");
     }
 
     #[test]

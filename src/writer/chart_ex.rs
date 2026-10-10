@@ -14,7 +14,10 @@ use super::chart::{
 use super::image::{free_path, reanchor, set_attribute, splice};
 use super::xmlesc::escape;
 use crate::error::{Error, Result};
-use crate::model::chart::{ChartEx, ChartText, Dimension, ExSeries, SeriesLayout};
+use crate::model::chart::{
+    BinEdge, Binning, Bins, ChartEx, ChartText, Dimension, ExLabels, ExLegend, ExPoint, ExSeries,
+    LegendPosition, SeriesLayout,
+};
 use crate::model::{Attachment, Spreadsheet, Worksheet};
 use crate::reader::chart::{Node, children, read_chart_ex, rich_text, scan_drawing};
 use core::ops::Range;
@@ -324,7 +327,11 @@ fn render_part(chart: &ChartEx) -> String {
         }
         _ => {}
     }
-    s.push_str("</cx:plotArea></cx:chart></cx:chartSpace>");
+    s.push_str("</cx:plotArea>");
+    if let Some(legend) = &chart.legend {
+        s.push_str(&render_legend(*legend, p));
+    }
+    s.push_str("</cx:chart></cx:chartSpace>");
     s
 }
 
@@ -386,6 +393,10 @@ fn rewrite_part(xml: &str, chart: &ChartEx, read: &ChartEx) -> String {
                 (Some(text), None) => edits.push((inner..inner, render_title(text, &p))),
                 (None, None) => {}
             }
+        }
+        let (end, legend) = (inner + body.inner.len(), chart.legend);
+        if legend != read.legend {
+            edits.push(edit_legend(&parts, inner, end, legend, &p));
         }
         if let Some(area) = parts.iter().find(|n| n.name == "plotArea") {
             let area_inner = inner + area.inner_start;
@@ -478,6 +489,8 @@ fn edit_series(
         let text = now.name.as_ref().map_or(String::new(), |t| render_tx(t, p));
         edits.push((span, text));
     }
+    // Before `dataId`: an insertion there goes ahead of its replacement.
+    edits.extend(edit_drawn(node, &kids, inner, now, was, p));
     if repoint {
         let id = format!(r#"<{p}dataId val="{index}"/>"#);
         // `dataId` comes before the layout properties and the axis ids.
@@ -566,14 +579,18 @@ fn render_series(index: usize, series: &ExSeries, p: &str) -> String {
     if let Some(name) = &series.name {
         s.push_str(&render_tx(name, p));
     }
+    s.push_str(&render_points(&series.points, p));
+    if let Some(labels) = series.labels {
+        s.push_str(&render_labels(labels, p));
+    }
     let _ = write!(s, r#"<{p}dataId val="{index}"/>"#);
+    let subtotals = render_subtotals(&series.subtotals, p);
     // What Excel writes for a new chart of each kind; the rest need nothing.
     match series.layout {
+        // A histogram always has bins; Excel's are automatic.
         SeriesLayout::ClusteredColumn => {
-            let _ = write!(
-                s,
-                r#"<{p}layoutPr><{p}binning intervalClosed="r"/></{p}layoutPr>"#
-            );
+            let binning = render_binning(series.binning.unwrap_or_default(), p);
+            let _ = write!(s, "<{p}layoutPr>{binning}{subtotals}</{p}layoutPr>");
         }
         SeriesLayout::BoxWhisker => {
             let _ = write!(
@@ -586,6 +603,12 @@ fn render_series(index: usize, series: &ExSeries, p: &str) -> String {
                 s,
                 r#"<{p}layoutPr><{p}parentLabelLayout val="overlapping"/></{p}layoutPr>"#
             );
+        }
+        _ if series.binning.is_some() || !subtotals.is_empty() => {
+            let binning = series
+                .binning
+                .map_or(String::new(), |b| render_binning(b, p));
+            let _ = write!(s, "<{p}layoutPr>{binning}{subtotals}</{p}layoutPr>");
         }
         _ => {}
     }
@@ -613,4 +636,255 @@ fn render_data(id: usize, dimensions: &[Dimension], p: &str) -> String {
     }
     let _ = write!(s, "</{p}data>");
     s
+}
+
+const fn flag(on: bool) -> &'static str {
+    if on { "1" } else { "0" }
+}
+
+/// The side a 2016 legend takes; it has no corner.
+const fn legend_side(position: LegendPosition) -> &'static str {
+    match position {
+        LegendPosition::TopRight => "r",
+        other => other.as_str(),
+    }
+}
+
+fn render_legend(legend: ExLegend, p: &str) -> String {
+    format!(
+        r#"<{p}legend pos="{}" align="ctr" overlay="{}"/>"#,
+        legend_side(legend.position),
+        flag(legend.overlay)
+    )
+}
+
+fn render_points(points: &[ExPoint], p: &str) -> String {
+    let mut s = String::new();
+    for point in points {
+        let _ = write!(
+            s,
+            r#"<{p}dataPt idx="{}">{}</{p}dataPt>"#,
+            point.index,
+            super::chart::shape_format(p, &point.format)
+        );
+    }
+    s
+}
+
+fn render_visibility(labels: ExLabels, p: &str) -> String {
+    format!(
+        r#"<{p}visibility seriesName="{}" categoryName="{}" value="{}"/>"#,
+        flag(labels.series_name),
+        flag(labels.category_name),
+        flag(labels.value)
+    )
+}
+
+fn render_labels(labels: ExLabels, p: &str) -> String {
+    let pos = labels
+        .position
+        .map_or(String::new(), |at| format!(r#" pos="{}""#, at.as_str()));
+    format!(
+        "<{p}dataLabels{pos}>{}</{p}dataLabels>",
+        render_visibility(labels, p)
+    )
+}
+
+/// Edits bringing a `dataLabels` element with content in line with the
+/// model: its position and its `visibility`, the rest kept. `inner` is where
+/// the series' content starts within the series element.
+fn edit_labels(
+    node: &Node<'_>,
+    inner: usize,
+    labels: ExLabels,
+    p: &str,
+) -> Vec<(Range<usize>, String)> {
+    let mut edits = Vec::new();
+    let start = inner + node.span.start;
+    // ponytail: a position taken away stays in the tag; Excel then keeps it.
+    if let Some(at) = labels.position {
+        let tag = set_attribute(node.tag.trim_end_matches('>'), "pos", at.as_str());
+        edits.push((start..start + node.tag.len(), format!("{tag}>")));
+    }
+    let base = inner + node.inner_start;
+    let kids = node.children();
+    let text = render_visibility(labels, p);
+    if let Some(old) = kids.iter().find(|c| c.name == "visibility") {
+        edits.push((base + old.span.start..base + old.span.end, text));
+    } else {
+        let at = kids
+            .iter()
+            .find(|c| {
+                matches!(
+                    c.name,
+                    "separator" | "dataLabel" | "dataLabelHidden" | "extLst"
+                )
+            })
+            .map_or(base + node.inner.len(), |c| base + c.span.start);
+        edits.push((at..at, text));
+    }
+    edits
+}
+
+fn render_binning(binning: Binning, p: &str) -> String {
+    let edge = |name: &str, edge: Option<BinEdge>| match edge {
+        None => String::new(),
+        Some(BinEdge::Auto) => format!(r#" {name}="auto""#),
+        Some(BinEdge::Value(v)) => format!(r#" {name}="{v}""#),
+    };
+    let mut s = format!(
+        r#"<{p}binning intervalClosed="{}"{}{}"#,
+        if binning.closed_left { "l" } else { "r" },
+        edge("underflow", binning.underflow),
+        edge("overflow", binning.overflow)
+    );
+    match binning.bins {
+        None => s.push_str("/>"),
+        Some(Bins::Width(w)) => {
+            let _ = write!(s, r#"><{p}binSize val="{w}"/></{p}binning>"#);
+        }
+        Some(Bins::Count(n)) => {
+            let _ = write!(s, r#"><{p}binCount val="{n}"/></{p}binning>"#);
+        }
+    }
+    s
+}
+
+fn render_subtotals(subtotals: &[u32], p: &str) -> String {
+    if subtotals.is_empty() {
+        return String::new();
+    }
+    let mut s = format!("<{p}subtotals>");
+    for index in subtotals {
+        let _ = write!(s, r#"<{p}idx val="{index}"/>"#);
+    }
+    let _ = write!(s, "</{p}subtotals>");
+    s
+}
+
+/// The edit bringing the chart's legend in line with the model; `inner` is
+/// where the chart element's content starts and `end` where it ends.
+fn edit_legend(
+    parts: &[Node<'_>],
+    inner: usize,
+    end: usize,
+    legend: Option<ExLegend>,
+    p: &str,
+) -> (Range<usize>, String) {
+    let node = parts.iter().find(|n| n.name == "legend");
+    match (legend, node) {
+        (None, Some(node)) => (
+            inner + node.span.start..inner + node.span.end,
+            String::new(),
+        ),
+        (Some(legend), Some(node)) => {
+            let tag = node.tag.trim_end_matches('>');
+            let tag = set_attribute(tag, "pos", legend_side(legend.position));
+            let tag = set_attribute(&tag, "overlay", flag(legend.overlay));
+            let start = inner + node.span.start;
+            (start..start + node.tag.len(), format!("{tag}>"))
+        }
+        (Some(legend), None) => {
+            // After the plot area, before the extensions.
+            let at = parts
+                .iter()
+                .find(|n| n.name == "extLst")
+                .map_or(end, |n| inner + n.span.start);
+            (at..at, render_legend(legend, p))
+        }
+        (None, None) => (end..end, String::new()),
+    }
+}
+
+/// Edits bringing what a series draws beyond its data - point colours, data
+/// labels, bins, totals - in line with the model. Spans are within the
+/// series element; `inner` is where its content starts.
+fn edit_drawn(
+    node: &Node<'_>,
+    kids: &[Node<'_>],
+    inner: usize,
+    now: &ExSeries,
+    was: &ExSeries,
+    p: &str,
+) -> Vec<(Range<usize>, String)> {
+    let mut edits: Vec<(Range<usize>, String)> = Vec::new();
+    let before = |names: &[&str]| {
+        kids.iter()
+            .find(|n| names.contains(&n.name))
+            .map_or(inner + node.inner.len(), |n| inner + n.span.start)
+    };
+    if now.points != was.points {
+        let old: Vec<&Node<'_>> = kids.iter().filter(|n| n.name == "dataPt").collect();
+        let at = old.first().map_or_else(
+            || before(&["dataLabels", "dataId", "layoutPr", "axisId", "extLst"]),
+            |n| inner + n.span.start,
+        );
+        edits.push((at..at, render_points(&now.points, p)));
+        for n in old {
+            edits.push((inner + n.span.start..inner + n.span.end, String::new()));
+        }
+    }
+    if now.labels != was.labels {
+        let node = kids.iter().find(|n| n.name == "dataLabels");
+        match (now.labels, node) {
+            (None, Some(n)) => {
+                edits.push((inner + n.span.start..inner + n.span.end, String::new()));
+            }
+            (Some(labels), Some(n)) if !n.inner.is_empty() => {
+                edits.extend(edit_labels(n, inner, labels, p));
+            }
+            (Some(labels), Some(n)) => edits.push((
+                inner + n.span.start..inner + n.span.end,
+                render_labels(labels, p),
+            )),
+            (Some(labels), None) => {
+                let at = before(&["dataId", "layoutPr", "axisId", "extLst"]);
+                edits.push((at..at, render_labels(labels, p)));
+            }
+            (None, None) => {}
+        }
+    }
+    if now.binning != was.binning || now.subtotals != was.subtotals {
+        let binning = now.binning.map_or(String::new(), |b| render_binning(b, p));
+        let subtotals = render_subtotals(&now.subtotals, p);
+        match kids.iter().find(|n| n.name == "layoutPr") {
+            Some(n) if !n.inner.is_empty() => {
+                let base = inner + n.inner_start;
+                let parts = n.children();
+                let mut child = |name: &str, text: String, follows: &[&str]| {
+                    if let Some(old) = parts.iter().find(|c| c.name == name) {
+                        edits.push((base + old.span.start..base + old.span.end, text));
+                    } else {
+                        let at = parts
+                            .iter()
+                            .find(|c| follows.contains(&c.name))
+                            .map_or(base + n.inner.len(), |c| base + c.span.start);
+                        edits.push((at..at, text));
+                    }
+                };
+                if now.binning != was.binning {
+                    child(
+                        "binning",
+                        binning,
+                        &["geography", "statistics", "subtotals", "extLst"],
+                    );
+                }
+                if now.subtotals != was.subtotals {
+                    child("subtotals", subtotals, &["extLst"]);
+                }
+            }
+            found => {
+                let text = format!("<{p}layoutPr>{binning}{subtotals}</{p}layoutPr>");
+                let span = found.map_or_else(
+                    || {
+                        let at = before(&["axisId", "extLst"]);
+                        at..at
+                    },
+                    |n| inner + n.span.start..inner + n.span.end,
+                );
+                edits.push((span, text));
+            }
+        }
+    }
+    edits
 }

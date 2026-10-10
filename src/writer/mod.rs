@@ -3,6 +3,7 @@
 mod chart;
 mod chart_ex;
 mod comment;
+mod control;
 pub mod csv;
 pub mod html;
 mod image;

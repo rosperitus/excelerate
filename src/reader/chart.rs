@@ -9,12 +9,12 @@
 
 use crate::coordinate::{Col, Row};
 use crate::model::chart::{
-    Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, Chart, ChartAxis, ChartColor,
-    ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabel, DataLabels, DataPoint,
-    DataSource, Dimension, DimensionRole, EditAs, ExSeries, Fill, GradientPath, GradientStop,
-    Grouping, LabelPosition, Legend, LegendPosition, LineFormat, ManualLayout, Marker,
-    MarkerSymbol, Plot, PlotKind, RadarStyle, ScatterStyle, Series, SeriesLayout, SeriesMarker,
-    ShapeFormat, Title, UpDownBars,
+    Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, BinEdge, Binning, Bins, Chart,
+    ChartAxis, ChartColor, ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabel,
+    DataLabels, DataPoint, DataSource, Dimension, DimensionRole, EditAs, ExLabels, ExLegend,
+    ExPoint, ExSeries, Fill, GradientPath, GradientStop, Grouping, LabelPosition, Legend,
+    LegendPosition, LineFormat, ManualLayout, Marker, MarkerSymbol, Plot, PlotKind, RadarStyle,
+    ScatterStyle, Series, SeriesLayout, SeriesMarker, ShapeFormat, Title, UpDownBars,
 };
 use core::ops::Range;
 use quick_xml::Reader;
@@ -1010,6 +1010,12 @@ pub(crate) fn read_chart_ex(xml: &str) -> Option<ChartEx> {
                 for part in child.children() {
                     match part.name {
                         "title" => out.title = part.child("tx").and_then(|t| read_ex_text(&t)),
+                        "legend" => {
+                            out.legend = Some(ExLegend {
+                                position: LegendPosition::parse(part.attr("pos").unwrap_or("r")),
+                                overlay: part.attr("overlay").is_some_and(is_true),
+                            });
+                        }
                         "plotArea" => {
                             let regions = part.children();
                             let series = regions
@@ -1019,18 +1025,12 @@ pub(crate) fn read_chart_ex(xml: &str) -> Option<ChartEx> {
                                 .filter(|n| n.name == "series");
                             for s in series {
                                 let id = s.child("dataId").and_then(|d| d.val().map(str::to_owned));
-                                out.series.push(ExSeries {
-                                    layout: SeriesLayout::parse(
-                                        s.attr("layoutId").unwrap_or_default(),
-                                    ),
-                                    name: s.child("tx").and_then(|t| read_ex_text(&t)),
-                                    hidden: s.attr("hidden").is_some_and(is_true),
-                                    dimensions: data
-                                        .iter()
-                                        .find(|(d, _)| Some(d) == id.as_ref())
-                                        .map(|(_, dims)| dims.clone())
-                                        .unwrap_or_default(),
-                                });
+                                let dimensions = data
+                                    .iter()
+                                    .find(|(d, _)| Some(d) == id.as_ref())
+                                    .map(|(_, dims)| dims.clone())
+                                    .unwrap_or_default();
+                                out.series.push(read_ex_series(&s, dimensions));
                             }
                         }
                         _ => {}
@@ -1041,6 +1041,88 @@ pub(crate) fn read_chart_ex(xml: &str) -> Option<ChartEx> {
         }
     }
     Some(out)
+}
+
+/// One `<cx:series>`, its data already found.
+fn read_ex_series(node: &Node<'_>, dimensions: Vec<Dimension>) -> ExSeries {
+    let mut out = ExSeries::new(
+        SeriesLayout::parse(node.attr("layoutId").unwrap_or_default()),
+        dimensions,
+    );
+    out.hidden = node.attr("hidden").is_some_and(is_true);
+    for child in node.children() {
+        match child.name {
+            "tx" => out.name = read_ex_text(&child),
+            "dataPt" => {
+                if let Some(index) = child.attr("idx").and_then(|i| i.parse().ok()) {
+                    out.points.push(ExPoint {
+                        index,
+                        format: child
+                            .child("spPr")
+                            .map(|f| read_shape_format(&f))
+                            .unwrap_or_default(),
+                    });
+                }
+            }
+            "dataLabels" => out.labels = Some(read_ex_labels(&child)),
+            "layoutPr" => {
+                for part in child.children() {
+                    match part.name {
+                        "binning" => out.binning = Some(read_binning(&part)),
+                        "subtotals" => {
+                            out.subtotals = part
+                                .children()
+                                .iter()
+                                .filter(|i| i.name == "idx")
+                                .filter_map(|i| i.val()?.parse().ok())
+                                .collect();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// `<cx:dataLabels>`: where they sit and what they show.
+fn read_ex_labels(node: &Node<'_>) -> ExLabels {
+    let shown = node.child("visibility");
+    let flag = |name: &str| {
+        shown
+            .as_ref()
+            .and_then(|v| v.attr(name))
+            .is_some_and(is_true)
+    };
+    ExLabels {
+        position: node.attr("pos").and_then(LabelPosition::parse),
+        series_name: flag("seriesName"),
+        category_name: flag("categoryName"),
+        value: flag("value"),
+    }
+}
+
+/// `<cx:binning>`.
+fn read_binning(node: &Node<'_>) -> Binning {
+    let edge = |name: &str| {
+        node.attr(name).and_then(|v| match v {
+            "auto" => Some(BinEdge::Auto),
+            n => n.parse().ok().map(BinEdge::Value),
+        })
+    };
+    let bins = node.children().iter().find_map(|c| match c.name {
+        "binSize" => c.val()?.parse().ok().map(Bins::Width),
+        "binCount" => c.val()?.parse().ok().map(Bins::Count),
+        _ => None,
+    });
+    Binning {
+        closed_left: node.attr("intervalClosed") == Some("l"),
+        underflow: edge("underflow"),
+        overflow: edge("overflow"),
+        bins,
+    }
 }
 
 /// Reads `<cx:tx>`: a formula with the value it had, or formatted text.
