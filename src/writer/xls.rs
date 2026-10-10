@@ -655,6 +655,18 @@ fn window(out: &mut Vec<u8>, view: &SheetView) {
     data.extend_from_slice(&0u16.to_le_bytes());
     data.extend_from_slice(&0u32.to_le_bytes());
     record(out, 0x023E, &data);
+    // `SCL`, the zoom as a fraction, between the window and the panes.
+    if let Some(zoom) = view
+        .zoom_scale
+        .filter(|z| (10..=400).contains(z) && *z != 100)
+        .and_then(|z| u16::try_from(z).ok())
+    {
+        record(
+            out,
+            0x00A0,
+            &[zoom.to_le_bytes(), 100u16.to_le_bytes()].concat(),
+        );
+    }
 
     let Some(pane) = &view.pane else {
         selections(out, view);

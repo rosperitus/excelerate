@@ -175,7 +175,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
             sheet.comments =
                 read_comments(&mut zip, &resolve(sheet_base, &rel.target)).unwrap_or_default();
         }
-        read_note_boxes(&mut zip, &links, sheet_base, &mut sheet.comments);
+        sheet.controls = read_note_boxes(&mut zip, &links, sheet_base, &mut sheet.comments);
         sheet.pivot_tables = read_sheet_pivots(&mut zip, &links, sheet_base, &caches);
         // The tables are modelled and written back, so their parts are read
         // rather than carried, the way the notes are.
@@ -670,20 +670,21 @@ struct WorkbookHeader {
 /// The pivot reports of one sheet, in name order.
 ///
 /// Whether each note shows and how big its box is: that lives in the VML.
+/// Returns the form controls the same part holds.
 fn read_note_boxes<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     links: &HashMap<String, Relationship>,
     base: &str,
     comments: &mut BTreeMap<CellRef, Comment>,
-) {
+) -> Vec<crate::model::control::FormControl> {
     let Some(rel) = links
         .values()
         .find(|r| !r.external && r.kind.ends_with("/vmlDrawing"))
     else {
-        return;
+        return Vec::new();
     };
     let Ok(vml) = read_part(zip, &resolve(base, &rel.target)) else {
-        return;
+        return Vec::new();
     };
     for shape in super::vml::note_shapes(&vml) {
         if let Some(note) = shape.cell.and_then(|at| comments.get_mut(&at)) {
@@ -692,6 +693,8 @@ fn read_note_boxes<R: Read + Seek>(
             note.size = shape.size.filter(|&s| s != (108.0, 59.25));
         }
     }
+    // The form controls share the part with the note boxes.
+    super::vml::controls(&vml)
 }
 
 /// They are read as well as carried: nothing writes them back, so the parts

@@ -8,6 +8,7 @@
 
 pub mod autofilter;
 pub mod chart;
+pub mod control;
 pub mod image;
 pub mod pivot;
 pub mod properties;
@@ -1773,6 +1774,9 @@ pub struct Worksheet {
     /// The sparkline groups, read out of [`Self::extensions`]: see
     /// [`crate::model::sparkline`].
     pub sparklines: Vec<sparkline::SparklineGroup>,
+    /// The form controls on the sheet, read but not written: see
+    /// [`crate::model::control`].
+    pub controls: Vec<control::FormControl>,
     /// The sheet's `<extLst>`, carried as it was written.
     ///
     /// Everything newer than the 2006 schema hangs off this element:

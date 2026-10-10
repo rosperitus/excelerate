@@ -38,6 +38,8 @@
 use super::xls_formula::{self, Base, Book, BookKind, Context};
 use crate::error::{Error, Result};
 use crate::model::DefinedName;
+use crate::model::chart::{Anchor, Marker};
+use crate::model::control::{CheckState, ControlKind, FormControl, ScrollValues};
 use crate::model::{
     CellValue, ColumnRun, Pane, PanePosition, PaneState, Selection, Spreadsheet, Worksheet,
 };
@@ -97,6 +99,14 @@ mod record {
     pub const PANE: u16 = 0x0041;
     /// The cursor and the selected areas of one pane.
     pub const SELECTION: u16 = 0x001D;
+    /// Zoom of the sheet window, as a fraction.
+    pub const SCL: u16 = 0x00A0;
+    /// A piece of the sheet's drawing: shape properties and anchors.
+    pub const MSODRAWING: u16 = 0x00EC;
+    /// What a drawn object is: a control, a note, a picture.
+    pub const OBJ: u16 = 0x005D;
+    /// The text of a drawn object; the characters follow in `CONTINUE`.
+    pub const TXO: u16 = 0x01B6;
 }
 
 /// Reads a workbook from a file.
@@ -193,6 +203,102 @@ struct Record<'a> {
     data: &'a [u8],
     /// Where the next record starts.
     next: usize,
+}
+
+/// What the drawing records of one sheet have said so far.
+#[derive(Default)]
+struct Drawing {
+    /// The anchor of the shape the next `OBJ` describes, in BIFF units.
+    anchor: Option<[u16; 8]>,
+    /// Controls with their anchors still in BIFF units: they become EMU once
+    /// the column widths and row heights are all known.
+    controls: Vec<([u16; 8], FormControl)>,
+    /// Whether the next `TXO` is the caption of the last control.
+    caption: bool,
+}
+
+impl Drawing {
+    /// The controls, anchored in EMU against the sheet's columns and rows.
+    fn finish(self, sheet: &Worksheet) -> Vec<FormControl> {
+        self.controls
+            .into_iter()
+            .map(|(place, mut control)| {
+                control.anchor = biff_anchor(sheet, place);
+                control
+            })
+            .collect()
+    }
+}
+
+/// The zoom an `SCL` record holds as a fraction, in percent; Excel allows 10
+/// to 400.
+fn zoom(data: &[u8]) -> Option<u32> {
+    let (num, den) = (u32::from(u16_at(data, 0)), u32::from(u16_at(data, 2)));
+    (num * 100)
+        .checked_div(den)
+        .filter(|z| (10..=400).contains(z))
+}
+
+/// The last `OfficeArtClientAnchor` in a piece of drawing: left column,
+/// its offset, top row, its offset, then the bottom-right corner the same way.
+fn client_anchor(data: &[u8]) -> Option<[u16; 8]> {
+    let mut found = None;
+    let mut at = 0;
+    while at + 8 <= data.len() {
+        let container = u16_at(data, at) & 0x0F == 0x0F;
+        let kind = u16_at(data, at + 2);
+        let length = usize::try_from(u32_at(data, at + 4)).ok()?;
+        if kind == 0xF010 && data.len() >= at + 26 {
+            // Two bytes of flags, then the eight numbers.
+            found = Some(core::array::from_fn(|i| u16_at(data, at + 10 + 2 * i)));
+        }
+        // Step into a container, over an atom.
+        at = at
+            .checked_add(8)?
+            .checked_add(if container { 0 } else { length })?;
+    }
+    found
+}
+
+/// A BIFF anchor in EMU. Column offsets count 1024ths of the column, row
+/// offsets 256ths of the row.
+///
+/// ponytail: widths come from the sheet's column runs, or 8.43 characters
+/// at 7 pixels each, heights from the rows, or 15 points; a workbook with
+/// another default font or `DEFCOLWIDTH` lands a few pixels off.
+fn biff_anchor(sheet: &Worksheet, place: [u16; 8]) -> Anchor {
+    const EMU_PER_PIXEL: i32 = 9525;
+    let width = |col: u16| -> f64 {
+        let chars = sheet
+            .columns
+            .iter()
+            .find(|run| column(col).is_ok_and(|c| run.first <= c && c <= run.last))
+            .and_then(|run| run.width)
+            .unwrap_or(8.43);
+        (chars * 7.0 + 5.0).trunc()
+    };
+    let height = |r: u16| -> f64 {
+        let points = row(r)
+            .ok()
+            .and_then(|r| sheet.rows.get(&r)?.height)
+            .unwrap_or(15.0);
+        points * 4.0 / 3.0
+    };
+    // The products are a few thousand pixels at most, well inside `i64`.
+    #[expect(clippy::cast_possible_truncation)]
+    let emu = |pixels: f64| (pixels * f64::from(EMU_PER_PIXEL)).round() as i64;
+    let marker = |col: u16, dx: u16, r: u16, dy: u16| Marker {
+        col: column(col).unwrap_or_default(),
+        col_offset: emu(width(col) * f64::from(dx.min(1024)) / 1024.0),
+        row: row(r).unwrap_or_default(),
+        row_offset: emu(height(r) * f64::from(dy.min(256)) / 256.0),
+    };
+    let [c1, dx1, r1, dy1, c2, dx2, r2, dy2] = place;
+    Anchor::TwoCell {
+        from: marker(c1, dx1, r1, dy1),
+        to: marker(c2, dx2, r2, dy2),
+        edit_as: None,
+    }
 }
 
 /// Reads the record at an offset, `None` past the end of the stream.
@@ -533,10 +639,15 @@ impl<'a> Reader<'a> {
         // `PANE` comes after `WINDOW2` and only says where the split is;
         // whether it is frozen is a bit of the window.
         let mut window = 0u16;
+        let mut drawing = Drawing::default();
         while let Some(record) = record_at(self.stream, at) {
             at = record.next;
             match record.id {
                 record::EOF => break,
+                record::SCL => sheet.view.zoom_scale = zoom(record.data),
+                record::MSODRAWING | record::OBJ | record::TXO => {
+                    self.drawing_record(&mut drawing, &record, &mut at);
+                }
                 record::DIMENSION | record::BOF => {}
                 record::WINDOW2 => {
                     window = u16_at(record.data, 0);
@@ -617,7 +728,116 @@ impl<'a> Reader<'a> {
                 _ => self.cell_record(&mut sheet, &record, &mut at),
             }
         }
+        sheet.controls = drawing.finish(&sheet);
         Ok(sheet)
+    }
+
+    /// One record of the sheet's drawing: an anchor, an object, its text.
+    fn drawing_record(&self, drawing: &mut Drawing, record: &Record<'_>, at: &mut usize) {
+        match record.id {
+            record::MSODRAWING => {
+                if let Some(found) = client_anchor(record.data) {
+                    drawing.anchor = Some(found);
+                }
+            }
+            record::OBJ => {
+                drawing.caption = false;
+                if let Some(found) = drawing.anchor.take()
+                    && let Some(control) = self.control(record.data)
+                {
+                    drawing.controls.push((found, control));
+                    drawing.caption = true;
+                }
+            }
+            // The `TXO` after a control's `OBJ` is its caption; the
+            // characters are in the `CONTINUE` that follows, after a byte
+            // saying how wide they are.
+            _ if drawing.caption => {
+                drawing.caption = false;
+                let count = usize::from(u16_at(record.data, 10));
+                if let Some(next) = record_at(self.stream, *at)
+                    && next.id == record::CONTINUE
+                    && count > 0
+                {
+                    *at = next.next;
+                    let wide = next.data.first().is_some_and(|f| f & 1 != 0);
+                    let (text, _) = read_chars(next.data, 1, count, wide);
+                    if let Some((_, control)) = drawing.controls.last_mut() {
+                        control.text = Some(text);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The form control an `OBJ` record describes, `None` for anything else
+    /// (notes, pictures, charts).
+    fn control(&self, data: &[u8]) -> Option<FormControl> {
+        // `ftCmo` always comes first: its id, its length, then the kind.
+        if u16_at(data, 0) != 0x15 {
+            return None;
+        }
+        let kind = ControlKind::from_biff(u16_at(data, 4))?;
+        let mut control = FormControl::new(kind, Anchor::default());
+        let mut at = 0;
+        while let Some(head) = data.get(at..at + 4) {
+            let (ft, cb) = (u16_at(head, 0), usize::from(u16_at(head, 2)));
+            let body = data.get(at + 4..).unwrap_or(&[]);
+            match ft {
+                0x00 => break,
+                // ftMacro, ftCblsFmla, ftSbsFmla: the record length serves as
+                // the formula's, which follows at once.
+                0x04 | 0x0D | 0x0E => {
+                    let formula = self.object_formula(body);
+                    match ft {
+                        0x04 => control.macro_name = formula,
+                        _ => control.linked_cell = formula,
+                    }
+                }
+                // ftCblsData: the check state first.
+                0x0A => control.checked = Some(CheckState::from_number(u32::from(u16_at(body, 0)))),
+                // ftSbs: four unused bytes, then the numbers, signed.
+                0x0C => {
+                    let n = |i: usize| {
+                        i32::from(i16::from_le_bytes(u16_at(body, 4 + 2 * i).to_le_bytes()))
+                    };
+                    control.scroll = Some(ScrollValues {
+                        value: n(0),
+                        min: n(1),
+                        max: n(2),
+                        step: n(3),
+                        page: n(4),
+                    });
+                }
+                // ftLbsData runs to the end of the record whatever its
+                // length says; its range formula comes first, after a length
+                // of its own.
+                0x13 => {
+                    control.input_range = self.object_formula(body.get(2..).unwrap_or(&[]));
+                    break;
+                }
+                _ => {}
+            }
+            at += 4 + cb;
+        }
+        // A combo box carries `ftSbs` for its list's scrolling, not a value
+        // anyone sets.
+        if !matches!(kind, ControlKind::Spinner | ControlKind::ScrollBar) {
+            control.scroll = None;
+        }
+        Some(control)
+    }
+
+    /// The text of an `ObjectParsedFormula`: the token count, four unused
+    /// bytes, the tokens.
+    fn object_formula(&self, body: &[u8]) -> Option<String> {
+        let count = usize::from(u16_at(body, 0) & 0x7FFF);
+        let tokens = body.get(6..6 + count)?;
+        if tokens.is_empty() {
+            return None;
+        }
+        xls_formula::decompile(tokens, &[], Base::default(), &self.context)
     }
 
     /// The records that carry a value.
@@ -1756,6 +1976,113 @@ mod tests {
             (rate.name.as_str(), rate.formula.as_str()),
             ("Rate", "Main!$A$1")
         );
+    }
+
+    fn hex(text: &str) -> Vec<u8> {
+        (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .collect()
+    }
+
+    /// A drawing piece holding one `OfficeArtClientAnchor`, inside a
+    /// container the way Excel nests it.
+    fn drawing(place: [u16; 8]) -> Vec<u8> {
+        let mut atom = vec![0x00, 0x00, 0x10, 0xF0, 18, 0, 0, 0, 0, 0];
+        atom.extend(place.iter().flat_map(|n| n.to_le_bytes()));
+        let mut out = vec![0x0F, 0x00, 0x04, 0xF0];
+        out.extend_from_slice(&u32::try_from(atom.len()).unwrap().to_le_bytes());
+        out.extend(atom);
+        out
+    }
+
+    /// The zoom (`SCL`) and the form controls (`OBJ` with its anchor and its
+    /// `TXO` caption), as Excel 2003 wrote them into a real workbook.
+    #[test]
+    fn zoom_and_form_controls_are_read() {
+        let mut globals = Vec::new();
+        push(&mut globals, record::BOF, &[0x00, 0x06, 0x05, 0x00]);
+        let boundsheet_at = globals.len() + 4;
+        push(
+            &mut globals,
+            record::BOUNDSHEET,
+            &[0, 0, 0, 0, 0, 0, 1, 0, b'S'],
+        );
+        push(&mut globals, record::EOF, &[]);
+        let start = u32::try_from(globals.len()).unwrap();
+        globals[boundsheet_at..boundsheet_at + 4].copy_from_slice(&start.to_le_bytes());
+
+        let mut sheet = Vec::new();
+        push(&mut sheet, record::BOF, &[0x00, 0x06, 0x10, 0x00]);
+        // 4/5: 80 percent.
+        push(&mut sheet, record::SCL, &[4, 0, 5, 0]);
+        // A combo box linked to $C$15, listing $N$3:$N$7.
+        push(
+            &mut sheet,
+            record::MSODRAWING,
+            &drawing([0, 689, 14, 0, 3, 768, 14, 244]),
+        );
+        push(
+            &mut sheet,
+            record::OBJ,
+            &hex(concat!(
+                "150012001400070011200000000000000000a5e53d950c001400f5e500000000",
+                "000000000100050000001000000004000e000700000000003901002c000000030e",
+                "000c00050000000000240e000200021300cc1f100009000000000025020006000d",
+                "000d000d050001000800000000000500000000000000"
+            )),
+        );
+        // A button captioned "Go".
+        push(
+            &mut sheet,
+            record::MSODRAWING,
+            &drawing([4, 512, 5, 128, 6, 0, 7, 0]),
+        );
+        push(
+            &mut sheet,
+            record::OBJ,
+            &hex("1500120007000f00014000000000000000000de53d950000000000"),
+        );
+        push(
+            &mut sheet,
+            record::MSODRAWING,
+            &[0, 0, 0x0D, 0xF0, 0, 0, 0, 0],
+        );
+        let mut txo = vec![
+            0x12, 0x02, 0, 0, 0, 0, 0, 0, 0, 0, 2, 0, 0x10, 0, 0, 0, 0, 0,
+        ];
+        txo.truncate(18);
+        push(&mut sheet, record::TXO, &txo);
+        push(&mut sheet, record::CONTINUE, &[0, b'G', b'o']);
+        push(&mut sheet, record::CONTINUE, &[0; 16]);
+        push(&mut sheet, record::EOF, &[]);
+        globals.extend_from_slice(&sheet);
+
+        let book = Reader::new(&globals).read().unwrap();
+        let sheet = &book.sheets()[0];
+        assert_eq!(sheet.view.zoom_scale, Some(80));
+        assert_eq!(sheet.controls.len(), 2);
+        let combo = &sheet.controls[0];
+        assert_eq!(combo.kind, ControlKind::ComboBox);
+        assert_eq!(combo.linked_cell.as_deref(), Some("$C$15"));
+        assert_eq!(combo.input_range.as_deref(), Some("$N$3:$N$7"));
+        assert_eq!(combo.scroll, None, "a combo box has no value of its own");
+        let Anchor::TwoCell { from, to, .. } = combo.anchor else {
+            panic!("a BIFF anchor is a two-cell one");
+        };
+        assert_eq!(
+            (from.col, from.row),
+            (Col::new(0).unwrap(), Row::new(14).unwrap())
+        );
+        assert_eq!(
+            (to.col, to.row),
+            (Col::new(3).unwrap(), Row::new(14).unwrap())
+        );
+        // 244/256 of a 20-pixel row, at 9525 EMU to the pixel.
+        assert_eq!(to.row_offset, 181_570);
+        let button = &sheet.controls[1];
+        assert_eq!(button.kind, ControlKind::Button);
+        assert_eq!(button.text.as_deref(), Some("Go"));
     }
 
     #[test]

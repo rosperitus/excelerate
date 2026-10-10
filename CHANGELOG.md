@@ -4,6 +4,14 @@
 
 ### Added
 
+- Form controls: `Worksheet::controls`, a `model::control::FormControl` per
+  button, check box, option button, combo box, list box, spinner, scroll bar,
+  group box or label - its kind, two-cell anchor, caption, linked cell, input
+  range, check state, spinner/scroll bar numbers and macro. Read from xls
+  (`OBJ`, `MSODRAWING` anchors, `TXO` captions) and from the VML part of xlsx;
+  not written - an xlsx's VML and `ctrlProp` parts still travel as bytes.
+- xls: the sheet zoom (`SCL`) is read into `view.zoom_scale` and written back.
+
 - Refreshing a pivot table: `edit::refresh_pivot(book, sheet, table,
   &PivotCaptions)` reads the source range its cache names (a sheet and
   range, a table or a defined name), lays the report out in the cells from

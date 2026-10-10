@@ -394,3 +394,10 @@ fn frozen_panes_selections_and_window_switches_survive_a_round_trip() {
     let expected = book.sheets()[0].view.clone();
     assert_eq!(rewrite(&book).sheets()[0].view, expected);
 }
+
+#[test]
+fn the_zoom_survives_a_round_trip() {
+    let mut book = Spreadsheet::new();
+    book.sheet_mut(0).unwrap().view.zoom_scale = Some(80);
+    assert_eq!(rewrite(&book).sheets()[0].view.zoom_scale, Some(80));
+}

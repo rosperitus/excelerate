@@ -946,6 +946,68 @@ fn parts_the_model_does_not_know_are_carried_through() {
     assert_eq!(drawing.data, b"<wsDr/>", "carried bytes are not touched");
 }
 
+/// A form control lives in the sheet's VML and its `ctrlProp` part; both are
+/// carried, and the control is read back out of the VML.
+#[test]
+fn form_controls_are_read_from_their_vml_and_their_parts_carried() {
+    use excelerate::model::control::{CheckState, ControlKind};
+    use excelerate::model::{Attachment, OpaquePart};
+
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let vml = concat!(
+        r#"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:x="urn:schemas-microsoft-com:office:excel">"#,
+        r#"<v:shape id="_x0000_s1025" style='position:absolute'><v:textbox><div>Tick</div></v:textbox>"#,
+        r#"<x:ClientData ObjectType="Checkbox"><x:Anchor>1, 0, 2, 0, 3, 0, 4, 0</x:Anchor>"#,
+        r#"<x:Checked>1</x:Checked><x:FmlaLink>$A$1</x:FmlaLink></x:ClientData></v:shape></xml>"#,
+    );
+    let props = br#"<formControlPr objectType="CheckBox" checked="Checked" fmlaLink="$A$1"/>"#;
+
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("Form").unwrap();
+    for (kind, target) in [
+        ("vmlDrawing", "xl/drawings/vmlDrawing1.vml"),
+        ("ctrlProp", "xl/ctrlProps/ctrlProp1.xml"),
+    ] {
+        sheet.attachments.push(Attachment {
+            kind: format!("{rel}/{kind}"),
+            target: target.into(),
+        });
+    }
+    book.add_sheet(sheet).unwrap();
+    for (path, kind, data) in [
+        (
+            "xl/drawings/vmlDrawing1.vml",
+            "application/vnd.openxmlformats-officedocument.vmlDrawing",
+            vml.as_bytes().to_vec(),
+        ),
+        (
+            "xl/ctrlProps/ctrlProp1.xml",
+            "application/vnd.ms-excel.controlproperties+xml",
+            props.to_vec(),
+        ),
+    ] {
+        book.parts.push(OpaquePart {
+            path: path.into(),
+            content_type: Some(kind.into()),
+            data,
+        });
+    }
+
+    let back = cycle(&cycle(&book));
+    let controls = &back.sheets()[0].controls;
+    assert_eq!(controls.len(), 1);
+    assert_eq!(controls[0].kind, ControlKind::CheckBox);
+    assert_eq!(controls[0].text.as_deref(), Some("Tick"));
+    assert_eq!(controls[0].checked, Some(CheckState::Checked));
+    assert_eq!(controls[0].linked_cell.as_deref(), Some("$A$1"));
+    let carried = back
+        .parts
+        .iter()
+        .find(|p| p.path == "xl/ctrlProps/ctrlProp1.xml")
+        .expect("the control's properties come back");
+    assert_eq!(carried.data, props, "carried bytes are not touched");
+}
+
 #[test]
 fn the_mac_base_date_is_not_quietly_turned_into_the_windows_one() {
     use excelerate::shared::date::Epoch;
