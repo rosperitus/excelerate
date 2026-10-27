@@ -166,6 +166,14 @@
 - A grouped sheet was written without `outlineLevelRow` and
   `outlineLevelCol` in `<sheetFormatPr>`, which Excel draws the outline's
   level buttons from: it opened with nothing to collapse the groups by.
+- xlsx: a formula whose stored result is empty text (`t="str"` with an
+  empty `<v/>`, what `IFERROR(..., "")` leaves) was read as having no
+  result, so every reader of the sheet computed it again. On COIN, 80 000
+  such cells: HTML of its `Scores` sheet took 6.2 s and takes 0.47 s, and
+  the cache check now covers all 651 614 formulas (651 605 agree).
+- Conditional formatting reads the cells it looks at as they are stored,
+  rather than recomputing their formulas and all they depend on: 1.7 s to
+  18 ms for every cell of COIN's `Heatmap`.
 
 ### Changed
 

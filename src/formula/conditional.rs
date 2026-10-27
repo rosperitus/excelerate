@@ -130,7 +130,8 @@ impl<'a> ConditionalFormatting<'a> {
         Self {
             book,
             sheet,
-            engine: Engine::new(book),
+            // What the cells show: their stored results, not a recalculation.
+            engine: Engine::new(book).on_stored_results(),
             theme: book
                 .theme
                 .as_deref()

@@ -3741,7 +3741,14 @@ fn build_value(kind: CellKind, raw: &str, formula: &str, shared: &[CellValue]) -
     if !formula.is_empty() {
         // The stored `<v>` is the last result Excel computed. Keeping it is what
         // lets a workbook be read without a formula engine.
-        let cached = (!raw.is_empty()).then(|| Box::new(scalar(kind, raw, shared)));
+        // `t="str"` with an empty `<v/>` is a result too: the empty text a
+        // formula like `IF(…, "")` gives. Reading it as no result made every
+        // reader of the sheet compute the formula again.
+        let cached = if kind == CellKind::FormulaString && raw.is_empty() {
+            Some(Box::new(CellValue::text("")))
+        } else {
+            (!raw.is_empty()).then(|| Box::new(scalar(kind, raw, shared)))
+        };
         return CellValue::Formula {
             formula: formula.to_owned(),
             cached,
@@ -4019,6 +4026,26 @@ mod tests {
         let sheet = book.sheet(0).expect("one sheet");
         assert_eq!(sheet.data_validations.len(), 1);
         assert_eq!(sheet.data_validations[0].formula1, "'Lists'!$A$1:$C$1");
+    }
+
+    #[test]
+    fn an_empty_text_result_is_a_result() {
+        // `IFERROR(…, "")` stores `t="str"` and an empty `<v/>`. Read as no
+        // result, every reader of the sheet computed the formula again: on a
+        // COIN sheet of 44 000 such cells, HTML took 6 s instead of 0.5 s.
+        let book = read_xlsx_from(Cursor::new(package(concat!(
+            r#"<sheetData><row r="1"><c r="A1" t="str"><f>IF(1,"")</f><v/></c>"#,
+            r#"<c r="B1"><f>1+1</f></c></row></sheetData>"#
+        ))))
+        .expect("package reads");
+        let sheet = book.sheet(0).expect("one sheet");
+        let cached = |a: &str| match &sheet.get(CellRef::parse(a).unwrap()).unwrap().value {
+            CellValue::Formula { cached, .. } => cached.as_deref().cloned(),
+            other => panic!("{a} is {other:?}, not a formula"),
+        };
+        assert_eq!(cached("A1"), Some(CellValue::text("")));
+        // A number formula with no `<v>` has no result yet.
+        assert_eq!(cached("B1"), None);
     }
 
     #[test]

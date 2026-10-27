@@ -178,7 +178,23 @@ impl Shared {
     }
 }
 
+/// No formula cell to recompute: see [`Engine::on_stored_results`].
+static NONE_STALE: std::sync::LazyLock<HashSet<(usize, CellRef)>> =
+    std::sync::LazyLock::new(HashSet::new);
+
 impl<'a> Engine<'a> {
+    /// The same engine reading every formula cell that has a stored result
+    /// as that result, the way a cell shows it, rather than computing it and
+    /// what it reads again. For questions about what the sheet shows now -
+    /// conditional formatting, validation - where recomputing the book under
+    /// each cell costs the whole dependency chain. A formula cell with no
+    /// stored result is still computed.
+    #[must_use]
+    pub(crate) fn on_stored_results(mut self) -> Self {
+        self.stale = Some(&NONE_STALE);
+        self
+    }
+
     /// An engine over a workbook.
     #[must_use]
     pub fn new(book: &'a Spreadsheet) -> Self {
