@@ -27,7 +27,8 @@ use crate::model::{CellValue, DefinedName, Spreadsheet};
 const MAX_VARS: usize = 200;
 /// Trials a solve may take unless told otherwise.
 const DEFAULT_TRIALS: u64 = 20_000;
-/// Work units of one LP relaxation.
+/// Work units all the LP relaxations of one solve share: branch and bound
+/// does not get a fresh allowance per subproblem.
 const LP_WORK: u64 = 2_000_000_000;
 const MAX_NODES_LP: usize = 10_000;
 const MAX_NODES_NLP: usize = 200;
@@ -144,6 +145,9 @@ pub enum SolverStatus {
     Unbounded,
     /// Simplex LP was asked to solve a model that is not linear.
     NotLinear,
+    /// The objective or a constraint cell computes an error or text where
+    /// Simplex LP reads the model, so it cannot be told linear or not.
+    ErrorValue,
     /// The trials, or the subproblems of an integer model, ran out before a
     /// point meeting every constraint was found. Not a proof that there is
     /// none: more trials may find one.
@@ -704,7 +708,12 @@ enum Unlinear {
     clippy::many_single_char_names,
     reason = "the textbook names of the method"
 )]
-fn linearize(ev: &mut Evaluator, x0: &[f64]) -> std::result::Result<Linear, Unlinear> {
+fn linearize(
+    ev: &mut Evaluator,
+    x0: &[f64],
+    lo: &[f64],
+    hi: &[f64],
+) -> std::result::Result<Linear, Unlinear> {
     let n = x0.len();
     let p0 = ev.eval(x0).ok_or(Unlinear::Budget)?;
     if !p0.f.is_finite() || p0.g.iter().any(|v| !v.is_finite()) {
@@ -713,12 +722,31 @@ fn linearize(ev: &mut Evaluator, x0: &[f64]) -> std::result::Result<Linear, Unli
     let mut cf = vec![0.0; n];
     let mut ga = vec![vec![0.0; n]; p0.g.len()];
     for j in 0..n {
+        // A step of one, turned or shortened to stay inside the bounds: a
+        // model may error outside them (`SQRT` of a variable kept >= 0).
+        let (up, down) = (hi[j] - x0[j], x0[j] - lo[j]);
+        let step = if up >= 1.0 {
+            1.0
+        } else if down >= 1.0 {
+            -1.0
+        } else if up >= down {
+            up
+        } else {
+            -down
+        };
+        // A variable fixed by its bounds: its coefficient never matters.
+        if step == 0.0 {
+            continue;
+        }
         let mut x = x0.to_vec();
-        x[j] += 1.0;
+        x[j] += step;
         let p = ev.eval(&x).ok_or(Unlinear::Budget)?;
-        cf[j] = p.f - p0.f;
+        if !p.f.is_finite() || p.g.iter().any(|v| !v.is_finite()) {
+            return Err(Unlinear::Error);
+        }
+        cf[j] = (p.f - p0.f) / step;
         for (row, (gi, g0)) in ga.iter_mut().zip(p.g.iter().zip(&p0.g)) {
-            row[j] = gi - g0;
+            row[j] = (gi - g0) / step;
         }
     }
     let dot = |a: &[f64], x: &[f64]| a.iter().zip(x).map(|(p, q)| p * q).sum::<f64>();
@@ -733,7 +761,7 @@ fn linearize(ev: &mut Evaluator, x0: &[f64]) -> std::result::Result<Linear, Unli
         .collect();
     // Checked at a point spread out from the first.
     #[allow(clippy::cast_precision_loss, reason = "small offsets by index")]
-    let xt: Vec<f64> = x0
+    let mut xt: Vec<f64> = x0
         .iter()
         .enumerate()
         .map(|(j, v)| {
@@ -744,7 +772,11 @@ fn linearize(ev: &mut Evaluator, x0: &[f64]) -> std::result::Result<Linear, Unli
             }
         })
         .collect();
+    project(&mut xt, lo, hi);
     let pt = ev.eval(&xt).ok_or(Unlinear::Budget)?;
+    if !pt.f.is_finite() || pt.g.iter().any(|v| !v.is_finite()) {
+        return Err(Unlinear::Error);
+    }
     let close = |actual: f64, predicted: f64, terms: f64| {
         actual.is_finite() && (actual - predicted).abs() <= 1e-6 * (1.0 + actual.abs() + terms)
     };
@@ -990,25 +1022,29 @@ fn nlp(ev: &mut Evaluator, x0: &[f64], lo: &[f64], hi: &[f64], goal: SolverGoal)
 
 // -------------------------------------------------------------------- solve
 
-/// Runs the model's method from `x0`: the outcome, and whether Simplex LP
-/// found the model not to be linear.
+/// Runs the model's method from `x0`: the outcome, and the status Simplex
+/// LP refused the model with, if it did.
 fn optimise(
     ev: &mut Evaluator,
     model: &SolverModel,
     problem: &Problem,
     x0: &[f64],
-) -> (Outcome, bool) {
+) -> (Outcome, Option<SolverStatus>) {
     let any_int = problem.integer.iter().any(|b| *b);
     let (lo, hi) = (&problem.lo, &problem.hi);
-    let mut not_linear = false;
+    let mut refused = None;
     let outcome = if lo.iter().zip(hi).any(|(l, h)| l > h) {
         Outcome::Infeasible
     } else {
         match model.method {
-            SolverMethod::SimplexLp => match linearize(ev, x0) {
+            SolverMethod::SimplexLp => match linearize(ev, x0, lo, hi) {
                 Err(Unlinear::Budget) => Outcome::Limit,
-                Err(_) => {
-                    not_linear = true;
+                Err(Unlinear::Error) => {
+                    refused = Some(SolverStatus::ErrorValue);
+                    Outcome::Infeasible
+                }
+                Err(Unlinear::Nonlinear) => {
+                    refused = Some(SolverStatus::NotLinear);
                     Outcome::Infeasible
                 }
                 Ok(((cf, f_const), lin)) => {
@@ -1026,10 +1062,8 @@ fn optimise(
                             vec![0.0; width]
                         }
                     };
-                    let mut relax = |l: &[f64], h: &[f64]| {
-                        let mut work = LP_WORK;
-                        solve_lp(&c, &rows, l, h, &mut work)
-                    };
+                    let mut work = LP_WORK;
+                    let mut relax = |l: &[f64], h: &[f64]| solve_lp(&c, &rows, l, h, &mut work);
                     if any_int {
                         branch_and_bound(lo, hi, &problem.integer, MAX_NODES_LP, &mut relax)
                     } else {
@@ -1051,7 +1085,7 @@ fn optimise(
             }
         }
     };
-    (outcome, not_linear)
+    (outcome, refused)
 }
 
 /// Leaves `values` in the variable cells, recomputes what reads them, and
@@ -1185,7 +1219,7 @@ pub fn solve(book: &mut Spreadsheet, sheet: usize, model: &SolverModel) -> Resul
     };
     let mut x0 = start;
     project(&mut x0, &problem.lo, &problem.hi);
-    let (outcome, not_linear) = optimise(&mut ev, model, &problem, &x0);
+    let (outcome, refused) = optimise(&mut ev, model, &problem, &x0);
     let trials = ev.trials;
     let (status, keep) = match outcome {
         Outcome::Solved(x, _, converged) => (
@@ -1197,8 +1231,7 @@ pub fn solve(book: &mut Spreadsheet, sheet: usize, model: &SolverModel) -> Resul
             Some(x),
         ),
         Outcome::Unbounded => (SolverStatus::Unbounded, None),
-        Outcome::Infeasible if not_linear => (SolverStatus::NotLinear, None),
-        Outcome::Infeasible => (SolverStatus::Infeasible, None),
+        Outcome::Infeasible => (refused.unwrap_or(SolverStatus::Infeasible), None),
         Outcome::Limit => (SolverStatus::Limit, None),
     };
     let (objective, values) = if let Some(found) = keep {

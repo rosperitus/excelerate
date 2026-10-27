@@ -280,3 +280,32 @@ fn a_saved_model_naming_another_sheet_is_not_read_as_this_one() {
     rhs.formula = "Plan!$B$1*2".into();
     assert_eq!(saved_model(&book, 0), None);
 }
+
+#[test]
+fn an_error_in_the_model_is_not_called_nonlinear() {
+    let mut book = sheet(&[
+        ("A1", CellValue::Number(0.0)),
+        ("B1", CellValue::formula("SQRT(A1-10)")),
+    ]);
+    let mut model = SolverModel::new(at!("B1"), SolverGoal::Max, vec![range("A1")]);
+    model.method = SolverMethod::SimplexLp;
+    let solved = solve(&mut book, 0, &model).unwrap();
+    assert_eq!(solved.status, SolverStatus::ErrorValue);
+}
+
+#[test]
+fn simplex_reads_the_model_inside_the_bounds() {
+    // Linear inside A1 <= 4 and an error past it: starting at the bound, a
+    // step outside would call the model broken.
+    let mut book = sheet(&[
+        ("A1", CellValue::Number(4.0)),
+        ("B1", CellValue::Number(0.0)),
+        ("C1", CellValue::formula("A1+B1+IF(A1>4,NA(),0)")),
+    ]);
+    let mut model = SolverModel::new(at!("C1"), SolverGoal::Max, vec![range("A1:B1")]);
+    model.method = SolverMethod::SimplexLp;
+    model.constraints = vec![le("A1", 4.0), le("B1", 2.0)];
+    let solved = solve(&mut book, 0, &model).unwrap();
+    assert_eq!(solved.status, SolverStatus::Optimal);
+    assert!((num(&book, "C1") - 6.0).abs() < 1e-9);
+}
