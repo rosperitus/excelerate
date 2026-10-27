@@ -73,7 +73,7 @@ fn rule(kind: CfRuleType, priority: i32, dxf: u32) -> CfRule {
 fn hits(book: &Spreadsheet, col: &str, last: u32) -> Vec<u32> {
     let mut cf = ConditionalFormatting::new(book, 0);
     (1..=last)
-        .filter(|r| !cf.look(at(&format!("{col}{r}"))).rules.is_empty())
+        .filter(|r| !cf.look(at(&format!("{col}{r}"))).dxfs.is_empty())
         .collect()
 }
 
@@ -224,17 +224,17 @@ fn the_stronger_rule_wins_each_property_and_stop_if_true_stops() {
     );
     let mut cf = ConditionalFormatting::new(&book, 0);
     let look = cf.look(at("A9"));
-    assert_eq!(look.rules, [1, 0]);
+    assert_eq!(look.dxfs, [1, 0]);
     // Blue from the stronger rule, not red; bold from it too.
     let fill = look.style.fill.unwrap();
     assert_eq!(fill.background, Some(Color::Argb(0xFF00_00FF)));
     assert_eq!(look.style.font.unwrap().bold, Some(true));
-    assert_eq!(cf.look(at("A6")).rules, [0]);
+    assert_eq!(cf.look(at("A6")).dxfs, [0]);
     assert!(cf.look(at("A2")).is_empty());
 
     book.sheet_mut(0).unwrap().conditional_formats[1].rules[0].stop_if_true = true;
     let mut cf = ConditionalFormatting::new(&book, 0);
-    assert_eq!(cf.look(at("A9")).rules, [1]);
+    assert_eq!(cf.look(at("A9")).dxfs, [1]);
 }
 
 fn scale_rule(scale: CfScale, kind: CfRuleType) -> CfRule {
@@ -491,4 +491,16 @@ fn a_2010_bar_runs_full_width_and_draws_negatives_from_the_axis() {
     );
     let mut cf = ConditionalFormatting::new(&book, 0);
     assert!((cf.look(at("A10")).data_bar.unwrap().length - 0.9).abs() < 1e-9);
+}
+
+#[test]
+fn the_number_one_and_the_text_one_are_not_duplicates() {
+    let mut book = book();
+    let ws = book.sheet_mut(0).unwrap();
+    ws.set(at("F1"), 1.0);
+    ws.set(at("F2"), "1");
+    ws.set(at("F3"), "Pear");
+    ws.set(at("F4"), "pear");
+    add(&mut book, "F1:F4", rule(CfRuleType::DuplicateValues, 1, 0));
+    assert_eq!(hits(&book, "F", 4), [3, 4]);
 }

@@ -109,7 +109,9 @@
     `write_html` now shows it. A percent or percentile threshold may be a
     formula; an empty cell equals `FALSE`; a 2010 data bar (one with an
     `x14:id`) runs 0 to 100 % of the cell and draws negative values from
-    its axis leftwards in their own colour (`DataBarLook::start`).
+    its axis leftwards in their own colour (`DataBarLook::start`). Duplicate
+    Values tells the number 1 from the text "1". `CfLook::dxfs` (it was
+    `rules`) lists the differential styles of the matching rules.
   - `edit::flash_fill` and `FlashFill::learn`: Flash Fill from examples, with
     several source columns, cuts inside a word and a header stepped over.
   - `edit::refresh_pivot` and `refresh_all_pivots` lay a pivot table's
