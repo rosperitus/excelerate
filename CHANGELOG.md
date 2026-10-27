@@ -1,5 +1,137 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Form controls: `Worksheet::controls`, a `model::control::FormControl` per
+  button, check box, option button, combo box, list box, spinner, scroll bar,
+  group box or label - its kind, two-cell anchor, caption, linked cell, input
+  range, check state, spinner/scroll bar numbers and macro. Read from xls
+  (`OBJ`, `MSODRAWING` anchors, `TXO` captions) and from the VML part of xlsx.
+  Written to xlsx when the sheet's VML holds no controls yet (read from xls,
+  or made in code): a VML shape, a `ctrlProp` part and the sheet's
+  `<controls>` behind `mc:AlternateContent`, as Excel 2010 writes them. An
+  xlsx's own VML and `ctrlProp` parts still travel as bytes; the xls writer
+  writes no drawings, so controls are dropped there.
+- `FormControl::font`: the caption's font - the `TXO` run's font in xls,
+  the `<font>` of the VML text box in xlsx.
+- xls: the sheet zoom (`SCL`) is read into `view.zoom_scale` and written back.
+- xls: `DEFCOLWIDTH` and `DEFAULTROWHEIGHT` are read into
+  `default_column_width` (rounded up to a multiple of eight pixels, as Excel
+  draws it) and `default_row_height`; control anchors measure against them.
+- 2016 charts: `ExSeries::points` (`cx:dataPt` fills), `labels` (`ExLabels`:
+  position and what `cx:dataLabels` shows), `binning` (`Binning`: closed
+  side, underflow and overflow, bin width or count) and `subtotals` (a
+  waterfall's total bars); `ChartEx::legend` (`ExLegend`). Read, written for
+  a new chart, and spliced into the part of a changed one. `ExSeries::new`.
+- `Dimension::strings(&book, sheet)` and
+  `formula::chart::dimension_strings`: what the cells a 2016 chart dimension
+  reads show now, by point index, through the hidden `_xlchart` name.
+- `formula::eval::resolve_table(book, origin, &Structured)`: the sheet index
+  and rectangle a structured reference means (`Table[Column]`, `[#Headers]`,
+  `[#Totals]`, `[@Column]` and their combinations); `Engine::resolve_table`
+  (sheet by name) and `Engine::area_of` are public.
+- `Engine::reference_of(origin, &expr)`: the sheet and range any reference
+  expression means, single cells included (ranges, tables, names, `INDEX`,
+  `OFFSET`, `INDIRECT`, `IF`/`CHOOSE`), and `Engine::offset_area(origin,
+  &args)` for `OFFSET` alone, negative height and width growing up and left.
+
+- Refreshing a pivot table: `edit::refresh_pivot(book, sheet, table,
+  &PivotCaptions)` reads the source range its cache names (a sheet and
+  range, a table or a defined name), lays the report out in the cells from
+  the old top-left corner in Excel's tabular form, clears the old report and
+  returns the new range. Several row and column fields, several value fields
+  (the values field `-2` goes on the columns when there are two or more), all
+  eleven functions, subtotals of outer fields, both grand totals and a page
+  filter's item. Items sort as Excel's pivot does, numbers first and blanks
+  last; an error among the values is the cell's value. The definition and
+  its cache are brought up to date: location, header sizes, captions of value
+  fields, field names and the shared items of the fields on an axis.
+  `PivotCaptions` holds the words, English by default.
+- `PivotField::page_item`: the item a page filter shows, read from
+  `<pageField item>` and written back.
+- `style::format::format_with_fill(value, code, epoch) -> (String,
+  Option<Repeat>)`: the repeat code `*x` is left out of the text and answered
+  apart - the character and the byte offset where it repeats to the width of
+  the cell, so `_($* #,##0_)` puts `$` at the left edge and the number at the
+  right. `format` still renders it as one space.
+- `SparklineGroup::color(name)`, `attribute(name)`, `custom_min()`,
+  `custom_max()`: a group's colours (`colorSeries` to `colorLow`), its other
+  attributes (`displayEmptyCellsAs`, axis types) and its fixed axis bounds,
+  read out of what the file wrote.
+- `Style::checkbox`: the check box cell of Excel 365, read from the
+  `xfpb:xfComplement` of its `<xf>` and written back when the book carries
+  its feature property bag.
+- `CfScale::DataBar` gains the 2010 look kept in the sheet's `<extLst>`:
+  `gradient`, `border_color`, `negative_fill_color`,
+  `negative_border_color`, `axis_position` (`DataBarAxis`) and
+  `axis_color`. Read through the rule's `x14:id`; a changed look rewrites
+  only that `x14:dataBar`, and a bar made in code with a non-default look
+  gets both halves.
+- `Dependencies::readers(sheet, at)`: the formulas that read a cell, by name
+  or through a range holding it, from the index without parsing again.
+- Data tools:
+  - `edit::remove_duplicates`: Excel's Remove Duplicates. Rows of a range are
+    compared by the text their cells show, without regard to case, on all
+    columns or the ones given; the first is kept, the rest close up inside
+    the range, and moved formulas are rewritten as a sort rewrites them.
+    Returns `Deduplicated { removed, remaining }`.
+  - `edit::text_to_columns` with `SplitBy`: Text to Columns, by delimiters
+    (with a text qualifier and consecutive delimiters as one) or by fixed
+    widths. Pieces are typed as CSV fields are; a split that would run past
+    the last column writes nothing and is `Error::WouldPushOffSheet`.
+  - `formula::what_if::goal_seek` and `goal_seek_with`: Goal Seek, secant
+    steps with bisection inside a sign change, stepping back out of inputs
+    where the model errors. Limits come from the workbook's `iterateCount`
+    and `iterateDelta` (`SeekLimits::of`), or are given. The best value is
+    left in the input cell and what reads it is recomputed. The new
+    `Error::GoalSeek` reports a set cell without a formula or an input cell
+    with one.
+  - `formula::validation`: `check` a value against the data validation rule
+    of a cell, `invalid_cells` of a sheet (Circle Invalid Data), `rule_at` and
+    `list_items` for drop-downs. Every rule type is applied, and a rule's
+    formulas move from the first cell of its range to the cell checked.
+- In JS: `removeDuplicates`, `textToColumns`, `goalSeek`, `checkValidation`,
+  `invalidCells` and `validationList` on `Book` and `Sheet`, with their option
+  and result types. `addDataValidation` adds a rule from JS, which could
+  only read them before; a type or operator it does not know is an error
+  rather than a silent default.
+
+### Changed
+
+- `Dependencies` indexes a structured reference as the cells its table
+  covers: `readers` finds formulas reading a table, and such a formula is no
+  longer recomputed on every edit. After resizing, adding or removing a table
+  build the index again.
+- `ExSeries` is no longer `Eq` (bin edges are `f64`).
+- `Style` and `CfScale::DataBar` have new fields, so code building them
+  field by field must add them (`..Style::default()` covers `Style`).
+
+### Fixed
+
+- `Engine::reference_of` resolves a single cell reached through a defined
+  name, `INDEX`, `IF` or `CHOOSE` (it returned `None`), and computes
+  `INDEX` positions instead of taking literals only. `area_of` is unchanged.
+- xls: a control's anchor took a column run's width, which already holds the
+  padding, plus five more pixels.
+- A pivot table saved by Excel 2010 or later read with an empty name, cache
+  id 0 and no grand totals: the `<x14:pivotTableDefinition>` in its
+  `<extLst>` overwrote the root's attributes.
+- `GETPIVOTDATA` took the grand total row from `row_grand_totals`; in the
+  file that flag is the column of row totals, and the row is
+  `column_grand_totals`. The model's documentation of the two said the same
+  wrong thing.
+
+### Changed
+
+- A copy of a workbook shares the cells of its sheets in chunks of 1024
+  rows, and a change after the copy copies the chunk it lands in rather than
+  the whole sheet. An editor keeping a copy of the book per undo step paid
+  for every cell of the sheet on each step: on two million cells, ten steps
+  of a copy and one changed cell took 0.6 s and 1.1 GB, and now take 3 ms
+  and 6 MB. Reading and walking a sheet cost what they did.
+
 ## 0.15.0
 
 ### Added
@@ -83,6 +215,9 @@
   and in a bundler after `await init()`. `…/web` names it explicitly. The
   published package used to be the Node build alone, which a browser cannot
   load.
+- `formula::functions::arity(name)`: the fewest and most arguments of a
+  built-in function, from Excel's function table, for an editor hinting a
+  call now that `shared::biff_functions` is internal.
 
 ### Changed
 

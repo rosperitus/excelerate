@@ -10,6 +10,9 @@
 //! and marked `refreshOnLoad`, so the application that opens the file lays
 //! the report out again from the source range. A report removed from a sheet
 //! takes its part with it; its cache stays for the reports still using it.
+//!
+//! **Laid out by [`crate::edit::refresh_pivot`]**, which computes the report
+//! from the source range and writes it into the cells.
 
 use crate::coordinate::Range;
 
@@ -120,6 +123,9 @@ pub struct PivotField {
     pub default_subtotal: bool,
     /// Whether items with no data are shown.
     pub show_all: bool,
+    /// For a page filter, the one item it shows, as the item's text; `None`
+    /// shows them all. An item the source no longer has also shows all.
+    pub page_item: Option<String>,
 }
 
 /// A field in the values area: which cache field it reads and how it
@@ -186,9 +192,10 @@ pub struct PivotTable {
     pub page_fields: Vec<i32>,
     /// The values area.
     pub data_fields: Vec<DataField>,
-    /// Whether the report ends with a grand total row.
+    /// Whether each row gets a grand total: a column of them on the right.
+    /// Excel's "grand totals for rows", `rowGrandTotals` in the file.
     pub row_grand_totals: bool,
-    /// Whether it ends with a grand total column.
+    /// Whether each column gets one: a row of them at the bottom.
     pub column_grand_totals: bool,
     /// How it is painted.
     pub style: PivotStyleInfo,

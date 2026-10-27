@@ -142,6 +142,9 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
     book.calculation_properties = header.calculation;
     book.workbook_view = header.view;
     book.protection = header.protection;
+    // Read before the sheets: a report's page filters name their items by
+    // index into these.
+    let caches = read_pivot_caches(&mut zip, &header.pivot_caches, &rels, base);
     let sheet_count = header.sheets.len();
     for (done, (name, rel_id, visibility)) in header.sheets.into_iter().enumerate() {
         options.report(Stage::Reading, done, Some(sheet_count), &name);
@@ -172,8 +175,8 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
             sheet.comments =
                 read_comments(&mut zip, &resolve(sheet_base, &rel.target)).unwrap_or_default();
         }
-        read_note_boxes(&mut zip, &links, sheet_base, &mut sheet.comments);
-        sheet.pivot_tables = read_sheet_pivots(&mut zip, &links, sheet_base);
+        sheet.controls = read_note_boxes(&mut zip, &links, sheet_base, &mut sheet.comments);
+        sheet.pivot_tables = read_sheet_pivots(&mut zip, &links, sheet_base, &caches);
         // The tables are modelled and written back, so their parts are read
         // rather than carried, the way the notes are.
         sheet.tables = read_sheet_tables(&mut zip, &links, sheet_base);
@@ -195,7 +198,7 @@ pub fn read_xlsx_from_with<R: Read + Seek>(
     // rejected: the sheet list is what matters, the tab is only a view.
     let _ = book.set_active(header.active);
     book.defined_names = read_defined_names(&mut zip, &workbook_path)?;
-    book.pivot_caches = read_pivot_caches(&mut zip, &header.pivot_caches, &rels, base);
+    book.pivot_caches = caches.into_iter().map(|(cache, _)| cache).collect();
     // The books this one links to, in the order `[N]` counts them. Their parts
     // stay in `parts` as well: nothing here writes them back, so what leaves
     // is what arrived.
@@ -667,20 +670,21 @@ struct WorkbookHeader {
 /// The pivot reports of one sheet, in name order.
 ///
 /// Whether each note shows and how big its box is: that lives in the VML.
+/// Returns the form controls the same part holds.
 fn read_note_boxes<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     links: &HashMap<String, Relationship>,
     base: &str,
     comments: &mut BTreeMap<CellRef, Comment>,
-) {
+) -> Vec<crate::model::control::FormControl> {
     let Some(rel) = links
         .values()
         .find(|r| !r.external && r.kind.ends_with("/vmlDrawing"))
     else {
-        return;
+        return Vec::new();
     };
     let Ok(vml) = read_part(zip, &resolve(base, &rel.target)) else {
-        return;
+        return Vec::new();
     };
     for shape in super::vml::note_shapes(&vml) {
         if let Some(note) = shape.cell.and_then(|at| comments.get_mut(&at)) {
@@ -689,6 +693,8 @@ fn read_note_boxes<R: Read + Seek>(
             note.size = shape.size.filter(|&s| s != (108.0, 59.25));
         }
     }
+    // The form controls share the part with the note boxes.
+    super::vml::controls(&vml)
 }
 
 /// They are read as well as carried: nothing writes them back, so the parts
@@ -697,13 +703,14 @@ fn read_sheet_pivots<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     links: &HashMap<String, Relationship>,
     base: &str,
+    caches: &[(PivotCache, Vec<Vec<Option<String>>>)],
 ) -> Vec<PivotTable> {
     let mut out: Vec<PivotTable> = links
         .values()
         .filter(|r| !r.external && r.kind.ends_with("/pivotTable"))
         .filter_map(|rel| {
             let part = resolve(base, &rel.target);
-            let mut table = read_pivot_table(zip, &part).ok()?;
+            let mut table = read_pivot_table(zip, &part).ok()?.resolve(caches);
             table.origin = Some(PivotOrigin {
                 part,
                 read: Box::new(table.clone()),
@@ -721,18 +728,18 @@ fn read_pivot_caches<R: Read + Seek>(
     declared: &[(u32, String)],
     rels: &HashMap<String, Relationship>,
     base: &str,
-) -> Vec<PivotCache> {
+) -> Vec<(PivotCache, Vec<Vec<Option<String>>>)> {
     let mut out = Vec::new();
     for (id, rel_id) in declared {
         let Some(rel) = rels.get(rel_id) else {
             continue;
         };
         let path = resolve(base, &rel.target);
-        if let Ok(mut cache) = read_pivot_cache(zip, &path) {
+        if let Ok((mut cache, raw)) = read_pivot_cache(zip, &path) {
             cache.id = *id;
             cache.definition_part = path;
             cache.origin = Some(Box::new(cache.clone()));
-            out.push(cache);
+            out.push((cache, raw));
         }
     }
     out
@@ -1045,21 +1052,57 @@ fn read_table<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Resul
     }
 }
 
+/// A pivot table definition as read, with what it says by index into its
+/// cache: which shared item each field's items are, and the item each page
+/// filter shows. Those are put into words once the caches are read.
+struct ReadPivot {
+    table: PivotTable,
+    /// Per field, the `x` of each `<item>`: an index into the cache field's
+    /// shared items; `None` for a subtotal item.
+    items: Vec<Vec<Option<usize>>>,
+    /// Per page filter, its field and the index of the item it shows.
+    pages: Vec<(usize, usize)>,
+}
+
+impl ReadPivot {
+    /// The page filters' items, as text out of the cache's shared items.
+    fn resolve(mut self, caches: &[(PivotCache, Vec<Vec<Option<String>>>)]) -> PivotTable {
+        let raw = caches
+            .iter()
+            .find(|(c, _)| c.id == self.table.cache_id)
+            .map(|(_, raw)| raw);
+        for (field, item) in self.pages {
+            let text = self
+                .items
+                .get(field)
+                .and_then(|items| items.get(item).copied().flatten())
+                .and_then(|x| raw?.get(field)?.get(x).cloned().flatten());
+            if let Some(f) = self.table.fields.get_mut(field) {
+                f.page_item = text;
+            }
+        }
+        self.table
+    }
+}
+
 /// Reads a pivot table definition: the report's shape, not its data.
-fn read_pivot_table<R: Read + Seek>(
-    zip: &mut zip::ZipArchive<R>,
-    path: &str,
-) -> Result<PivotTable> {
+fn read_pivot_table<R: Read + Seek>(zip: &mut zip::ZipArchive<R>, path: &str) -> Result<ReadPivot> {
     let xml = read_part(zip, path)?;
     let mut reader = Reader::from_str(&xml);
     let mut out = PivotTable::default();
+    let mut items: Vec<Vec<Option<usize>>> = Vec::new();
+    let mut pages = Vec::new();
+    let mut root = false;
     // Which list of field indexes is being read: the same `<field x="n"/>`
     // element serves rows, columns and page filters.
     let mut axis: Option<PivotAxis> = None;
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e) | Event::Empty(ref e)) => match e.local_name().as_ref() {
-                "pivotTableDefinition" => {
+                // Only the root: Excel 2010 and later repeat the local name in
+                // `<extLst>` (`x14:pivotTableDefinition`), with none of these.
+                "pivotTableDefinition" if !root => {
+                    root = true;
                     out.name = attr(e, "name").unwrap_or_default();
                     out.cache_id = attr(e, "cacheId").and_then(|v| v.parse().ok()).unwrap_or(0);
                     out.row_grand_totals = attr(e, "rowGrandTotals").is_none_or(|v| is_true(&v));
@@ -1071,14 +1114,24 @@ fn read_pivot_table<R: Read + Seek>(
                     out.first_data_row = count("firstDataRow").unwrap_or(1);
                     out.first_data_col = count("firstDataCol").unwrap_or(1);
                 }
-                "pivotField" => out.fields.push(PivotField {
-                    axis: attr(e, "axis")
-                        .map(|a| PivotAxis::parse(&a))
-                        .unwrap_or_default(),
-                    data_field: attr(e, "dataField").is_some_and(|v| is_true(&v)),
-                    default_subtotal: attr(e, "defaultSubtotal").is_none_or(|v| is_true(&v)),
-                    show_all: attr(e, "showAll").is_some_and(|v| is_true(&v)),
-                }),
+                "pivotField" => {
+                    items.push(Vec::new());
+                    out.fields.push(PivotField {
+                        axis: attr(e, "axis")
+                            .map(|a| PivotAxis::parse(&a))
+                            .unwrap_or_default(),
+                        data_field: attr(e, "dataField").is_some_and(|v| is_true(&v)),
+                        default_subtotal: attr(e, "defaultSubtotal").is_none_or(|v| is_true(&v)),
+                        show_all: attr(e, "showAll").is_some_and(|v| is_true(&v)),
+                        page_item: None,
+                    });
+                }
+                // Only a field's `<items>` hold `<item>`.
+                "item" => {
+                    if let Some(list) = items.last_mut() {
+                        list.push(attr(e, "x").and_then(|v| v.parse().ok()));
+                    }
+                }
                 "rowFields" => axis = Some(PivotAxis::Row),
                 "colFields" => axis = Some(PivotAxis::Column),
                 "pageFields" => axis = Some(PivotAxis::Page),
@@ -1089,6 +1142,12 @@ fn read_pivot_table<R: Read + Seek>(
                         .or_else(|| attr(e, "fld"))
                         .and_then(|v| v.parse::<i32>().ok());
                     if let (Some(index), Some(axis)) = (index, axis) {
+                        let item = attr(e, "item").and_then(|v| v.parse().ok());
+                        if let (PivotAxis::Page, Some(item), Ok(field)) =
+                            (axis, item, usize::try_from(index))
+                        {
+                            pages.push((field, item));
+                        }
                         match axis {
                             PivotAxis::Row => out.row_fields.push(index),
                             PivotAxis::Column => out.column_fields.push(index),
@@ -1125,18 +1184,26 @@ fn read_pivot_table<R: Read + Seek>(
             _ => {}
         }
     }
-    Ok(out)
+    Ok(ReadPivot {
+        table: out,
+        items,
+        pages,
+    })
 }
 
 /// Reads a pivot cache definition: where the data came from and what its
 /// columns are.
+///
+/// Beside it, each field's shared items as the file counts them, a blank
+/// (`<m/>`) included as `None`: that is what a report's item indexes count.
 fn read_pivot_cache<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     path: &str,
-) -> Result<PivotCache> {
+) -> Result<(PivotCache, Vec<Vec<Option<String>>>)> {
     let xml = read_part(zip, path)?;
     let mut reader = Reader::from_str(&xml);
     let mut out = PivotCache::default();
+    let mut raw: Vec<Vec<Option<String>>> = Vec::new();
     // Shared items belong to the field being read; they are only listed when
     // the cache was saved with its data.
     let mut in_shared = false;
@@ -1150,18 +1217,25 @@ fn read_pivot_cache<R: Read + Seek>(
                         name: attr(e, "name"),
                     };
                 }
-                "cacheField" => out.fields.push(CacheField {
-                    name: attr(e, "name").unwrap_or_default(),
-                    number_format: attr(e, "numFmtId").and_then(|v| v.parse().ok()),
-                    shared_items: Vec::new(),
-                }),
+                "cacheField" => {
+                    raw.push(Vec::new());
+                    out.fields.push(CacheField {
+                        name: attr(e, "name").unwrap_or_default(),
+                        number_format: attr(e, "numFmtId").and_then(|v| v.parse().ok()),
+                        shared_items: Vec::new(),
+                    });
+                }
                 "sharedItems" => in_shared = true,
                 // Inside `<sharedItems>` the tag says the type and `v` the
                 // value: `s` text, `n` number, `b` boolean, `d` date, `m` a
                 // blank, which has no value at all.
-                "s" | "n" | "b" | "d" | "e" if in_shared => {
-                    if let (Some(field), Some(value)) = (out.fields.last_mut(), attr(e, "v")) {
-                        field.shared_items.push(value);
+                "s" | "n" | "b" | "d" | "e" | "m" if in_shared => {
+                    let value = attr(e, "v");
+                    if let (Some(field), Some(value)) = (out.fields.last_mut(), &value) {
+                        field.shared_items.push(value.clone());
+                    }
+                    if let Some(list) = raw.last_mut() {
+                        list.push(value);
                     }
                 }
                 _ => {}
@@ -1172,7 +1246,7 @@ fn read_pivot_cache<R: Read + Seek>(
             _ => {}
         }
     }
-    Ok(out)
+    Ok((out, raw))
 }
 
 /// One element of a part, from its opening tag to its closing one, as it
@@ -1521,6 +1595,15 @@ impl StylesReader {
             self.ext_depth += 1;
         }
         if self.ext_depth > 0 {
+            // ponytail: any feature property bag on a cell format is taken
+            // for a check box, the only cell control Excel has; resolve the
+            // index through `featurePropertyBag.xml` once there is a second.
+            if name == "xfComplement"
+                && self.section == Section::CellXfs
+                && let Some(xf) = self.xfs.last_mut()
+            {
+                xf.checkbox = true;
+            }
             return;
         }
         if self.start_section(name) || self.start_number_format(name, e) {
@@ -1694,6 +1777,7 @@ impl StylesReader {
                     .unwrap_or_default(),
                 alignment: xf.alignment,
                 protection: xf.protection,
+                checkbox: xf.checkbox,
             })
             .collect();
         let mut table = StyleTable::from_styles(styles);
@@ -1902,6 +1986,7 @@ struct Xf {
     border: u32,
     alignment: Alignment,
     protection: Protection,
+    checkbox: bool,
 }
 
 fn read_xf(e: &quick_xml::events::BytesStart<'_>) -> Xf {
@@ -1993,7 +2078,7 @@ fn apply_font_child(font: &mut Font, name: &str, e: &quick_xml::events::BytesSta
 }
 
 /// Reads a colour element, in the order of precedence xlsx uses.
-fn read_color(e: &quick_xml::events::BytesStart<'_>) -> Color {
+pub(crate) fn read_color(e: &quick_xml::events::BytesStart<'_>) -> Color {
     if let Some(rgb) = attr(e, "rgb")
         && let Some(c) = Color::from_argb_str(&rgb)
     {
@@ -2630,6 +2715,9 @@ impl SheetReader<'_> {
                 .as_deref()
                 .map(crate::model::sparkline::read)
                 .unwrap_or_default();
+            if let Some(text) = &text {
+                apply_data_bar_looks(&mut self.sheet, text);
+            }
             self.sheet.extensions = text;
         } else if let Some(rule) = last_rule(&mut self.sheet) {
             rule.extensions = text;
@@ -2838,6 +2926,13 @@ fn new_scale(tag: &str, e: &quick_xml::events::BytesStart<'_>) -> CfScale {
             max_length: number("maxLength"),
             // Both are written only when false.
             show_value: attr(e, "showValue").is_none_or(|v| is_true(&v)),
+            // The rest is the 2010 look, filled from the sheet's `<extLst>`.
+            gradient: true,
+            border_color: None,
+            negative_fill_color: None,
+            negative_border_color: None,
+            axis_position: crate::model::DataBarAxis::Automatic,
+            axis_color: None,
         },
         "iconSet" => CfScale::IconSet {
             values: Vec::new(),
@@ -2869,6 +2964,175 @@ fn push_cfvo(rule: &mut CfRule, e: &quick_xml::events::BytesStart<'_>) {
             | CfScale::IconSet { values, .. },
         ) => values.push(stop),
         None => {}
+    }
+}
+
+/// The `x14` half of a data bar: what the 2007 `<dataBar>` cannot say.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct BarLook {
+    pub gradient: bool,
+    pub border_color: Option<Color>,
+    pub negative_fill_color: Option<Color>,
+    pub negative_border_color: Option<Color>,
+    pub axis_position: crate::model::DataBarAxis,
+    pub axis_color: Option<Color>,
+}
+
+impl BarLook {
+    /// The look a bar has in the model, `None` for another scale.
+    #[cfg(feature = "write")]
+    pub(crate) fn of(scale: &CfScale) -> Option<Self> {
+        match scale {
+            CfScale::DataBar {
+                gradient,
+                border_color,
+                negative_fill_color,
+                negative_border_color,
+                axis_position,
+                axis_color,
+                ..
+            } => Some(Self {
+                gradient: *gradient,
+                border_color: border_color.clone(),
+                negative_fill_color: negative_fill_color.clone(),
+                negative_border_color: negative_border_color.clone(),
+                axis_position: *axis_position,
+                axis_color: axis_color.clone(),
+            }),
+            _ => None,
+        }
+    }
+
+    /// What a bar with no `x14` half looks like.
+    #[cfg(feature = "write")]
+    pub(crate) fn plain() -> Self {
+        Self {
+            gradient: true,
+            ..Self::default()
+        }
+    }
+}
+
+/// The `{GUID}` a rule's own `<extLst>` links it to its `x14` half by.
+pub(crate) fn x14_id(rule_extensions: &str) -> Option<&str> {
+    let from = rule_extensions.find("x14:id>")? + "x14:id>".len();
+    let to = from + rule_extensions[from..].find('<')?;
+    Some(rule_extensions[from..to].trim())
+}
+
+/// Every `x14:dataBar` in a sheet's `<extLst>`, by the id of its rule.
+pub(crate) fn data_bar_looks(extensions: &str) -> Vec<(String, BarLook)> {
+    let mut reader = quick_xml::Reader::from_str(extensions);
+    let mut out: Vec<(String, BarLook)> = Vec::new();
+    let mut id: Option<String> = None;
+    let mut bar = false;
+    loop {
+        match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(ref e) | quick_xml::events::Event::Empty(ref e)) => {
+                match e.local_name().as_ref() {
+                    "cfRule" => id = attr(e, "id"),
+                    "dataBar" => {
+                        let Some(id) = id.clone() else { continue };
+                        let flag = |name: &str, default: bool| {
+                            attr(e, name).map_or(default, |v| is_true(&v))
+                        };
+                        let border = flag("border", false);
+                        let negative_fill = !flag("negativeBarColorSameAsPositive", false);
+                        let negative_border =
+                            border && !flag("negativeBarBorderColorSameAsPositive", true);
+                        let axis = attr(e, "axisPosition")
+                            .map(|v| crate::model::DataBarAxis::parse(&v))
+                            .unwrap_or_default();
+                        // Colours the flags switch off are dropped as they
+                        // are read; a sentinel says which may be kept.
+                        out.push((
+                            id,
+                            BarLook {
+                                gradient: flag("gradient", true),
+                                border_color: border.then_some(Color::Auto),
+                                negative_fill_color: negative_fill.then_some(Color::Auto),
+                                negative_border_color: negative_border.then_some(Color::Auto),
+                                axis_position: axis,
+                                axis_color: Some(Color::Auto),
+                            },
+                        ));
+                        bar = true;
+                    }
+                    name if bar => {
+                        let Some((_, look)) = out.last_mut() else {
+                            continue;
+                        };
+                        let slot = match name {
+                            "borderColor" => &mut look.border_color,
+                            "negativeFillColor" => &mut look.negative_fill_color,
+                            "negativeBorderColor" => &mut look.negative_border_color,
+                            "axisColor" => &mut look.axis_color,
+                            _ => continue,
+                        };
+                        if slot.is_some() {
+                            *slot = Some(read_color(e));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Ok(quick_xml::events::Event::End(ref e)) if e.local_name().as_ref() == "dataBar" => {
+                bar = false;
+                // A colour switched on but never given has nothing to show.
+                if let Some((_, look)) = out.last_mut() {
+                    for slot in [
+                        &mut look.border_color,
+                        &mut look.negative_fill_color,
+                        &mut look.negative_border_color,
+                        &mut look.axis_color,
+                    ] {
+                        if *slot == Some(Color::Auto) {
+                            *slot = None;
+                        }
+                    }
+                }
+            }
+            Ok(quick_xml::events::Event::Eof) | Err(_) => break,
+            Ok(_) => {}
+        }
+    }
+    out
+}
+
+/// Gives each data bar of a sheet the look its `x14` half states.
+fn apply_data_bar_looks(sheet: &mut Worksheet, extensions: &str) {
+    let looks = data_bar_looks(extensions);
+    if looks.is_empty() {
+        return;
+    }
+    for rule in sheet
+        .conditional_formats
+        .iter_mut()
+        .flat_map(|f| &mut f.rules)
+    {
+        let Some(id) = rule.extensions.as_deref().and_then(x14_id) else {
+            continue;
+        };
+        let Some((_, look)) = looks.iter().find(|(i, _)| i == id) else {
+            continue;
+        };
+        if let Some(CfScale::DataBar {
+            gradient,
+            border_color,
+            negative_fill_color,
+            negative_border_color,
+            axis_position,
+            axis_color,
+            ..
+        }) = &mut rule.scale
+        {
+            *gradient = look.gradient;
+            border_color.clone_from(&look.border_color);
+            negative_fill_color.clone_from(&look.negative_fill_color);
+            negative_border_color.clone_from(&look.negative_border_color);
+            *axis_position = look.axis_position;
+            axis_color.clone_from(&look.axis_color);
+        }
     }
 }
 

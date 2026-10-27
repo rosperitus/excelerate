@@ -8,10 +8,13 @@
 //!
 //! What a program asks of a sparkline is modelled: its kind, the cells it
 //! reads, the cell it sits in, and which points it marks. The colours and the
-//! axis settings stay as the file wrote them.
+//! axis settings stay as the file wrote them, and are read out on request
+//! ([`SparklineGroup::color`], [`SparklineGroup::custom_min`]).
 
 use crate::coordinate::CellRef;
+use crate::reader::xlsx::read_color;
 use crate::reader::zipxml::{attr, push_entity};
+use crate::style::Color;
 use quick_xml::Reader;
 use quick_xml::events::{BytesStart, Event};
 
@@ -146,6 +149,58 @@ impl SparklineGroup {
         ]
     }
 
+    /// A colour of the group by its element's local name: `colorSeries`,
+    /// `colorNegative`, `colorAxis`, `colorMarkers`, `colorFirst`,
+    /// `colorLast`, `colorHigh` or `colorLow`. `None` when the file left it
+    /// out.
+    #[must_use]
+    pub fn color(&self, name: &str) -> Option<Color> {
+        let mut reader = Reader::from_str(&self.colors);
+        loop {
+            match reader.read_event() {
+                Ok(Event::Start(ref e) | Event::Empty(ref e))
+                    if e.local_name().as_ref() == name =>
+                {
+                    return Some(read_color(e));
+                }
+                Ok(Event::Eof) | Err(_) => return None,
+                Ok(_) => {}
+            }
+        }
+    }
+
+    /// An attribute of the group as written: `displayEmptyCellsAs` (`gap`,
+    /// `zero` or `span`), `minAxisType`/`maxAxisType` (`individual`, `group`
+    /// or `custom`), `manualMin`, `manualMax`, `lineWeight`, `displayXAxis`,
+    /// `rightToLeft`, `displayHidden`.
+    #[must_use]
+    pub fn attribute(&self, name: &str) -> Option<&str> {
+        self.attributes
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// The fixed bottom of the value axis: `manualMin` when `minAxisType` is
+    /// `custom`, `None` when each sparkline or the group sets its own.
+    #[must_use]
+    pub fn custom_min(&self) -> Option<f64> {
+        self.custom_bound("minAxisType", "manualMin")
+    }
+
+    /// The fixed top of the value axis, as [`Self::custom_min`].
+    #[must_use]
+    pub fn custom_max(&self) -> Option<f64> {
+        self.custom_bound("maxAxisType", "manualMax")
+    }
+
+    fn custom_bound(&self, kind: &str, value: &str) -> Option<f64> {
+        (self.attribute(kind)? == "custom")
+            .then(|| self.attribute(value)?.parse().ok())
+            .flatten()
+            .filter(|v: &f64| v.is_finite())
+    }
+
     /// The formulas the group reads through, to rewrite when cells move.
     pub(crate) fn formulas_mut(&mut self) -> impl Iterator<Item = &mut String> {
         self.sparklines
@@ -268,6 +323,7 @@ fn slice(text: &str, from: u64, to: u64) -> &str {
 mod tests {
     use super::{SparklineKind, read};
     use crate::coordinate::CellRef;
+    use crate::style::Color;
 
     /// As Excel 365 wrote it, next to an extension that is not ours.
     const EXCEL: &str = concat!(
@@ -311,5 +367,28 @@ mod tests {
         assert_eq!(lines[0].data.as_deref(), Some("'A&B'!C19:C28"));
         assert_eq!(lines[0].location, CellRef::parse("B32").unwrap_or_default());
         assert_eq!(lines[1].data, None);
+    }
+
+    #[test]
+    fn colours_and_axis_bounds_are_read_on_request() {
+        let mut group = read(EXCEL).remove(0);
+        assert_eq!(group.color("colorSeries"), Some(Color::Argb(0xFF37_6092)));
+        assert_eq!(
+            group.color("colorNegative"),
+            Some(Color::Theme {
+                id: 5,
+                tint: -500_000
+            })
+        );
+        assert_eq!(group.color("colorHigh"), None);
+        assert_eq!(group.attribute("displayEmptyCellsAs"), Some("gap"));
+        assert_eq!(group.custom_min(), None);
+        group.attributes.extend([
+            ("minAxisType".into(), "custom".into()),
+            ("manualMin".into(), "-2.5".into()),
+            ("maxAxisType".into(), "group".into()),
+            ("manualMax".into(), "9".into()),
+        ]);
+        assert_eq!((group.custom_min(), group.custom_max()), (Some(-2.5), None));
     }
 }

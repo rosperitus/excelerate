@@ -301,7 +301,7 @@ impl<'a> Engine<'a> {
         if !self.implicit {
             return None;
         }
-        let (sheet, area) = self.area_of(origin, expr, 0)?;
+        let (sheet, area) = self.area_within(origin, expr, 0, false)?;
         let at = origin.at;
         let col = if area.width() == 1 {
             area.start.col
@@ -362,16 +362,50 @@ impl<'a> Engine<'a> {
     }
 
     /// The rectangle of several cells an expression refers to, where that can
-    /// be told without reading cells: a range, a table column, a defined name
-    /// standing for one of those, or `INDEX` over one with literal positions.
-    fn area_of(
+    /// be told without reading cells: a range, a structured reference, a
+    /// defined name standing for one of those, or `INDEX` over one with
+    /// literal positions. The sheet is named as the reference names it;
+    /// `None` is the formula's own. `None` overall for a single cell or for
+    /// anything that has to be computed to be known.
+    pub fn area_of(&mut self, origin: Origin, expr: &Expr) -> Option<(Option<String>, Range)> {
+        self.area_within(origin, expr, 0, false)
+    }
+
+    /// The sheet and rectangle any reference expression means, one cell
+    /// included: a range or cell, a structured reference, a defined name,
+    /// `INDEX`, `OFFSET`, `INDIRECT`, the branch `IF` or `CHOOSE` takes. What a
+    /// form control's linked cell or input range points at. `None` for an
+    /// expression that is not a reference.
+    pub fn reference_of(&mut self, origin: Origin, expr: &Expr) -> Option<(Option<String>, Range)> {
+        self.area_within(origin, expr, 0, true)
+    }
+
+    /// The sheet and rectangle `OFFSET(reference, rows, cols, [height],
+    /// [width])` means, its arguments as parsed; a negative height or width
+    /// grows the rectangle up or left from the moved corner, as Excel does.
+    ///
+    /// # Errors
+    /// [`CellError::Ref`] off the sheet or for a zero size, [`CellError::Value`]
+    /// for a wrong argument count, and any error an argument computes to.
+    pub fn offset_area(
+        &mut self,
+        origin: Origin,
+        args: &[Expr],
+    ) -> core::result::Result<(Option<String>, Range), CellError> {
+        crate::formula::functions::lookup::offset_area(self, origin, args)
+    }
+
+    fn area_within(
         &mut self,
         origin: Origin,
         expr: &Expr,
         depth: u8,
+        single: bool,
     ) -> Option<(Option<String>, Range)> {
         let (sheet, area) = match expr {
-            Expr::Range { sheet, range, .. } if range.start != range.end => (sheet.clone(), *range),
+            Expr::Range { sheet, range, .. } if single || range.start != range.end => {
+                (sheet.clone(), *range)
+            }
             Expr::Structured(reference) => {
                 let (sheet, range) = self.resolve_table(origin, reference).ok()?;
                 (Some(sheet), range)
@@ -384,11 +418,20 @@ impl<'a> Engine<'a> {
                 let found = self.defined_name(bare, scope)?;
                 let book = self.book;
                 let tree = self.parsed(book.defined_names[found].formula.as_str())?;
-                return self.area_of(origin, &tree, depth + 1);
+                return self.area_within(origin, &tree, depth + 1, single);
             }
             Expr::Call { name, args } if name == "INDEX" => {
-                let (sheet, area) = self.area_of(origin, args.first()?, depth)?;
-                let (mut row, mut col) = (position(args.get(1))?, position(args.get(2))?);
+                let (sheet, area) = self.area_within(origin, args.first()?, depth, single)?;
+                // A single cell may be asked for by computed positions; an
+                // area is told from literal ones only.
+                let (mut row, mut col) = if single {
+                    (
+                        self.index_position(origin, args.get(1))?,
+                        self.index_position(origin, args.get(2))?,
+                    )
+                } else {
+                    (position(args.get(1))?, position(args.get(2))?)
+                };
                 // `INDEX(B5:F5, 3)` picks the column, as the function does.
                 if args.len() == 2 && area.height() == 1 {
                     (row, col) = (1, row);
@@ -407,7 +450,7 @@ impl<'a> Engine<'a> {
                 (sheet, area)
             }
             Expr::Call { name, args } if name == "IF" && args.len() >= 2 => {
-                if !args[1..].iter().any(may_be_area) {
+                if !single && !args[1..].iter().any(may_be_area) {
                     return None;
                 }
                 // ponytail: when the branch taken is not a reference after
@@ -417,10 +460,10 @@ impl<'a> Engine<'a> {
                     Ok(false) => args.get(2)?,
                     Err(_) => return None,
                 };
-                return self.area_of(origin, taken, depth);
+                return self.area_within(origin, taken, depth, single);
             }
             Expr::Call { name, args } if name == "CHOOSE" && args.len() >= 2 => {
-                if !args[1..].iter().any(may_be_area) {
+                if !single && !args[1..].iter().any(may_be_area) {
                     return None;
                 }
                 let index = self.eval_value(origin, &args[0]).number().ok()?;
@@ -433,7 +476,7 @@ impl<'a> Engine<'a> {
                     reason = "at least 1, and an index past the list misses it"
                 )]
                 let taken = args.get(index as usize)?;
-                return self.area_of(origin, taken, depth);
+                return self.area_within(origin, taken, depth, single);
             }
             // Built at run time, so a single cell is returned too: the caller
             // would otherwise compute the reference a second time to read it.
@@ -445,7 +488,17 @@ impl<'a> Engine<'a> {
             }
             _ => return None,
         };
-        (area.start != area.end).then_some((sheet, area))
+        (single || area.start != area.end).then_some((sheet, area))
+    }
+
+    /// An `INDEX` position computed: 0 or left out for the whole row or
+    /// column, a fraction truncated as Excel does.
+    fn index_position(&mut self, origin: Origin, e: Option<&Expr>) -> Option<u32> {
+        let n = match e {
+            None | Some(Expr::Missing) => return Some(0),
+            Some(e) => self.eval_value(origin, e).number().ok()?,
+        };
+        position(Some(&Expr::Number(n)))
     }
 
     /// `value`, read from the reference `expr`, with the cells whose formula
@@ -455,7 +508,7 @@ impl<'a> Engine<'a> {
     pub(crate) fn without_totals(&mut self, origin: Origin, expr: &Expr, value: Value) -> Value {
         let found = match expr {
             Expr::Range { sheet, range, .. } => Some((sheet.clone(), *range)),
-            _ => self.area_of(origin, expr, 0),
+            _ => self.area_within(origin, expr, 0, false),
         };
         let Some((sheet, range)) = found else {
             return value;
@@ -862,107 +915,19 @@ impl<'a> Engine<'a> {
         expr
     }
 
-    /// Reads a reference, as a scalar for one cell and as an array otherwise.
-    /// Reads the values of a rectangle of cells.
-    /// The sheet and rectangle a structured reference means.
-    ///
-    /// The table is found by name across the workbook, because a table name is
-    /// unique in it; an unqualified `[Column]` means the table the formula
-    /// itself sits in, which is how Excel writes a calculated column.
+    /// The sheet and rectangle a structured reference means, the sheet by
+    /// its name: see [`resolve_table`].
     ///
     /// # Errors
-    /// [`CellError::Name`] when no table answers to the name or the column is
-    /// not one of its columns, [`CellError::Ref`] when the part asked for is
-    /// not there, as `[#Totals]` on a table with no totals row.
-    fn resolve_table(
+    /// As [`resolve_table`].
+    pub fn resolve_table(
         &self,
         origin: Origin,
         reference: &Structured,
     ) -> core::result::Result<(String, Range), CellError> {
-        let (sheet, table) = self.find_table(origin, reference)?;
-        let header = table.header_row_count.unwrap_or(1);
-        let totals = table.totals_row_count.unwrap_or(0);
-        let (top, bottom) = (table.range.start.row.index(), table.range.end.row.index());
-        let body = (top + header, bottom.saturating_sub(totals));
-
-        let (first, last) = match reference.part {
-            TablePart::All => (top, bottom),
-            TablePart::Data => body,
-            TablePart::Headers => (top, top + header.saturating_sub(1)),
-            TablePart::Totals => (bottom.saturating_sub(totals.saturating_sub(1)), bottom),
-            TablePart::HeadersData => (top, body.1),
-            TablePart::DataTotals => (body.0, bottom),
-            // The row the formula sits on, which has to be one of the table's.
-            TablePart::ThisRow => {
-                let row = origin.at.row.index();
-                if row < top || row > bottom {
-                    return Err(CellError::Value);
-                }
-                (row, row)
-            }
-        };
-        if first > last || (reference.part == TablePart::Totals && totals == 0) {
-            return Err(CellError::Ref);
-        }
-
-        // A named column narrows the width; without one the reference is as
-        // wide as the table.
-        let (left, right) = match &reference.columns {
-            None => (table.range.start.col.index(), table.range.end.col.index()),
-            Some((first_name, last_name)) => {
-                let offset = |name: &String| {
-                    table
-                        .columns
-                        .iter()
-                        .position(|c| c.name.eq_ignore_ascii_case(name))
-                        .and_then(|i| u32::try_from(i).ok())
-                        .map(|i| table.range.start.col.index() + i)
-                        .ok_or(CellError::Name)
-                };
-                let start = offset(first_name)?;
-                let end = match last_name {
-                    Some(name) => offset(name)?,
-                    None => start,
-                };
-                (start.min(end), start.max(end))
-            }
-        };
-
-        let corner = |col: u32, row: u32| Some(CellRef::new(Col::new(col)?, Row::new(row)?));
-        let (start, end) = (corner(left, first), corner(right, last));
-        match (start, end) {
-            (Some(start), Some(end)) => Ok((sheet, Range { start, end })),
-            _ => Err(CellError::Ref),
-        }
-    }
-
-    /// The table a structured reference names, and the sheet it sits on.
-    fn find_table<'t>(
-        &'t self,
-        origin: Origin,
-        reference: &Structured,
-    ) -> core::result::Result<(String, &'t crate::model::table::Table), CellError> {
-        let Some(name) = &reference.table else {
-            // No name: the table this very formula is written inside.
-            let sheet = self.book.sheet(origin.sheet).ok_or(CellError::Ref)?;
-            let table = sheet
-                .tables
-                .iter()
-                .find(|t| t.range.contains(origin.at))
-                .ok_or(CellError::Name)?;
-            return Ok((sheet.title().to_owned(), table));
-        };
-        self.book
-            .sheets()
-            .iter()
-            .find_map(|sheet| {
-                let table = sheet
-                    .tables
-                    .iter()
-                    .find(|t| t.display_name.eq_ignore_ascii_case(name))?;
-                Some((sheet.title().to_owned(), table))
-            })
-            .ok_or(CellError::Name)
+        let (index, range) = resolve_table(self.book, origin, reference)?;
+        let sheet = self.book.sheet(index).ok_or(CellError::Ref)?;
+        Ok((sheet.title().to_owned(), range))
     }
 
     pub(crate) fn range(&mut self, origin: Origin, sheet: Option<&str>, range: Range) -> Value {
@@ -1780,6 +1745,110 @@ const VOLATILE: [&str; 8] = [
     "INFO",
 ];
 
+/// The sheet (by index) and rectangle a structured reference means:
+/// `Table[Column]`, `Table[[#Headers],[A]:[C]]`, `[#Totals]`, `[@Column]`
+/// and the rest. `origin` is the cell the formula sits in, which an
+/// unqualified reference and `[#This Row]` are read against.
+///
+/// The table is found by name across the workbook, because a table name is
+/// unique in it; an unqualified `[Column]` means the table the formula
+/// itself sits in, which is how Excel writes a calculated column.
+///
+/// # Errors
+/// [`CellError::Name`] when no table answers to the name or the column is
+/// not one of its columns, [`CellError::Ref`] when the part asked for is
+/// not there, as `[#Totals]` on a table with no totals row.
+pub fn resolve_table(
+    book: &Spreadsheet,
+    origin: Origin,
+    reference: &Structured,
+) -> core::result::Result<(usize, Range), CellError> {
+    let (sheet, table) = find_table(book, origin, reference)?;
+    let header = table.header_row_count.unwrap_or(1);
+    let totals = table.totals_row_count.unwrap_or(0);
+    let (top, bottom) = (table.range.start.row.index(), table.range.end.row.index());
+    let body = (top + header, bottom.saturating_sub(totals));
+
+    let (first, last) = match reference.part {
+        TablePart::All => (top, bottom),
+        TablePart::Data => body,
+        TablePart::Headers => (top, top + header.saturating_sub(1)),
+        TablePart::Totals => (bottom.saturating_sub(totals.saturating_sub(1)), bottom),
+        TablePart::HeadersData => (top, body.1),
+        TablePart::DataTotals => (body.0, bottom),
+        // The row the formula sits on, which has to be one of the table's.
+        TablePart::ThisRow => {
+            let row = origin.at.row.index();
+            if row < top || row > bottom {
+                return Err(CellError::Value);
+            }
+            (row, row)
+        }
+    };
+    if first > last || (reference.part == TablePart::Totals && totals == 0) {
+        return Err(CellError::Ref);
+    }
+
+    // A named column narrows the width; without one the reference is as
+    // wide as the table.
+    let (left, right) = match &reference.columns {
+        None => (table.range.start.col.index(), table.range.end.col.index()),
+        Some((first_name, last_name)) => {
+            let offset = |name: &String| {
+                table
+                    .columns
+                    .iter()
+                    .position(|c| c.name.eq_ignore_ascii_case(name))
+                    .and_then(|i| u32::try_from(i).ok())
+                    .map(|i| table.range.start.col.index() + i)
+                    .ok_or(CellError::Name)
+            };
+            let start = offset(first_name)?;
+            let end = match last_name {
+                Some(name) => offset(name)?,
+                None => start,
+            };
+            (start.min(end), start.max(end))
+        }
+    };
+
+    let corner = |col: u32, row: u32| Some(CellRef::new(Col::new(col)?, Row::new(row)?));
+    let (start, end) = (corner(left, first), corner(right, last));
+    match (start, end) {
+        (Some(start), Some(end)) => Ok((sheet, Range { start, end })),
+        _ => Err(CellError::Ref),
+    }
+}
+
+/// The table a structured reference names, and the sheet it sits on.
+fn find_table<'t>(
+    book: &'t Spreadsheet,
+    origin: Origin,
+    reference: &Structured,
+) -> core::result::Result<(usize, &'t crate::model::table::Table), CellError> {
+    let Some(name) = &reference.table else {
+        // No name: the table this very formula is written inside.
+        let sheet = book.sheet(origin.sheet).ok_or(CellError::Ref)?;
+        let table = sheet
+            .tables
+            .iter()
+            .find(|t| t.range.contains(origin.at))
+            .ok_or(CellError::Name)?;
+        return Ok((origin.sheet, table));
+    };
+    book.sheets()
+        .iter()
+        .enumerate()
+        .find_map(|(index, sheet)| {
+            let table = sheet
+                .tables
+                .iter()
+                .find(|t| t.display_name.eq_ignore_ascii_case(name))?;
+            Some((index, table))
+        })
+        .ok_or(CellError::Name)
+}
+
 /// What every formula of a workbook reads, so that a cell edit can be answered
 /// without evaluating - or even parsing - the whole book again.
 ///
@@ -1789,7 +1858,9 @@ const VOLATILE: [&str; 8] = [
 ///
 /// The index describes the formulas as they were when it was built. Editing a
 /// cell's *value* leaves it valid; adding, changing or deleting a *formula*
-/// does not, so tell it with [`Dependencies::note`].
+/// does not, so tell it with [`Dependencies::note`]. A table reference is
+/// indexed as the cells the table covers when the index is built: after a
+/// table is resized, added or removed, build the index again.
 pub struct Dependencies {
     formulas: Vec<Node>,
 }
@@ -1861,6 +1932,24 @@ impl Dependencies {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.formulas.is_empty()
+    }
+
+    /// The formulas that read a cell directly, by name or through a range
+    /// holding it, as (sheet index, cell) in sheet and address order.
+    ///
+    /// Only what the formulas spell out counts: a reference `INDIRECT` or
+    /// `OFFSET` builds at evaluation time is not seen, as in Excel's Trace
+    /// Dependents. One look at every formula, no parsing.
+    #[must_use]
+    pub fn readers(&self, sheet: usize, at: CellRef) -> Vec<(usize, CellRef)> {
+        let mut out: Vec<(usize, CellRef)> = self
+            .formulas
+            .iter()
+            .filter(|n| n.reads.iter().any(|&(s, r)| s == sheet && r.contains(at)))
+            .map(|n| (n.sheet, n.at))
+            .collect();
+        out.sort_unstable();
+        out
     }
 
     /// Brings one cell up to date, after its formula was written, changed or
@@ -2200,6 +2289,7 @@ fn node_of(
     };
     let expr = parse(formula).ok()?;
     let (mut reads, mut always) = (Vec::new(), false);
+    refs.at = Some(at);
     collect_refs(&expr, sheet, refs, &mut reads, &mut always);
     Some((
         Node {
@@ -2283,7 +2373,8 @@ pub fn recalculate_from_with(
     Dependencies::of(book).recalculate_from_with(book, changed, options)
 }
 
-/// Every cell range an expression reads, with the sheet each one lives on.
+/// Every cell range an expression reads, with the sheet each one lives on;
+/// a structured reference counts as the cells its table covers.
 /// `always` is set if the formula reads a defined name or calls a volatile
 /// function: either way `reads` may not describe it.
 ///
@@ -2322,11 +2413,18 @@ fn collect_refs(
             }
             out.extend(ranges);
         }
-        // A table names its cells rather than pointing at them, and where
-        // those cells are is a property of the table, not of the formula. So
-        // the formula is recalculated whatever moved, the same as one reading
-        // a defined name.
-        Expr::Structured(_) => *always = true,
+        // A table reference reads the cells the table has now. `[#This Row]`
+        // in a name has no row to read against, and one the tables do not
+        // answer keeps the formula in every pass.
+        Expr::Structured(reference) => {
+            let found = refs.at.filter(|_| refs.depth == 0).and_then(|at| {
+                resolve_table(refs.book, Origin::new(own_sheet, at), reference).ok()
+            });
+            match found {
+                Some(area) => out.push(area),
+                None => *always = true,
+            }
+        }
         Expr::Unary(_, inner) => collect_refs(inner, own_sheet, refs, out, always),
         Expr::Binary(_, a, b) => {
             collect_refs(a, own_sheet, refs, out, always);
@@ -2372,6 +2470,8 @@ type NameReads = (Vec<(usize, Range)>, bool);
 /// point at, so seven hundred names are not parsed again for every formula.
 pub(crate) struct Refs<'b> {
     book: &'b Spreadsheet,
+    /// The cell whose formula is walked, which `[@Column]` reads against.
+    at: Option<CellRef>,
     names: HashMap<(usize, String), NameReads>,
     depth: usize,
 }
@@ -2380,6 +2480,7 @@ impl<'b> Refs<'b> {
     fn new(book: &'b Spreadsheet) -> Self {
         Self {
             book,
+            at: None,
             names: HashMap::new(),
             depth: 0,
         }

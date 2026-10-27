@@ -278,7 +278,7 @@ fn push_text(root: &mut Vec<Node>, stack: &mut [Elem], text: &str) {
 /// Resolves character references. An unknown name is left as it was written:
 /// the page means those characters, and inventing a replacement is worse than
 /// showing the source.
-fn unescape(text: &str) -> String {
+pub(crate) fn unescape(text: &str) -> String {
     if !text.contains('&') {
         return text.to_owned();
     }

@@ -638,6 +638,10 @@ pub struct Style {
     pub alignment: Alignment,
     /// Protection.
     pub protection: Protection,
+    /// Shown as a check box, ticked by a `TRUE` value: the cell control of
+    /// Excel 365, which the file states through the feature property bag
+    /// the `<xf>` points at.
+    pub checkbox: bool,
 }
 
 /// A font as a differential format states it: only the parts that override.

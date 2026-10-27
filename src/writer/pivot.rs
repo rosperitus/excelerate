@@ -275,8 +275,23 @@ fn render_table(table: &PivotTable, cache: &PivotCache) -> String {
     }
     if !table.page_fields.is_empty() {
         let _ = write!(s, r#"<pageFields count="{}">"#, table.page_fields.len());
-        for fld in &table.page_fields {
-            let _ = write!(s, r#"<pageField fld="{fld}" hier="-1"/>"#);
+        for &fld in &table.page_fields {
+            let _ = write!(s, r#"<pageField fld="{fld}""#);
+            // The field's items are its shared items in order, so the item's
+            // place among those is its index.
+            let at = usize::try_from(fld).ok().and_then(|f| {
+                let wanted = table.fields.get(f)?.page_item.as_deref()?;
+                cache
+                    .fields
+                    .get(f)?
+                    .shared_items
+                    .iter()
+                    .position(|i| i == wanted)
+            });
+            if let Some(at) = at {
+                let _ = write!(s, r#" item="{at}""#);
+            }
+            s.push_str(r#" hier="-1"/>"#);
         }
         s.push_str("</pageFields>");
     }

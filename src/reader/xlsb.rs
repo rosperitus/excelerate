@@ -345,6 +345,7 @@ fn styles(data: &[u8]) -> (StyleTable, Vec<crate::style::Font>) {
                         .unwrap_or_default(),
                     alignment: alignment(xf),
                     protection: protection(xf),
+                    checkbox: false,
                 }
             })
             .collect(),

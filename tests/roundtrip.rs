@@ -366,6 +366,7 @@ fn style_components_survive() {
             locked: ProtectionState::Off,
             hidden: ProtectionState::On,
         },
+        checkbox: false,
     };
     let id = book.styles.intern(style.clone());
     let cell = sheet.entry(at("A1"));
@@ -772,6 +773,7 @@ fn protection_and_filters_survive() {
 fn conditional_formatting_survives() {
     use excelerate::model::{
         CfOperator, CfRule, CfRuleType, CfScale, CfValue, CfValueType, ConditionalFormat,
+        DataBarAxis,
     };
     use excelerate::style::{Color, DiffFill, DiffFont, DifferentialStyle, Pattern};
 
@@ -873,6 +875,12 @@ fn conditional_formatting_survives() {
                     min_length: Some(10),
                     max_length: Some(90),
                     show_value: false,
+                    gradient: true,
+                    border_color: None,
+                    negative_fill_color: None,
+                    negative_border_color: None,
+                    axis_position: DataBarAxis::Automatic,
+                    axis_color: None,
                 }),
                 ..CfRule::default()
             },
@@ -936,6 +944,68 @@ fn parts_the_model_does_not_know_are_carried_through() {
         .find(|p| p.path == "xl/drawings/drawing1.xml")
         .expect("the drawing part comes back");
     assert_eq!(drawing.data, b"<wsDr/>", "carried bytes are not touched");
+}
+
+/// A form control lives in the sheet's VML and its `ctrlProp` part; both are
+/// carried, and the control is read back out of the VML.
+#[test]
+fn form_controls_are_read_from_their_vml_and_their_parts_carried() {
+    use excelerate::model::control::{CheckState, ControlKind};
+    use excelerate::model::{Attachment, OpaquePart};
+
+    let rel = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    let vml = concat!(
+        r#"<xml xmlns:v="urn:schemas-microsoft-com:vml" xmlns:x="urn:schemas-microsoft-com:office:excel">"#,
+        r#"<v:shape id="_x0000_s1025" style='position:absolute'><v:textbox><div>Tick</div></v:textbox>"#,
+        r#"<x:ClientData ObjectType="Checkbox"><x:Anchor>1, 0, 2, 0, 3, 0, 4, 0</x:Anchor>"#,
+        r#"<x:Checked>1</x:Checked><x:FmlaLink>$A$1</x:FmlaLink></x:ClientData></v:shape></xml>"#,
+    );
+    let props = br#"<formControlPr objectType="CheckBox" checked="Checked" fmlaLink="$A$1"/>"#;
+
+    let mut book = Spreadsheet::empty();
+    let mut sheet = Worksheet::new("Form").unwrap();
+    for (kind, target) in [
+        ("vmlDrawing", "xl/drawings/vmlDrawing1.vml"),
+        ("ctrlProp", "xl/ctrlProps/ctrlProp1.xml"),
+    ] {
+        sheet.attachments.push(Attachment {
+            kind: format!("{rel}/{kind}"),
+            target: target.into(),
+        });
+    }
+    book.add_sheet(sheet).unwrap();
+    for (path, kind, data) in [
+        (
+            "xl/drawings/vmlDrawing1.vml",
+            "application/vnd.openxmlformats-officedocument.vmlDrawing",
+            vml.as_bytes().to_vec(),
+        ),
+        (
+            "xl/ctrlProps/ctrlProp1.xml",
+            "application/vnd.ms-excel.controlproperties+xml",
+            props.to_vec(),
+        ),
+    ] {
+        book.parts.push(OpaquePart {
+            path: path.into(),
+            content_type: Some(kind.into()),
+            data,
+        });
+    }
+
+    let back = cycle(&cycle(&book));
+    let controls = &back.sheets()[0].controls;
+    assert_eq!(controls.len(), 1);
+    assert_eq!(controls[0].kind, ControlKind::CheckBox);
+    assert_eq!(controls[0].text.as_deref(), Some("Tick"));
+    assert_eq!(controls[0].checked, Some(CheckState::Checked));
+    assert_eq!(controls[0].linked_cell.as_deref(), Some("$A$1"));
+    let carried = back
+        .parts
+        .iter()
+        .find(|p| p.path == "xl/ctrlProps/ctrlProp1.xml")
+        .expect("the control's properties come back");
+    assert_eq!(carried.data, props, "carried bytes are not touched");
 }
 
 #[test]
@@ -1731,4 +1801,184 @@ fn the_tab_bar_keeps_its_settings_but_not_a_first_tab_past_the_active_one() {
             ("showSheetTabs".to_owned(), "0".to_owned()),
         ]
     );
+}
+
+/// A check box cell of Excel 365: its format points into the feature property
+/// bag, which travels as a carried part.
+#[test]
+fn a_check_box_cell_survives_the_cycle() {
+    use excelerate::model::{Attachment, OpaquePart};
+    let bag = concat!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>"#,
+        r#"<FeaturePropertyBags xmlns="http://schemas.microsoft.com/office/spreadsheetml/2022/featurepropertybag">"#,
+        r#"<bag type="Checkbox"/><bag type="XFControls"><bagId k="CellControl">0</bagId></bag>"#,
+        r#"<bag type="XFComplement"><bagId k="XFControls">1</bagId></bag>"#,
+        r#"<bag type="XFComplements" extRef="XFComplementsMapperExtRef">"#,
+        r#"<a k="MappedFeaturePropertyBags"><bagId>2</bagId></a></bag></FeaturePropertyBags>"#,
+    );
+    let mut book = Spreadsheet::new();
+    book.attachments.push(Attachment {
+        kind: "http://schemas.microsoft.com/office/2022/11/relationships/FeaturePropertyBag".into(),
+        target: "xl/featurePropertyBag/featurePropertyBag.xml".into(),
+    });
+    book.parts.push(OpaquePart {
+        path: "xl/featurePropertyBag/featurePropertyBag.xml".into(),
+        content_type: Some("application/vnd.ms-excel.featurepropertybag+xml".into()),
+        data: bag.as_bytes().to_vec(),
+    });
+    let style = book.styles.intern(Style {
+        checkbox: true,
+        ..Style::default()
+    });
+    let cell = book.sheet_mut(0).unwrap().entry(at("A1"));
+    cell.value = CellValue::Bool(true);
+    cell.style = style;
+    let once = cycle(&book);
+    let twice = cycle(&once);
+    for book in [once, twice] {
+        let cell = book.sheets()[0].get(at("A1")).unwrap();
+        assert!(book.styles.get(cell.style).unwrap().checkbox);
+    }
+}
+
+/// The 2010 look of a data bar lives in the sheet's `<extLst>`, linked to the
+/// rule by an id: a bar made in code gets both halves, and a changed one has
+/// its half rewritten in place.
+#[test]
+fn the_2010_look_of_a_data_bar_survives_the_cycle() {
+    use excelerate::model::{
+        CfRule, CfRuleType, CfScale, CfValue, CfValueType, ConditionalFormat, DataBarAxis,
+    };
+    use excelerate::style::Color;
+    let mut book = Spreadsheet::new();
+    let sheet = book.sheet_mut(0).unwrap();
+    sheet.conditional_formats.push(ConditionalFormat {
+        sqref: vec![Range::parse("A1:A5").unwrap()],
+        rules: vec![CfRule {
+            kind: CfRuleType::DataBar,
+            priority: 1,
+            scale: Some(CfScale::DataBar {
+                values: vec![
+                    CfValue {
+                        kind: CfValueType::Min,
+                        ..CfValue::default()
+                    },
+                    CfValue {
+                        kind: CfValueType::Number,
+                        value: "10".into(),
+                        ..CfValue::default()
+                    },
+                ],
+                color: Color::Argb(0xFF63_8EC6),
+                min_length: None,
+                max_length: None,
+                show_value: true,
+                gradient: false,
+                border_color: Some(Color::Argb(0xFF00_2060)),
+                negative_fill_color: Some(Color::Argb(0xFFFF_0000)),
+                negative_border_color: None,
+                axis_position: DataBarAxis::Middle,
+                axis_color: Some(Color::Argb(0xFF00_0000)),
+            }),
+            ..CfRule::default()
+        }],
+    });
+    let scale = |book: &Spreadsheet| {
+        book.sheets()[0].conditional_formats[0].rules[0]
+            .scale
+            .clone()
+    };
+    let once = cycle(&book);
+    assert_eq!(scale(&once), scale(&book));
+
+    let mut edited = once;
+    if let Some(CfScale::DataBar {
+        gradient,
+        axis_position,
+        negative_fill_color,
+        ..
+    }) = &mut edited.sheet_mut(0).unwrap().conditional_formats[0].rules[0].scale
+    {
+        *gradient = true;
+        *axis_position = DataBarAxis::None;
+        *negative_fill_color = None;
+    }
+    let twice = cycle(&edited);
+    assert_eq!(scale(&twice), scale(&edited));
+    let ext = twice.sheets()[0].extensions.as_deref().unwrap();
+    assert_eq!(ext.matches("<x14:dataBar").count(), 1, "{ext}");
+    assert_eq!(
+        cycle(&twice).sheets()[0].extensions,
+        twice.sheets()[0].extensions
+    );
+}
+
+/// A control with no parts behind it - read from xls, or made in code - is
+/// written the way Excel 2010 writes a new one: a VML shape, a `ctrlProp`
+/// part, and a `<control>` in the sheet pointing at both.
+#[test]
+fn form_controls_without_parts_are_written_and_read_back() {
+    use excelerate::model::chart::{Anchor, Marker};
+    use excelerate::model::control::{CheckState, ControlKind, FormControl, ScrollValues};
+    use excelerate::style::{Color, Font};
+    use std::io::Read as _;
+
+    let marker = |col: u32, row: u32, offset: i64| Marker {
+        col: excelerate::coordinate::Col::new(col).unwrap(),
+        col_offset: offset,
+        row: excelerate::coordinate::Row::new(row).unwrap(),
+        row_offset: offset,
+    };
+    let anchor = |col: u32, row: u32| Anchor::TwoCell {
+        from: marker(col, row, 9525 * 3),
+        to: marker(col + 2, row + 1, 9525 * 10),
+        edit_as: None,
+    };
+    let mut tick = FormControl::new(ControlKind::CheckBox, anchor(1, 1));
+    tick.text = Some("Tick <me>".into());
+    tick.checked = Some(CheckState::Checked);
+    tick.linked_cell = Some("$A$1".into());
+    tick.font = Some(Font {
+        name: "Arial".into(),
+        size: 1000,
+        bold: true,
+        color: Color::Argb(0xFF00_00FF),
+        ..Font::default()
+    });
+    let mut spin = FormControl::new(ControlKind::Spinner, anchor(1, 4));
+    spin.scroll = Some(ScrollValues {
+        value: 5,
+        min: 1,
+        max: 30,
+        step: 2,
+        page: 10,
+    });
+    spin.linked_cell = Some("$A$2".into());
+    let mut go = FormControl::new(ControlKind::Button, anchor(4, 1));
+    go.text = Some("Go".into());
+    go.macro_name = Some("[0]!Macro1".into());
+    let mut book = Spreadsheet::new();
+    book.sheet_mut(0).unwrap().controls = vec![tick, spin, go];
+
+    let mut bytes = Vec::new();
+    write_xlsx_to(&book, Cursor::new(&mut bytes)).unwrap();
+    let back = read_xlsx_from(Cursor::new(&bytes)).unwrap();
+    assert_eq!(back.sheets()[0].controls, book.sheets()[0].controls);
+
+    let mut zip = zip::ZipArchive::new(Cursor::new(&bytes)).unwrap();
+    let mut text = |name: &str| {
+        let mut s = String::new();
+        zip.by_name(name).unwrap().read_to_string(&mut s).unwrap();
+        s
+    };
+    let sheet = text("xl/worksheets/sheet1.xml");
+    let rels = text("xl/worksheets/_rels/sheet1.xml.rels");
+    let props = text("xl/ctrlProps/ctrlProp2.xml");
+    assert!(sheet.contains(r#"<control shapeId="1026" r:id="rId3" name="Spinner 1">"#));
+    assert!(rels.contains(r#"Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/ctrlProp" Target="../ctrlProps/ctrlProp2.xml""#));
+    assert!(props.contains(
+        r#"objectType="Spin" fmlaLink="$A$2" inc="2" max="30" min="1" page="10" val="5""#
+    ));
+    // Written again, the controls come from the VML that now holds them.
+    assert_eq!(cycle(&back).sheets()[0].controls, book.sheets()[0].controls);
 }

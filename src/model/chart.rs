@@ -1618,6 +1618,8 @@ pub struct ChartEx {
     pub title: Option<ChartText>,
     /// The series, each with the data it reads.
     pub series: Vec<ExSeries>,
+    /// The legend; `None` when the chart has none.
+    pub legend: Option<ExLegend>,
     /// Where it was read from; `None` for a chart made in code.
     pub origin: Option<ChartExOrigin>,
 }
@@ -1628,12 +1630,7 @@ impl ChartEx {
     pub fn new(layout: SeriesLayout, dimensions: Vec<Dimension>, anchor: Anchor) -> Self {
         Self {
             anchor,
-            series: vec![ExSeries {
-                layout,
-                name: None,
-                hidden: false,
-                dimensions,
-            }],
+            series: vec![ExSeries::new(layout, dimensions)],
             ..Self::default()
         }
     }
@@ -1653,7 +1650,7 @@ impl ChartEx {
 
     /// Whether the chart part would say the same thing.
     pub(crate) fn same_content(&self, other: &Self) -> bool {
-        self.title == other.title && self.series == other.series
+        self.title == other.title && self.series == other.series && self.legend == other.legend
     }
 
     /// Takes the chart as it stands for what was read, for an edit that moved
@@ -1690,7 +1687,7 @@ impl ChartExOrigin {
 }
 
 /// One series of a [`ChartEx`].
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExSeries {
     /// How the series is drawn, which is what makes the chart a waterfall or a
     /// funnel.
@@ -1701,6 +1698,100 @@ pub struct ExSeries {
     pub hidden: bool,
     /// The data it reads, one dimension per role.
     pub dimensions: Vec<Dimension>,
+    /// Points with a look of their own (`cx:dataPt`): a waterfall colours
+    /// rises, falls and totals this way.
+    pub points: Vec<ExPoint>,
+    /// What the data labels show; `None` when there are none.
+    pub labels: Option<ExLabels>,
+    /// How a histogram sorts values into bins; `None` for other layouts.
+    pub binning: Option<Binning>,
+    /// The points of a waterfall drawn as totals from the axis rather than
+    /// as steps, by point index (`cx:subtotals`).
+    pub subtotals: Vec<u32>,
+}
+
+impl ExSeries {
+    /// A series of `layout` reading `dimensions`, with nothing else set.
+    #[must_use]
+    pub fn new(layout: SeriesLayout, dimensions: Vec<Dimension>) -> Self {
+        Self {
+            layout,
+            name: None,
+            hidden: false,
+            dimensions,
+            points: Vec::new(),
+            labels: None,
+            binning: None,
+            subtotals: Vec::new(),
+        }
+    }
+}
+
+/// One point of a [`ChartEx`] series with a fill or outline of its own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExPoint {
+    /// The point's index in the series.
+    pub index: u32,
+    /// Its fill and outline.
+    pub format: ShapeFormat,
+}
+
+/// The data labels of a [`ChartEx`] series (`cx:dataLabels`).
+///
+/// Number format, text style, separator and labels of single points are not
+/// modelled; a changed one keeps them in its part.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExLabels {
+    /// Where they sit; `None` leaves it to the layout.
+    pub position: Option<LabelPosition>,
+    /// They show the series name.
+    pub series_name: bool,
+    /// They show the category.
+    pub category_name: bool,
+    /// They show the value.
+    pub value: bool,
+}
+
+/// How a histogram sorts its values into bins (`cx:binning`).
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Binning {
+    /// A bin holds its left edge and not its right (`intervalClosed="l"`);
+    /// Excel's default is the other way round.
+    pub closed_left: bool,
+    /// Values at or below this go into one bin of their own.
+    pub underflow: Option<BinEdge>,
+    /// Values above this go into one bin of their own.
+    pub overflow: Option<BinEdge>,
+    /// How wide or how many the bins are; `None` lets Excel choose.
+    pub bins: Option<Bins>,
+}
+
+/// Where a histogram's overflow or underflow bin starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum BinEdge {
+    /// Where Excel puts it.
+    Auto,
+    /// At this value.
+    Value(f64),
+}
+
+/// The bins of a histogram.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Bins {
+    /// Each this wide (`cx:binSize`).
+    Width(f64),
+    /// This many (`cx:binCount`).
+    Count(u32),
+}
+
+/// The legend of a [`ChartEx`] (`cx:legend`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ExLegend {
+    /// The side it sits on; a 2016 chart has no top-right corner, and
+    /// [`LegendPosition::TopRight`] is written as the right side.
+    pub position: LegendPosition,
+    /// Drawn over the plot rather than beside it.
+    pub overlay: bool,
 }
 
 /// What a [`ChartEx`] series draws.
@@ -1787,6 +1878,20 @@ impl Dimension {
                 .find(|n| n.sheet.is_none() && n.name == formula)
                 .map_or(formula, |n| n.formula.as_str()),
         )
+    }
+
+    /// What the cells it reads show now, by point index - category labels
+    /// for a chart to draw from the book rather than from the cached
+    /// [`Self::levels`]. `sheet` is the chart's own sheet. See
+    /// [`crate::formula::chart::dimension_strings`].
+    #[cfg(feature = "formulas")]
+    #[must_use]
+    pub fn strings(
+        &self,
+        book: &crate::model::Spreadsheet,
+        sheet: usize,
+    ) -> Option<Vec<(u32, String)>> {
+        crate::formula::chart::dimension_strings(book, sheet, self)
     }
 }
 
