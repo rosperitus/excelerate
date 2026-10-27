@@ -391,11 +391,104 @@ fn the_html_page_shows_it() {
     assert!(row(9).contains("font-weight:bold"), "{}", row(9));
     assert!(!row(2).contains("#0000FF"));
     assert!(
-        row(2).contains("linear-gradient(to right, #638EC6"),
+        row(2).contains("linear-gradient(to right, transparent 0%, #638EC6 0%"),
         "{}",
         row(2)
     );
     assert!(row(2).contains(">2<"), "the value stays: {}", row(2));
     // Nothing for a sheet without rules.
     assert!(CfLook::default().is_empty());
+}
+
+fn bar(axis: excelerate::model::DataBarAxis) -> CfScale {
+    CfScale::DataBar {
+        values: vec![point(CfValueType::Min, ""), point(CfValueType::Max, "")],
+        color: Color::Argb(0xFF63_8EC6),
+        min_length: None,
+        max_length: None,
+        show_value: true,
+        gradient: false,
+        border_color: None,
+        negative_fill_color: Some(Color::Argb(0xFFFF_0000)),
+        negative_border_color: None,
+        axis_position: axis,
+        axis_color: None,
+    }
+}
+
+#[test]
+fn a_percent_threshold_may_be_a_formula() {
+    let mut book = book();
+    book.sheet_mut(0).unwrap().set(at("C1"), 50.0);
+    add(
+        &mut book,
+        "A1:A10",
+        scale_rule(
+            CfScale::Color {
+                values: vec![
+                    point(CfValueType::Percent, "0"),
+                    point(CfValueType::Percent, "=$C$1"),
+                ],
+                colors: vec![Color::Argb(0xFF00_0000), Color::Argb(0xFFFF_FFFF)],
+            },
+            CfRuleType::ColorScale,
+        ),
+    );
+    let mut cf = ConditionalFormatting::new(&book, 0);
+    // 50 % of 1..10 is 5.5: everything from 6 up takes the top colour.
+    assert_eq!(cf.look(at("A6")).color_scale, Some(0xFF_FFFF));
+    assert_eq!(cf.look(at("A1")).color_scale, Some(0x00_0000));
+}
+
+#[test]
+fn an_empty_cell_equals_false() {
+    let mut book = book();
+    add(
+        &mut book,
+        "D1:D2",
+        CfRule {
+            operator: Some(CfOperator::Equal),
+            formulas: vec!["FALSE".into()],
+            ..rule(CfRuleType::CellIs, 1, 0)
+        },
+    );
+    book.sheet_mut(0).unwrap().set(at("D2"), true);
+    assert_eq!(hits(&book, "D", 2), [1]);
+}
+
+#[test]
+fn a_2010_bar_runs_full_width_and_draws_negatives_from_the_axis() {
+    use excelerate::model::DataBarAxis;
+    // -5..5 in E1:E3; the x14 id marks the bar as 2010's.
+    let mut book = book();
+    for (r, v) in [(1, -5.0), (2, 0.0), (3, 5.0)] {
+        book.sheet_mut(0).unwrap().set_at(r, 5, v).unwrap();
+    }
+    let modern = |axis| CfRule {
+        extensions: Some("<extLst/>".into()),
+        ..scale_rule(bar(axis), CfRuleType::DataBar)
+    };
+    add(&mut book, "E1:E3", modern(DataBarAxis::Automatic));
+    let mut cf = ConditionalFormatting::new(&book, 0);
+    let low = cf.look(at("E1")).data_bar.unwrap();
+    assert_eq!((low.start, low.length, low.color), (0.0, 0.5, 0xFF_0000));
+    let high = cf.look(at("E3")).data_bar.unwrap();
+    assert_eq!((high.start, high.length, high.color), (0.5, 0.5, 0x63_8EC6));
+
+    // A 2010 bar without negatives: 0 to 100 % from the left edge.
+    let mut book = self::book();
+    add(&mut book, "A1:A10", modern(DataBarAxis::Automatic));
+    let mut cf = ConditionalFormatting::new(&book, 0);
+    assert_eq!(cf.look(at("A10")).data_bar.unwrap().length, 1.0);
+    assert_eq!(cf.look(at("A1")).data_bar.unwrap().length, 0.0);
+
+    // The 2007 bar keeps its 10 to 90 % and its left edge.
+    let mut book = self::book();
+    add(
+        &mut book,
+        "A1:A10",
+        scale_rule(bar(DataBarAxis::Automatic), CfRuleType::DataBar),
+    );
+    let mut cf = ConditionalFormatting::new(&book, 0);
+    assert!((cf.look(at("A10")).data_bar.unwrap().length - 0.9).abs() < 1e-9);
 }
