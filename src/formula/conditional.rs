@@ -20,7 +20,7 @@
 //! # book.add_sheet(sheet)?;
 //! let mut cf = ConditionalFormatting::new(&book, 0);
 //! let look = cf.look(at!("A1"));
-//! assert_eq!(look.rules, vec![0]);
+//! assert_eq!(look.dxfs, vec![0]);
 //! # Ok::<(), excelerate::Error>(())
 //! ```
 
@@ -49,9 +49,10 @@ pub struct CfLook {
     pub data_bar: Option<DataBarLook>,
     /// An icon.
     pub icon: Option<IconLook>,
-    /// Which rules matched, by their index in the workbook's differential
-    /// styles where they paint one; the order is by priority.
-    pub rules: Vec<u32>,
+    /// The differential styles of the rules that matched, by their index in
+    /// the workbook's, strongest first. A matched rule with no style (a
+    /// colour scale, a bar, an icon set) is not listed.
+    pub dxfs: Vec<u32>,
 }
 
 impl CfLook {
@@ -105,7 +106,7 @@ struct Stats {
     sorted: Vec<f64>,
     mean: f64,
     std_dev: f64,
-    /// How often each shown text occurs, lower-cased, for duplicates.
+    /// How often each value occurs, by [`ConditionalFormatting::duplicate_key`].
     counts: HashMap<String, usize>,
 }
 
@@ -192,7 +193,7 @@ impl<'a> ConditionalFormatting<'a> {
                 continue;
             }
             if let Some(dxf) = rule.dxf {
-                look.rules.push(dxf);
+                look.dxfs.push(dxf);
                 if let Some(style) = self.book.styles.differential.get(dxf as usize) {
                     merge_under(&mut look.style, style);
                 }
@@ -251,7 +252,7 @@ impl<'a> ConditionalFormatting<'a> {
                 sorted.push(*n);
             }
             if !value.is_empty() {
-                *counts.entry(self.shown(value)).or_default() += 1;
+                *counts.entry(self.duplicate_key(value)).or_default() += 1;
             }
         }
         sorted.sort_by(f64::total_cmp);
@@ -281,6 +282,18 @@ impl<'a> ConditionalFormatting<'a> {
 
     fn shown(&self, value: &CellValue) -> String {
         value.display(GENERAL, self.book.epoch).to_lowercase()
+    }
+
+    /// What Duplicate Values compares: the value, text without regard to
+    /// case, and the type with it, so the number 1 and the text "1" differ.
+    fn duplicate_key(&self, value: &CellValue) -> String {
+        let kind = match value {
+            CellValue::Number(_) => 'n',
+            CellValue::Bool(_) => 'b',
+            CellValue::Error(_) => 'e',
+            _ => 't',
+        };
+        format!("{kind}{}", self.shown(value))
     }
 
     fn matches(&mut self, block: usize, rule: &CfRule, at: CellRef, value: &CellValue) -> bool {
@@ -340,7 +353,7 @@ impl<'a> ConditionalFormatting<'a> {
                 if value.is_empty() {
                     return false;
                 }
-                let key = self.shown(value);
+                let key = self.duplicate_key(value);
                 let count = self.stats(block).counts.get(&key).copied().unwrap_or(0);
                 (count > 1) == (rule.kind == CfRuleType::DuplicateValues)
             }
@@ -755,21 +768,14 @@ pub(crate) fn lerp(from: u32, to: u32, share: f64) -> u32 {
     channel(16) | channel(8) | channel(0)
 }
 
-/// The day of the week of a serial, 0 for Sunday.
-fn weekday(serial: f64, epoch: Epoch) -> Option<i64> {
-    let d = from_serial(serial, epoch).ok()?;
-    // Days from 1970-01-01 (a Thursday), by the civil calendar.
-    let (y, m) = if d.month <= 2 {
-        (i64::from(d.year) - 1, i64::from(d.month) + 9)
-    } else {
-        (i64::from(d.year), i64::from(d.month) - 3)
+/// The day of the week of a whole serial, 0 for Sunday: day 1 of the 1900
+/// calendar is a Sunday, day 0 of the 1904 one a Friday.
+fn weekday(serial: f64, epoch: Epoch) -> f64 {
+    let shift = match epoch {
+        Epoch::Windows1900 => -1.0,
+        Epoch::Mac1904 => 5.0,
     };
-    let era = y.div_euclid(400);
-    let yoe = y - era * 400;
-    let doy = (153 * m + 2) / 5 + i64::from(d.day) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    let days = era * 146_097 + doe - 719_468;
-    Some((days + 4).rem_euclid(7))
+    (serial + shift).rem_euclid(7.0)
 }
 
 /// Whether day `n` falls in a `timePeriod` rule's span around `today`.
@@ -780,11 +786,7 @@ fn in_period(period: &str, n: f64, today: f64, epoch: Epoch) -> bool {
             .ok()
             .map(|d| i64::from(d.year) * 12 + i64::from(d.month))
     };
-    let week_start = |s: f64| {
-        weekday(s, epoch)
-            .and_then(|w| u8::try_from(w).ok())
-            .map(|w| s - f64::from(w))
-    };
+    let week_start = |s: f64| s - weekday(s, epoch);
     match period {
         "today" => n == today,
         "yesterday" => n == today - 1.0,
@@ -796,10 +798,8 @@ fn in_period(period: &str, n: f64, today: f64, epoch: Epoch) -> bool {
                 "nextWeek" => 7.0,
                 _ => 0.0,
             };
-            week_start(today).is_some_and(|start| {
-                let start = start + shift;
-                n >= start && n < start + 7.0
-            })
+            let start = week_start(today) + shift;
+            n >= start && n < start + 7.0
         }
         "thisMonth" | "lastMonth" | "nextMonth" => {
             let shift = match period {
@@ -835,7 +835,9 @@ mod tests {
     #[test]
     fn weeks_start_on_sunday() {
         // 45658 is 2025-01-01, a Wednesday.
-        assert_eq!(weekday(45_658.0, Epoch::Windows1900), Some(3));
+        assert_eq!(weekday(45_658.0, Epoch::Windows1900), 3.0);
+        // 2025-01-01 is serial 44196 in the 1904 calendar.
+        assert_eq!(weekday(44_196.0, Epoch::Mac1904), 3.0);
         assert!(in_period(
             "thisWeek",
             45_655.0,

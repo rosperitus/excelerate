@@ -297,8 +297,8 @@ sheet.conditional_formats.push(ConditionalFormat {
 book.add_sheet(sheet)?;
 
 let mut cf = ConditionalFormatting::new(&book, 0);
-assert!(cf.look(at!("A1")).rules.is_empty());
-assert_eq!(cf.look(at!("A2")).rules, vec![0]);
+assert!(cf.look(at!("A1")).dxfs.is_empty());
+assert_eq!(cf.look(at!("A2")).dxfs, vec![0]);
 # Ok::<(), excelerate::Error>(())
 ```
 
