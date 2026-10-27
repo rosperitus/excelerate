@@ -1082,6 +1082,24 @@ fn labels(
     }
 }
 
+/// Refreshes every pivot table of the workbook, as Excel's Refresh All does,
+/// and returns how many were laid out.
+///
+/// # Errors
+/// The first error of [`refresh_pivot`]; the reports before it stay
+/// refreshed.
+pub fn refresh_all_pivots(book: &mut Spreadsheet, captions: &PivotCaptions) -> Result<usize> {
+    let mut done = 0;
+    for sheet in 0..book.sheets().len() {
+        let count = book.sheet(sheet).map_or(0, |ws| ws.pivot_tables.len());
+        for table in 0..count {
+            refresh_pivot(book, sheet, table, captions)?;
+            done += 1;
+        }
+    }
+    Ok(done)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
