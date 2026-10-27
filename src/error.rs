@@ -102,6 +102,12 @@ pub enum Error {
     /// no formula, or a changing cell that holds one.
     #[error("goal seek: {0}")]
     GoalSeek(String),
+
+    /// A Solver model that cannot be solved as given: an objective with no
+    /// formula, too many or no variable cells, a variable holding a formula,
+    /// or constraints that do not fit together.
+    #[error("solver: {0}")]
+    Solver(String),
 }
 
 /// Result of a crate operation.

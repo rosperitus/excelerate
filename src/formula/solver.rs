@@ -144,6 +144,10 @@ pub enum SolverStatus {
     Unbounded,
     /// Simplex LP was asked to solve a model that is not linear.
     NotLinear,
+    /// The trials, or the subproblems of an integer model, ran out before a
+    /// point meeting every constraint was found. Not a proof that there is
+    /// none: more trials may find one.
+    Limit,
 }
 
 /// What [`solve`] found.
@@ -262,7 +266,7 @@ fn build_problem(model: &SolverModel, vars: &[CellRef]) -> Result<Problem> {
             && rhs_cells.len() != 1
             && rhs_cells.len() != lhs_cells.len()
         {
-            return Err(Error::GoalSeek(format!(
+            return Err(Error::Solver(format!(
                 "the two sides of the constraint on {} differ in size",
                 c.cells
             )));
@@ -272,7 +276,7 @@ fn build_problem(model: &SolverModel, vars: &[CellRef]) -> Result<Problem> {
             match c.relation {
                 Relation::Integer | Relation::Binary => {
                     let Some(j) = j else {
-                        return Err(Error::GoalSeek(format!(
+                        return Err(Error::Solver(format!(
                             "{cell} is not a variable cell; int and bin bind variables only"
                         )));
                     };
@@ -1083,6 +1087,38 @@ fn write_back(
     Ok((value, cells))
 }
 
+/// Puts the variable cells back as they were, text and empty cells included,
+/// and reads the objective and the variables as [`write_back`] does.
+fn restore(
+    book: &mut Spreadsheet,
+    sheet: usize,
+    vars: &[CellRef],
+    original: Vec<Option<CellValue>>,
+    objective: CellRef,
+) -> Result<(f64, Vec<(CellRef, f64)>)> {
+    let ws = book
+        .sheet_mut(sheet)
+        .ok_or(Error::SheetIndexOutOfRange(sheet))?;
+    for (cell, value) in vars.iter().zip(original) {
+        match value {
+            Some(value) => ws.entry(*cell).value = value,
+            None => {
+                ws.remove(*cell);
+            }
+        }
+    }
+    let changed: Vec<(usize, CellRef)> = vars.iter().map(|c| (sheet, *c)).collect();
+    crate::formula::eval::recalculate_from(book, &changed);
+    let read = |at: CellRef| {
+        book.sheet(sheet)
+            .and_then(|ws| ws.get(at))
+            .and_then(|cell| cell.value.as_number())
+    };
+    let value = read(objective).unwrap_or(f64::NAN);
+    let cells = vars.iter().map(|&c| (c, read(c).unwrap_or(0.0))).collect();
+    Ok((value, cells))
+}
+
 /// Solves `model` on `sheet`: Excel's Data - Solver, choosing "Keep Solver
 /// Solution". When a solution is found (`Optimal` or `Feasible`) the
 /// variable cells keep it and the workbook is recomputed; otherwise they are
@@ -1090,7 +1126,7 @@ fn write_back(
 ///
 /// # Errors
 /// [`Error::SheetIndexOutOfRange`] for a missing sheet, and
-/// [`Error::GoalSeek`] when the objective holds no formula, there are no
+/// [`Error::Solver`] when the objective holds no formula, there are no
 /// variable cells or more than 200, a variable holds a formula, or an
 /// integer constraint is on a cell that is not a variable.
 pub fn solve(book: &mut Spreadsheet, sheet: usize, model: &SolverModel) -> Result<Solved> {
@@ -1101,7 +1137,7 @@ pub fn solve(book: &mut Spreadsheet, sheet: usize, model: &SolverModel) -> Resul
         ws.get(model.objective).map(|c| &c.value),
         Some(CellValue::Formula { .. })
     ) {
-        return Err(Error::GoalSeek(format!(
+        return Err(Error::Solver(format!(
             "the objective {} must hold a formula",
             model.objective
         )));
@@ -1113,15 +1149,21 @@ pub fn solve(book: &mut Spreadsheet, sheet: usize, model: &SolverModel) -> Resul
         }
     }
     if vars.is_empty() || vars.len() > MAX_VARS {
-        return Err(Error::GoalSeek(format!(
+        return Err(Error::Solver(format!(
             "Solver changes 1 to {MAX_VARS} cells"
         )));
     }
+    // What the variable cells held, put back as it was when nothing is found.
+    let original: Vec<Option<CellValue>> = vars
+        .iter()
+        .map(|&c| ws.get(c).map(|cell| cell.value.clone()))
+        .collect();
     let start: Vec<f64> = vars
         .iter()
-        .map(|&c| match ws.get(c).map(|cell| &cell.value) {
+        .zip(&original)
+        .map(|(c, value)| match value {
             Some(CellValue::Formula { .. }) => {
-                Err(Error::GoalSeek(format!("the variable {c} holds a formula")))
+                Err(Error::Solver(format!("the variable {c} holds a formula")))
             }
             Some(v) => Ok(v.as_number().unwrap_or(0.0)),
             None => Ok(0.0),
@@ -1141,7 +1183,7 @@ pub fn solve(book: &mut Spreadsheet, sheet: usize, model: &SolverModel) -> Resul
         trials: 0,
         budget: model.max_trials.max(1),
     };
-    let mut x0 = start.clone();
+    let mut x0 = start;
     project(&mut x0, &problem.lo, &problem.hi);
     let (outcome, not_linear) = optimise(&mut ev, model, &problem, &x0);
     let trials = ev.trials;
@@ -1156,10 +1198,14 @@ pub fn solve(book: &mut Spreadsheet, sheet: usize, model: &SolverModel) -> Resul
         ),
         Outcome::Unbounded => (SolverStatus::Unbounded, None),
         Outcome::Infeasible if not_linear => (SolverStatus::NotLinear, None),
-        Outcome::Infeasible | Outcome::Limit => (SolverStatus::Infeasible, None),
+        Outcome::Infeasible => (SolverStatus::Infeasible, None),
+        Outcome::Limit => (SolverStatus::Limit, None),
     };
-    let values = keep.unwrap_or(start);
-    let (objective, values) = write_back(book, sheet, &vars, &values, model.objective)?;
+    let (objective, values) = if let Some(found) = keep {
+        write_back(book, sheet, &vars, &found, model.objective)?
+    } else {
+        restore(book, sheet, &vars, original, model.objective)?
+    };
     Ok(Solved {
         status,
         objective,
@@ -1189,9 +1235,22 @@ fn sheet_ref(book: &Spreadsheet, sheet: usize, range: Range) -> String {
     format!("{quoted}!{}", absolute(range))
 }
 
-fn parse_ref(formula: &str) -> Option<Range> {
+/// A range the Solver add-in wrote, `Sheet1!$A$1:$B$2`. `None` when it is
+/// not a range or names a sheet other than `title`: the model is on one
+/// sheet, and reading another sheet's cells as this one's would solve the
+/// wrong model.
+fn parse_ref(formula: &str, title: &str) -> Option<Range> {
     let text = formula.trim().trim_start_matches('=');
-    let text = text.rsplit_once('!').map_or(text, |(_, r)| r);
+    let text = match text.rsplit_once('!') {
+        Some((qualifier, range)) => {
+            let name = qualifier.trim_matches('\'').replace("''", "'");
+            if !name.eq_ignore_ascii_case(title) {
+                return None;
+            }
+            range
+        }
+        None => text,
+    };
     Range::parse(&text.replace('$', "")).ok()
 }
 
@@ -1273,7 +1332,10 @@ fn code_of(v: f64) -> i64 {
 }
 
 /// The Solver model kept in the workbook for `sheet`, as Excel's add-in or
-/// [`save_model`] wrote it; `None` when there is none. The Evolutionary
+/// [`save_model`] wrote it; `None` when there is none, or when a part of it
+/// cannot be read here (a range on another sheet, a right side that is a
+/// formula rather than a number or a range): a model with a part left out
+/// is not the one that was saved. The Evolutionary
 /// method, which this crate does not run, reads as GRG Nonlinear.
 #[must_use]
 pub fn saved_model(book: &Spreadsheet, sheet: usize) -> Option<SolverModel> {
@@ -1286,6 +1348,8 @@ pub fn saved_model(book: &Spreadsheet, sheet: usize) -> Option<SolverModel> {
     let number = |n: &str| name(n).and_then(|v| v.trim_matches('"').parse::<f64>().ok());
     // The add-in's small codes: 1 for max, 2 for <=, and so on.
     let code = |n: &str| number(n).map(code_of);
+    let title = book.sheet(sheet)?.title();
+    let parse_ref = |formula: &str| parse_ref(formula, title);
     let objective = parse_ref(&name("solver_opt")?)?.start;
     let goal = match code("solver_typ").unwrap_or(1) {
         2 => SolverGoal::Min,
@@ -1294,8 +1358,8 @@ pub fn saved_model(book: &Spreadsheet, sheet: usize) -> Option<SolverModel> {
     };
     let variables: Vec<Range> = name("solver_adj")?
         .split(',')
-        .filter_map(parse_ref)
-        .collect();
+        .map(parse_ref)
+        .collect::<Option<_>>()?;
     let mut model = SolverModel::new(objective, goal, variables);
     model.non_negative = code("solver_neg").is_none_or(|v| v == 1);
     model.method = match code("solver_eng").unwrap_or(1) {
@@ -1309,12 +1373,8 @@ pub fn saved_model(book: &Spreadsheet, sheet: usize) -> Option<SolverModel> {
     )]
     let count = number("solver_num").unwrap_or(0.0).max(0.0) as usize;
     for i in 1..=count {
-        let Some(cells) = name(&format!("solver_lhs{i}"))
-            .as_deref()
-            .and_then(parse_ref)
-        else {
-            continue;
-        };
+        // A constraint that cannot be read makes the model another one.
+        let cells = parse_ref(&name(&format!("solver_lhs{i}"))?)?;
         let relation = match code(&format!("solver_rel{i}")).unwrap_or(1) {
             2 => Relation::Equal,
             3 => Relation::GreaterOrEqual,
@@ -1330,8 +1390,7 @@ pub fn saved_model(book: &Spreadsheet, sheet: usize) -> Option<SolverModel> {
                 .parse::<f64>()
                 .map(Bound::Value)
                 .ok()
-                .or_else(|| parse_ref(&rhs).map(Bound::Cells))
-                .unwrap_or(Bound::Value(0.0)),
+                .or_else(|| parse_ref(&rhs).map(Bound::Cells))?,
         };
         model.constraints.push(SolverConstraint {
             cells,
