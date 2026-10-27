@@ -125,7 +125,10 @@
     variable cells get back what they held, text and empty cells included.
     A model that cannot be solved as given is `Error::Solver`. `saved_model`
     answers `None` for a model naming another sheet or with a right side it
-    cannot read, rather than reading a different model.
+    cannot read, rather than reading a different model. Simplex LP reads
+    the model inside the variables' bounds, calls an error value in it
+    `SolverStatus::ErrorValue` rather than `NotLinear`, and its relaxations
+    share one work budget across branch and bound.
 
 ### Changed
 
