@@ -9,12 +9,14 @@
 
 mod anchor;
 mod chart;
+mod data;
 mod extension;
 mod filter;
 mod pivot;
 mod range;
 mod series;
 
+pub use data::{Deduplicated, SplitBy, remove_duplicates, text_to_columns};
 pub use filter::filter_table;
 pub use pivot::{PivotCaptions, refresh_pivot};
 pub use range::{
