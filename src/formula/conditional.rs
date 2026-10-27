@@ -30,8 +30,8 @@ use std::collections::HashMap;
 use crate::coordinate::{CellRef, Range, shift_references};
 use crate::formula::{Engine, Origin, Value};
 use crate::model::{
-    CellValue, CfOperator, CfRule, CfRuleType, CfScale, CfValue, CfValueType, Spreadsheet,
-    Worksheet,
+    CellValue, CfOperator, CfRule, CfRuleType, CfScale, CfValue, CfValueType, DataBarAxis,
+    Spreadsheet, Worksheet,
 };
 use crate::shared::date::{Epoch, from_serial};
 use crate::style::DifferentialStyle;
@@ -75,6 +75,10 @@ impl CfLook {
 /// A data bar in one cell.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DataBarLook {
+    /// Where the bar starts, as a share of the cell's width from its left
+    /// edge: 0 unless the block has negative values and an axis, where a
+    /// negative bar ends at the axis and a positive one starts there.
+    pub start: f64,
     /// How much of the cell's width the bar takes, `0.0..=1.0`.
     pub length: f64,
     /// Its colour, as `RRGGBB`.
@@ -170,7 +174,9 @@ impl<'a> ConditionalFormatting<'a> {
                 }
                 (CfRuleType::DataBar, Some(scale)) => {
                     if look.data_bar.is_none() {
-                        look.data_bar = self.data_bar(block, at, &value, scale);
+                        // The `x14:id` of a 2010 bar: its own lengths and axis.
+                        let modern = rule.extensions.is_some();
+                        look.data_bar = self.data_bar(block, modern, &value, scale);
                     }
                     look.data_bar.is_some()
                 }
@@ -418,25 +424,27 @@ impl<'a> ConditionalFormatting<'a> {
     /// A threshold of a scale, a bar or an icon set.
     fn threshold(&mut self, block: usize, point: &CfValue, low: bool) -> Option<f64> {
         let anchor = self.anchor(block);
-        let parse = |s: &str| s.trim().parse::<f64>().ok();
+        // A number, a percent or a percentile may be written as a formula too.
+        let p = match point.kind {
+            CfValueType::Number | CfValueType::Percent | CfValueType::Percentile => point
+                .value
+                .trim()
+                .parse::<f64>()
+                .ok()
+                .or_else(|| self.eval_at(block, &point.value, anchor).number().ok()),
+            _ => None,
+        };
         let stats = self.stats(block);
         let (min, max) = (stats.sorted.first().copied(), stats.sorted.last().copied());
         match point.kind {
             CfValueType::Min => min,
             CfValueType::Max => max,
-            CfValueType::Number => parse(&point.value).or_else(|| {
-                // A number may be written as a formula too.
-                self.eval_at(block, &point.value, anchor).number().ok()
-            }),
+            CfValueType::Number => p,
             CfValueType::Percent => {
-                let p = parse(&point.value)?;
-                let (min, max) = (min?, max?);
+                let (p, min, max) = (p?, min?, max?);
                 Some((max - min).mul_add(p / 100.0, min))
             }
-            CfValueType::Percentile => {
-                let p = parse(&point.value)?;
-                percentile(&self.stats(block).sorted, p)
-            }
+            CfValueType::Percentile => percentile(&self.stats(block).sorted, p?),
             CfValueType::Formula => self.eval_at(block, &point.value, anchor).number().ok(),
             #[allow(unreachable_patterns, reason = "the kinds may grow")]
             _ => {
@@ -491,10 +499,14 @@ impl<'a> ConditionalFormatting<'a> {
         Some(lerp(rgb[i - 1], rgb[i], t))
     }
 
+    /// The bar for `value`. A 2010 bar (`modern`) runs 0 to 100 % of the cell
+    /// by default, and with negative values in its block draws them from an
+    /// axis leftwards in their own colour; a 2007 bar runs 10 to 90 % from the
+    /// left edge whatever the sign.
     fn data_bar(
         &mut self,
         block: usize,
-        _at: CellRef,
+        modern: bool,
         value: &CellValue,
         scale: &CfScale,
     ) -> Option<DataBarLook> {
@@ -504,6 +516,8 @@ impl<'a> ConditionalFormatting<'a> {
             min_length,
             max_length,
             show_value,
+            negative_fill_color,
+            axis_position,
             ..
         } = scale
         else {
@@ -518,16 +532,63 @@ impl<'a> ConditionalFormatting<'a> {
         let high = values
             .get(1)
             .and_then(|v| self.threshold(block, v, false))?;
+        let paint = |c: &crate::style::Color| crate::shared::palette::rgb_in(c, &self.theme);
+        let positive = paint(color).unwrap_or(0x63_8E_C6);
+        // ponytail: min_length and max_length are not applied to bars drawn
+        // from an axis; Excel's own use of them there is not documented.
+        if modern && low < 0.0 && *axis_position != DataBarAxis::None {
+            let axis = match axis_position {
+                DataBarAxis::Middle => 0.5,
+                _ if high > 0.0 => -low / (high - low),
+                _ => 1.0,
+            };
+            // How far each side of the axis reaches in value.
+            let (left, right) = match axis_position {
+                DataBarAxis::Middle => {
+                    let reach = low.abs().max(high.abs());
+                    (reach, reach)
+                }
+                _ => (-low, high.max(0.0)),
+            };
+            let share = |v: f64, reach: f64| {
+                if reach > 0.0 {
+                    (v / reach).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                }
+            };
+            return Some(if n < 0.0 {
+                let length = share(-n, left) * axis;
+                DataBarLook {
+                    start: axis - length,
+                    length,
+                    color: negative_fill_color
+                        .as_ref()
+                        .and_then(paint)
+                        .unwrap_or(positive),
+                    show_value: *show_value,
+                }
+            } else {
+                DataBarLook {
+                    start: axis,
+                    length: share(n, right) * (1.0 - axis),
+                    color: positive,
+                    show_value: *show_value,
+                }
+            });
+        }
         let t = if high > low {
             ((n - low) / (high - low)).clamp(0.0, 1.0)
         } else {
             1.0
         };
-        let shortest = f64::from(min_length.unwrap_or(10)) / 100.0;
-        let longest = f64::from(max_length.unwrap_or(90)) / 100.0;
+        let (short, long) = if modern { (0, 100) } else { (10, 90) };
+        let shortest = f64::from(min_length.unwrap_or(short)) / 100.0;
+        let longest = f64::from(max_length.unwrap_or(long)) / 100.0;
         Some(DataBarLook {
+            start: 0.0,
             length: (longest - shortest).mul_add(t, shortest),
-            color: crate::shared::palette::rgb_in(color, &self.theme).unwrap_or(0x63_8E_C6),
+            color: positive,
             show_value: *show_value,
         })
     }
@@ -621,8 +682,8 @@ fn merge_under(look: &mut DifferentialStyle, weaker: &DifferentialStyle) {
 }
 
 /// Excel's order across types: numbers, then text (without regard to case),
-/// then booleans; an empty cell counts as 0 against a number and as "" against
-/// text.
+/// then booleans; an empty cell counts as 0 against a number, as "" against
+/// text and as `FALSE` against a boolean.
 fn compare(a: &Value, b: &Value) -> Ordering {
     let rank = |v: &Value| match v {
         Value::Number(_) => 0,
@@ -638,6 +699,8 @@ fn compare(a: &Value, b: &Value) -> Ordering {
         (Value::Number(_), Value::Blank) => compare(a, &Value::Number(0.0)),
         (Value::Blank, Value::Text(_)) => compare(&Value::Text(String::new()), b),
         (Value::Text(_), Value::Blank) => compare(a, &Value::Text(String::new())),
+        (Value::Blank, Value::Bool(_)) => compare(&Value::Bool(false), b),
+        (Value::Bool(_), Value::Blank) => compare(a, &Value::Bool(false)),
         (Value::Blank, Value::Blank) => Ordering::Equal,
         _ => rank(a).cmp(&rank(b)),
     }

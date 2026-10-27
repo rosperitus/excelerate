@@ -697,10 +697,11 @@ fn conditional_css(look: &CfLook, theme: &[u32]) -> String {
         }
     }
     if let Some(bar) = &look.data_bar {
-        let percent = trim((bar.length * 100.0).clamp(0.0, 100.0));
+        let from = trim((bar.start * 100.0).clamp(0.0, 100.0));
+        let to = trim(((bar.start + bar.length) * 100.0).clamp(0.0, 100.0));
         let _ = write!(
             css,
-            "background-image: linear-gradient(to right, {0} 0, {0} {percent}%, transparent {percent}%); ",
+            "background-image: linear-gradient(to right, transparent {from}%, {0} {from}%, {0} {to}%, transparent {to}%); ",
             rgb(bar.color)
         );
     }
