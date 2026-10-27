@@ -120,7 +120,12 @@
   - `formula::solver`: Solver with Simplex LP (branch and bound for int and
     bin) and GRG Nonlinear. `save_model` and `saved_model` keep the model in
     the hidden `solver_*` names Excel's add-in uses. The Evolutionary method
-    is not included.
+    is not included. Trials or subproblems running out is
+    `SolverStatus::Limit`, not `Infeasible`; when nothing is found the
+    variable cells get back what they held, text and empty cells included.
+    A model that cannot be solved as given is `Error::Solver`. `saved_model`
+    answers `None` for a model naming another sheet or with a right side it
+    cannot read, rather than reading a different model.
 
 ### Changed
 

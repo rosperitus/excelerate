@@ -214,3 +214,69 @@ fn the_model_travels_in_excel_s_names() {
     assert_eq!(read, model);
     assert_eq!(saved_model(&back, 1), None);
 }
+
+#[test]
+fn running_out_of_trials_is_not_infeasible() {
+    // Solvable, but one trial is not enough to linearise two variables.
+    let (mut book, mut model) = product_mix();
+    model.method = SolverMethod::SimplexLp;
+    model.max_trials = 1;
+    let solved = solve(&mut book, 0, &model).unwrap();
+    assert_eq!(solved.status, SolverStatus::Limit);
+}
+
+#[test]
+fn a_failed_solve_puts_the_variables_back_as_they_were() {
+    let (mut book, mut model) = product_mix();
+    book.sheet_mut(0).unwrap().set(at!("A1"), "start here");
+    book.sheet_mut(0).unwrap().remove(at!("B1"));
+    model.method = SolverMethod::SimplexLp;
+    model.constraints.push(SolverConstraint {
+        cells: range("A1"),
+        relation: Relation::GreaterOrEqual,
+        bound: Bound::Value(5.0),
+    });
+    let solved = solve(&mut book, 0, &model).unwrap();
+    assert_eq!(solved.status, SolverStatus::Infeasible);
+    let ws = book.sheet(0).unwrap();
+    assert_eq!(
+        ws.get(at!("A1")).map(|c| c.value.clone()),
+        Some(CellValue::from("start here"))
+    );
+    assert!(ws.get(at!("B1")).is_none());
+}
+
+#[test]
+fn a_bad_model_is_a_solver_error() {
+    let (mut book, mut model) = product_mix();
+    model.objective = at!("A1");
+    assert!(matches!(
+        solve(&mut book, 0, &model),
+        Err(excelerate::Error::Solver(_))
+    ));
+}
+
+#[test]
+fn a_saved_model_naming_another_sheet_is_not_read_as_this_one() {
+    let (mut book, model) = product_mix();
+    save_model(&mut book, 0, &model);
+    assert!(saved_model(&book, 0).is_some());
+    let adj = book
+        .defined_names
+        .iter_mut()
+        .find(|d| d.name == "solver_adj")
+        .unwrap();
+    adj.formula = "Other!$A$1:$B$1".into();
+    assert_eq!(saved_model(&book, 0), None);
+
+    let (mut book, mut model) = product_mix();
+    model.constraints = vec![le("A2", 12.0)];
+    save_model(&mut book, 0, &model);
+    let rhs = book
+        .defined_names
+        .iter_mut()
+        .find(|d| d.name == "solver_rhs1")
+        .unwrap();
+    rhs.formula = "Plan!$B$1*2".into();
+    assert_eq!(saved_model(&book, 0), None);
+}
