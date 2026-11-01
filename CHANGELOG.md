@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Public `Engine::on_stored_results()` for renderers and other consumers that
+  evaluate expressions against displayed cell values without recalculating
+  their formula dependencies. Cells without stored results are still evaluated.
+
 ## 0.16.0
 
 ### Added

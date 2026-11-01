@@ -190,7 +190,7 @@ impl<'a> Engine<'a> {
     /// each cell costs the whole dependency chain. A formula cell with no
     /// stored result is still computed.
     #[must_use]
-    pub(crate) fn on_stored_results(mut self) -> Self {
+    pub fn on_stored_results(mut self) -> Self {
         self.stale = Some(&NONE_STALE);
         self
     }
