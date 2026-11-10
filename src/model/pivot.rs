@@ -246,8 +246,93 @@ pub struct CacheSource {
     pub name: Option<String>,
 }
 
+/// One part of a date a field's grouping derives its levels from. The order
+/// of the variants is the order the report puts them in: senior levels
+/// first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DatePart {
+    /// The year of the date.
+    Years,
+    /// The quarter, one to four.
+    Quarters,
+    /// The month within the year.
+    Months,
+    /// The day within the month.
+    Days,
+}
+
+impl DatePart {
+    /// Reads the `groupBy` attribute of a `<rangePr>`.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "years" => Some(Self::Years),
+            "quarters" => Some(Self::Quarters),
+            "months" => Some(Self::Months),
+            "days" => Some(Self::Days),
+            _ => None,
+        }
+    }
+
+    /// The attribute value, as the file spells it.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Years => "years",
+            Self::Quarters => "quarters",
+            Self::Months => "months",
+            Self::Days => "days",
+        }
+    }
+
+    /// The name Excel gives the extra cache field that carries this level.
+    #[must_use]
+    pub const fn field_name(self) -> &'static str {
+        match self {
+            Self::Years => "Years",
+            Self::Quarters => "Quarters",
+            Self::Months => "Months",
+            Self::Days => "Days",
+        }
+    }
+}
+
+/// The span grouping of numbers: from `start` to `end` in steps of
+/// `interval`. Values outside the range fall into the rest group.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeGroup {
+    /// The first span opens here.
+    pub start: f64,
+    /// The last span closes here.
+    pub end: f64,
+    /// The width of one span.
+    pub interval: f64,
+}
+
+/// How a cache field's values are grouped for the report: Excel's date and
+/// number grouping, the parts the report asks for.
+///
+/// A grouped field keeps its own values; the report derives a level per
+/// date part from them, senior parts first, or folds numbers into spans of
+/// `range`, values outside falling into the rest group. `parent` is the
+/// field whose values the levels come from, which is how a foreign file
+/// spells the extra fields it adds per level: the base field carries the
+/// finest part itself, and one field per coarser part points at it through
+/// `parent`. A calculated field cannot be grouped.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Grouping {
+    /// The parts of a date grouped over, senior first. Empty for a span
+    /// grouping of numbers.
+    pub parts: Vec<DatePart>,
+    /// The span grouping of numbers, when this is one.
+    pub range: Option<RangeGroup>,
+    /// The field whose values the parts or spans are taken from; `None`
+    /// groups this field's own values.
+    pub parent: Option<u32>,
+}
+
 /// One column of the source data, as the cache describes it.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct CacheField {
     /// The heading it took its name from.
     pub name: String,
@@ -256,6 +341,14 @@ pub struct CacheField {
     /// The distinct values the cache remembers for it, when it lists them.
     /// A cache written with `saveData="false"` lists none.
     pub shared_items: Vec<String>,
+    /// A calculated field's formula, without the leading `=`: arithmetic -
+    /// `+`, `-`, `*`, `/`, parentheses, numbers - over the other fields'
+    /// values of the same row, named as the cache names them. A name with a
+    /// space or a quote stands in apostrophes, `''` inside for the quote
+    /// itself. No functions.
+    pub formula: Option<String>,
+    /// How the field's values are grouped for the report, when they are.
+    pub grouping: Option<Grouping>,
 }
 
 /// The data behind one or more pivot tables.

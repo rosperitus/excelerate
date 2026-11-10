@@ -4,6 +4,15 @@
 
 ### Added
 
+- Pivot caches: calculated fields (`CacheField::formula`, arithmetic over
+  the row's other fields, aggregated by the values area and grouped by
+  distinct values on an axis) and grouping (`CacheField::grouping`): date
+  parts laid out as senior-first levels with subtotals, or spans of numbers
+  with the rest group; read from and written to xlsx. `edit::eval_pivot_formula`
+  computes one formula against a row of field values. `PivotCaptions` grew
+  the level captions (`years`, `quarters`, `months`, `days`, `quarter`,
+  `other`).
+
 - Public `Engine::on_stored_results()` for renderers and other consumers that
   evaluate expressions against displayed cell values without recalculating
   their formula dependencies. Cells without stored results are still evaluated.

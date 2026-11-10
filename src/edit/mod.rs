@@ -29,7 +29,7 @@ pub use outline::{
     column_groups, expand_columns, expand_rows, group_columns, group_rows, row_groups,
     show_outline_level, subtotal, ungroup_columns, ungroup_rows,
 };
-pub use pivot::{PivotCaptions, refresh_all_pivots, refresh_pivot};
+pub use pivot::{PivotCaptions, eval_pivot_formula, refresh_all_pivots, refresh_pivot};
 pub use range::{
     SortBy, SortKey, SortOptions, copy_range, fill, insert_cells, insert_cells_with, move_range,
     move_sheet, remove_cells, sort_range, sort_range_with, sort_table,

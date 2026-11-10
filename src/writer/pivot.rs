@@ -12,7 +12,7 @@ use super::image::{free_path, set_attribute};
 use super::xlsx::relative_target;
 use super::xmlesc::escape;
 use crate::error::{Error, Result};
-use crate::model::pivot::{PivotCache, PivotTable};
+use crate::model::pivot::{CacheField, Grouping, PivotCache, PivotTable};
 use crate::model::{Attachment, Spreadsheet};
 use std::borrow::Cow;
 use std::fmt::Write as _;
@@ -191,6 +191,7 @@ fn refresh_on_load(book: &mut Spreadsheet, path: &str) {
 }
 
 fn render_cache(cache: &PivotCache) -> String {
+    let fields = expand_fields(cache);
     let mut s = format!(
         concat!(
             r#"{}<pivotCacheDefinition xmlns="{}" xmlns:r="{}" saveData="0" refreshOnLoad="1" "#,
@@ -211,23 +212,36 @@ fn render_cache(cache: &PivotCache) -> String {
     let _ = write!(
         s,
         r#"/></cacheSource><cacheFields count="{}">"#,
-        cache.fields.len()
+        fields.fields.len()
     );
-    for field in &cache.fields {
+    for (i, field) in fields.fields.iter().enumerate() {
         let _ = write!(s, r#"<cacheField name="{}""#, escape(&field.name));
         if let Some(format) = field.number_format {
             let _ = write!(s, r#" numFmtId="{format}""#);
         }
+        if let Some(formula) = &field.formula {
+            let _ = write!(s, r#" formula="{}""#, escape(formula));
+        }
+        if fields.generated[i] {
+            let _ = write!(s, r#" databaseField="0""#);
+        }
         s.push('>');
-        if field.shared_items.is_empty() {
-            // What excelize writes: one blank item, no values.
-            s.push_str(r#"<sharedItems containsBlank="1"><m/></sharedItems>"#);
-        } else {
-            let _ = write!(s, r#"<sharedItems count="{}">"#, field.shared_items.len());
-            for item in &field.shared_items {
-                let _ = write!(s, r#"<s v="{}"/>"#, escape(item));
+        // A level field of another field's grouping has no values of its
+        // own; Excel writes neither values nor a `sharedItems` for it.
+        if field.grouping.as_ref().is_none_or(|g| g.parent.is_none()) {
+            if field.shared_items.is_empty() {
+                // What excelize writes: one blank item, no values.
+                s.push_str(r#"<sharedItems containsBlank="1"><m/></sharedItems>"#);
+            } else {
+                let _ = write!(s, r#"<sharedItems count="{}">"#, field.shared_items.len());
+                for item in &field.shared_items {
+                    let _ = write!(s, r#"<s v="{}"/>"#, escape(item));
+                }
+                s.push_str("</sharedItems>");
             }
-            s.push_str("</sharedItems>");
+        }
+        if let Some(grouping) = &field.grouping {
+            field_group(&mut s, &fields, i, grouping);
         }
         s.push_str("</cacheField>");
     }
@@ -235,7 +249,127 @@ fn render_cache(cache: &PivotCache) -> String {
     s
 }
 
+/// The cache's fields as the file spells them. A date grouping with several
+/// parts needs one `groupBy` per part, and a part that is not the finest
+/// travels as its own cache field, the way Excel lays a grouping out: the
+/// base field carries the finest part itself, one `databaseField="0"` field
+/// per coarser part follows the fields of the model, coarsest first, and
+/// the base points at the senior-most of them with `par`.
+struct CacheFields<'a> {
+    fields: Vec<Cow<'a, CacheField>>,
+    /// Whether the field was generated for a level of another field's
+    /// grouping.
+    generated: Vec<bool>,
+    /// For each field of the model, the fields the file lists for it: the
+    /// level fields senior first, then the field itself.
+    slots: Vec<Vec<i32>>,
+}
+
+fn expand_fields(cache: &PivotCache) -> CacheFields<'_> {
+    let mut fields: Vec<Cow<'_, CacheField>> = cache.fields.iter().map(Cow::Borrowed).collect();
+    let mut slots: Vec<Vec<i32>> = (0..cache.fields.len())
+        .map(|i| i32::try_from(i).map(|i| vec![i]).unwrap_or_default())
+        .collect();
+    let mut generated = vec![false; cache.fields.len()];
+    for (i, field) in cache.fields.iter().enumerate() {
+        let Some(grouping) = &field.grouping else {
+            continue;
+        };
+        if grouping.parent.is_some() || grouping.parts.len() < 2 {
+            continue;
+        }
+        let Ok(base) = i32::try_from(i) else {
+            continue;
+        };
+        // Senior first, so the file gets them coarsest first and `par`
+        // names the last.
+        let mut parts = grouping.parts.clone();
+        parts.sort();
+        let mut level_fields = vec![base];
+        for part in parts[..parts.len() - 1].iter().rev() {
+            let Some(parent) = u32::try_from(i).ok() else {
+                break;
+            };
+            let index = i32::try_from(fields.len()).unwrap_or(i32::MAX);
+            level_fields.insert(0, index);
+            fields.push(Cow::Owned(CacheField {
+                name: part.field_name().into(),
+                number_format: Some(0),
+                shared_items: Vec::new(),
+                formula: None,
+                grouping: Some(Grouping {
+                    parts: vec![*part],
+                    range: None,
+                    parent: Some(parent),
+                }),
+            }));
+            generated.push(true);
+        }
+        slots[i] = level_fields;
+    }
+    CacheFields {
+        fields,
+        generated,
+        slots,
+    }
+}
+
+impl CacheFields<'_> {
+    /// The fields the file lists for one field of the model; an index that
+    /// is not a field, such as the values field's `-2`, stands for itself.
+    fn slots_of(&self, x: i32) -> Cow<'_, [i32]> {
+        match usize::try_from(x).ok().and_then(|f| self.slots.get(f)) {
+            Some(slots) => Cow::Borrowed(slots.as_slice()),
+            None => Cow::Owned(vec![x]),
+        }
+    }
+
+    /// The senior-most level field of the grouping at `at`, when it has
+    /// level fields of its own: the last of them, as Excel appends the
+    /// senior ones last. A level field itself points at none.
+    fn par_of(&self, at: usize) -> Option<i32> {
+        let own = u32::try_from(at).ok()?;
+        if self.fields.get(at)?.grouping.as_ref()?.parent.is_some() {
+            return None;
+        }
+        (0..self.fields.len())
+            .filter(|&j| j != at)
+            .filter(|&j| self.fields[j].grouping.as_ref().and_then(|g| g.parent) == Some(own))
+            .max()
+            .and_then(|j| i32::try_from(j).ok())
+    }
+}
+
+/// The `<fieldGroup>` of one field: `base` names the field whose values the
+/// levels come from - the field itself when the grouping rides it - and
+/// `par`, on a base field, the senior-most level field of its grouping.
+fn field_group(s: &mut String, fields: &CacheFields<'_>, at: usize, grouping: &Grouping) {
+    let base = grouping
+        .parent
+        .unwrap_or_else(|| u32::try_from(at).unwrap_or(u32::MAX));
+    let par = fields.par_of(at);
+    let _ = write!(s, r#"<fieldGroup base="{base}""#);
+    if let Some(par) = par {
+        let _ = write!(s, r#" par="{par}""#);
+    }
+    s.push('>');
+    if let Some(range) = &grouping.range {
+        let _ = write!(
+            s,
+            concat!(
+                r#"<rangePr autoStart="0" autoEnd="0" startNum="{}" endNum="{}" "#,
+                r#"groupInterval="{}"/>"#
+            ),
+            range.start, range.end, range.interval
+        );
+    } else if let Some(finest) = grouping.parts.iter().copied().max() {
+        let _ = write!(s, r#"<rangePr groupBy="{}"/>"#, finest.as_str());
+    }
+    s.push_str("</fieldGroup>");
+}
+
 fn render_table(table: &PivotTable, cache: &PivotCache) -> String {
+    let fields = expand_fields(cache);
     let mut s = format!(
         r#"{}<pivotTableDefinition xmlns="{}" name="{}" cacheId="{}" dataCaption="Values" updatedVersion="6" minRefreshableVersion="3" createdVersion="6""#,
         XML_DECL,
@@ -257,17 +391,21 @@ fn render_table(table: &PivotTable, cache: &PivotCache) -> String {
         table.first_data_col.max(1)
     );
 
-    render_fields(&mut s, table, cache);
+    render_fields(&mut s, table, &fields);
 
     for (list, tag, items) in [
         (&table.row_fields, "rowFields", "rowItems"),
         (&table.column_fields, "colFields", "colItems"),
     ] {
-        if list.is_empty() {
+        let listed: Vec<i32> = list
+            .iter()
+            .flat_map(|&x| fields.slots_of(x).into_owned())
+            .collect();
+        if listed.is_empty() {
             continue;
         }
-        let _ = write!(s, r#"<{tag} count="{}">"#, list.len());
-        for x in list {
+        let _ = write!(s, r#"<{tag} count="{}">"#, listed.len());
+        for x in listed {
             let _ = write!(s, r#"<field x="{x}"/>"#);
         }
         // A placeholder for the laid-out rows, rebuilt on open.
@@ -276,7 +414,9 @@ fn render_table(table: &PivotTable, cache: &PivotCache) -> String {
     if !table.page_fields.is_empty() {
         let _ = write!(s, r#"<pageFields count="{}">"#, table.page_fields.len());
         for &fld in &table.page_fields {
-            let _ = write!(s, r#"<pageField fld="{fld}""#);
+            // A grouped field's filter sits on its senior-most level.
+            let written = fields.slots_of(fld).first().copied().unwrap_or(fld);
+            let _ = write!(s, r#"<pageField fld="{written}""#);
             // The field's items are its shared items in order, so the item's
             // place among those is its index.
             let at = usize::try_from(fld).ok().and_then(|f| {
@@ -333,51 +473,60 @@ fn render_table(table: &PivotTable, cache: &PivotCache) -> String {
     s
 }
 
-/// `<pivotFields>`: one per cache field, placed on the axis the report's
-/// lists put it on.
-fn render_fields(s: &mut String, table: &PivotTable, cache: &PivotCache) {
-    let count = cache.fields.len().max(table.fields.len());
+/// `<pivotFields>`: one per cache field as the file spells them, placed on
+/// the axis the report's lists put it on.
+fn render_fields(s: &mut String, table: &PivotTable, fields: &CacheFields<'_>) {
+    let count = fields.fields.len().max(table.fields.len());
+    let mut axis_of: Vec<Option<&'static str>> = vec![None; count];
+    for (list, axis) in [
+        (&table.row_fields, "axisRow"),
+        (&table.column_fields, "axisCol"),
+        (&table.page_fields, "axisPage"),
+    ] {
+        for &x in list {
+            for slot in fields.slots_of(x).iter() {
+                if let Some(at) = usize::try_from(*slot).ok().filter(|&at| at < count) {
+                    axis_of[at] = Some(axis);
+                }
+            }
+        }
+    }
     let _ = write!(s, r#"<pivotFields count="{count}">"#);
     for i in 0..count {
-        let index = i32::try_from(i).unwrap_or(i32::MAX);
-        let field = table.fields.get(i).cloned().unwrap_or_default();
-        let axis = if table.row_fields.contains(&index) {
-            Some("axisRow")
-        } else if table.column_fields.contains(&index) {
-            Some("axisCol")
-        } else if table.page_fields.contains(&index) {
-            Some("axisPage")
-        } else {
-            None
-        };
+        let generated =
+            i < fields.fields.len() && fields.generated.get(i).copied().unwrap_or(false);
+        let field = fields.fields.get(i).cloned().unwrap_or_default();
+        let model = if generated { None } else { table.fields.get(i) };
+        let axis = axis_of.get(i).copied().flatten();
         s.push_str("<pivotField");
         if let Some(axis) = axis {
             let _ = write!(s, r#" axis="{axis}""#);
         }
-        let data = field.data_field
-            || table
-                .data_fields
-                .iter()
-                .any(|d| usize::try_from(d.field).is_ok_and(|f| f == i));
+        let data = model.is_some_and(|f| f.data_field)
+            || !generated
+                && table
+                    .data_fields
+                    .iter()
+                    .any(|d| usize::try_from(d.field).is_ok_and(|f| f == i));
         if data {
             s.push_str(r#" dataField="1""#);
         }
-        s.push_str(if field.show_all {
+        s.push_str(if model.is_some_and(|f| f.show_all) {
             r#" showAll="1""#
         } else {
             r#" showAll="0""#
         });
-        if !field.default_subtotal {
+        if model.is_some_and(|f| !f.default_subtotal) {
             s.push_str(r#" defaultSubtotal="0""#);
         }
-        let shared = cache.fields.get(i).map_or(0, |f| f.shared_items.len());
-        let items = shared + usize::from(field.default_subtotal);
+        let shared = field.shared_items.len();
+        let items = shared + usize::from(model.is_some_and(|f| f.default_subtotal));
         if axis.is_some() && items > 0 {
             let _ = write!(s, r#"><items count="{items}">"#);
             for x in 0..shared {
                 let _ = write!(s, r#"<item x="{x}"/>"#);
             }
-            if field.default_subtotal {
+            if items > shared {
                 s.push_str(r#"<item t="default"/>"#);
             }
             s.push_str("</items></pivotField>");

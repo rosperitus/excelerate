@@ -19,15 +19,33 @@
 //! without regard to case, then `FALSE`/`TRUE`, then errors, blanks last.
 //! Text items that differ only in case are one item, spelled as first seen.
 //!
-//! ponytail: the compact and outline forms, `show_all`, hidden items, number
-//! formats on the values, sorting by value and calculated fields are not
-//! laid out; Excel lays the report out again on open anyway, as the writer
-//! marks the cache `refreshOnLoad`.
+//! A **calculated field** works on any axis: in the values area it is
+//! aggregated by [`Subtotal`]'s functions over the values its formula makes
+//! of each row, on the other axes it groups by its distinct computed
+//! values. The formula - arithmetic over the other fields of the same row,
+//! without functions - is [`CacheField::formula`], and
+//! [`eval_pivot_formula`] evaluates one for the application.
+//!
+//! A **grouped** field spreads over the axis: a date grouping ([`Grouping`])
+//! contributes one level per part, senior parts first, a number grouping
+//! one span level, values outside the range falling into the rest group.
+//! The labels of the levels come from [`PivotCaptions`], which carries the
+//! words an English Excel writes.
+//!
+//! ponytail: the compact and outline forms, `show_all`, hidden items,
+//! number formats on the values, sorting by value, grouping over seconds,
+//! minutes or hours and a day grouping with a step above one day are not
+//! laid out; a grouping over a discrete list of items (`discretePr`) reads
+//! as no grouping. Excel lays the report out again on open anyway, as the
+//! writer marks the cache `refreshOnLoad`.
 
 use crate::coordinate::{CellRef, Col, Range, Row};
 use crate::error::{CellError, Error, Result};
-use crate::model::pivot::{CacheField, PivotAxis, PivotField, PivotTable, Subtotal};
+use crate::model::pivot::{
+    CacheField, DatePart, PivotAxis, PivotField, PivotTable, RangeGroup, Subtotal,
+};
 use crate::model::{CellValue, Spreadsheet, Worksheet};
+use crate::shared::date::{self, Epoch};
 use std::cmp::Ordering;
 
 /// The index the format gives the values field on an axis.
@@ -76,7 +94,26 @@ pub struct PivotCaptions {
     pub var: String,
     /// "Varp of {}".
     pub var_p: String,
+    /// The header over a year level's labels: "Years".
+    pub years: String,
+    /// The header over a quarter level's labels: "Quarters".
+    pub quarters: String,
+    /// The header over a month level's labels: "Months".
+    pub months: String,
+    /// The header over a day level's labels: "Days".
+    pub days: String,
+    /// A quarter item's label, the number in place of `{}`: "Qtr1".
+    pub quarter: String,
+    /// What a value outside a span grouping's range is shown as: "(other)".
+    pub other: String,
+    /// A month item's label, January first: "Jan", "Feb", ...
+    pub month_names: Vec<String>,
 }
+
+/// The English month labels, for a caller that passed fewer than twelve.
+const MONTH_NAMES: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
 
 impl Default for PivotCaptions {
     fn default() -> Self {
@@ -97,11 +134,36 @@ impl Default for PivotCaptions {
             std_dev_p: "StdDevp of {}".into(),
             var: "Var of {}".into(),
             var_p: "Varp of {}".into(),
+            years: "Years".into(),
+            quarters: "Quarters".into(),
+            months: "Months".into(),
+            days: "Days".into(),
+            quarter: "Qtr{}".into(),
+            other: "(other)".into(),
+            month_names: MONTH_NAMES.iter().map(|m| (*m).into()).collect(),
         }
     }
 }
 
 impl PivotCaptions {
+    /// A month item's label, January first.
+    fn month_name(&self, month: u32) -> &str {
+        let at = month.saturating_sub(1).min(11) as usize;
+        self.month_names
+            .get(at)
+            .map_or(MONTH_NAMES[at], String::as_str)
+    }
+
+    /// The header over a date part's labels: "Years" for the years.
+    fn part_name(&self, part: DatePart) -> &String {
+        match part {
+            DatePart::Years => &self.years,
+            DatePart::Quarters => &self.quarters,
+            DatePart::Months => &self.months,
+            DatePart::Days => &self.days,
+        }
+    }
+
     const fn function(&self, f: Subtotal) -> &String {
         match f {
             Subtotal::Sum => &self.sum,
@@ -133,6 +195,62 @@ fn fill(template: &str, name: &str) -> String {
 /// field's axis; and its cache takes the source's headings as field names and
 /// the items of the fields on an axis as shared items.
 ///
+/// The fields of the report that sit on an axis, and the source columns the
+/// report reads: everything the definition names, except the fields with no
+/// column of their own - a calculated field computes one, a level of a
+/// grouping derives one from its parent's values. A formula's inputs are
+/// read even when no axis asks for them, and so are the values a grouping's
+/// levels derive from.
+fn columns_to_read(
+    def: &PivotTable,
+    cache_fields: &[CacheField],
+    count: usize,
+) -> Result<(Vec<usize>, Vec<usize>)> {
+    let on_axis: Vec<usize> = def
+        .row_fields
+        .iter()
+        .chain(&def.column_fields)
+        .chain(&def.page_fields)
+        .filter_map(|&x| usize::try_from(x).ok())
+        .collect();
+    let mut read: Vec<usize> = on_axis
+        .iter()
+        .copied()
+        .chain(
+            def.data_fields
+                .iter()
+                .filter_map(|d| usize::try_from(d.field).ok()),
+        )
+        .filter(|&f| !cache_fields.get(f).is_some_and(is_computed))
+        .collect();
+    // A formula's inputs are read even when no axis asks for them.
+    for field in cache_fields {
+        let Some(text) = field.formula.as_deref() else {
+            continue;
+        };
+        let terms = Terms::parse(text).ok_or_else(|| bad(formula_error(field)))?;
+        for name in terms.names() {
+            if let Some(at) = column_of(name, cache_fields)
+                && at < count
+                && !read.contains(&at)
+            {
+                read.push(at);
+            }
+        }
+    }
+    // The values a grouping's levels are derived from.
+    for grouping in cache_fields.iter().filter_map(|f| f.grouping.as_ref()) {
+        if let Some(parent) = grouping
+            .parent
+            .and_then(|p| usize::try_from(p).ok())
+            .filter(|&p| p < count && !read.contains(&p))
+        {
+            read.push(parent);
+        }
+    }
+    Ok((on_axis, read))
+}
+
 /// The source is the cache's sheet and range (the report's own sheet when the
 /// cache names none), or its name: a table or a defined name. Its first row
 /// names the fields.
@@ -189,7 +307,8 @@ fn fill(template: &str, name: &str) -> String {
 /// [`Error::SheetIndexOutOfRange`] for a sheet the book does not have;
 /// [`Error::InvalidRange`] for a report that does not exist, has no location
 /// or no cache, a source that cannot be found or has an empty heading, a
-/// field index past the source's columns, or a report that would leave the
+/// field index past the cache's fields, a formula that does not compute, a
+/// grouping this crate does not lay out, or a report that would leave the
 /// sheet or overlap its source. Nothing is changed then.
 pub fn refresh_pivot(
     book: &mut Spreadsheet,
@@ -197,6 +316,7 @@ pub fn refresh_pivot(
     table: usize,
     captions: &PivotCaptions,
 ) -> Result<Range> {
+    let epoch = book.epoch;
     let ws = book
         .sheet(sheet)
         .ok_or(Error::SheetIndexOutOfRange(sheet))?;
@@ -224,36 +344,32 @@ pub fn refresh_pivot(
         .ok_or(Error::SheetIndexOutOfRange(source_sheet))?;
     let names = headings(src, source)?;
     let count = names.len();
+    let cache_fields = book.pivot_caches[cache_at].fields.clone();
+    let width = count.max(cache_fields.len());
 
-    check_fields(&def, count)?;
-    normalise(&mut def, &names, captions);
-    let on_axis: Vec<usize> = def
-        .row_fields
-        .iter()
-        .chain(&def.column_fields)
-        .chain(&def.page_fields)
-        .filter_map(|&x| usize::try_from(x).ok())
-        .collect();
-    let used: Vec<usize> = on_axis
-        .iter()
-        .copied()
-        .chain(
-            def.data_fields
-                .iter()
-                .filter_map(|d| usize::try_from(d.field).ok()),
-        )
-        .collect();
-    let data = records(src, source, count, &used)?;
+    check_fields(&def, count, cache_fields.len())?;
+    check_grouping(&cache_fields, count)?;
+    normalise(&mut def, &names, &cache_fields, captions);
+    let (on_axis, read) = columns_to_read(&def, &cache_fields, count)?;
+    let mut data = records(src, source, width, &read)?;
     let height = data.iter().map(Vec::len).max().unwrap_or(0);
+    calculated_columns(&mut data, &cache_fields, height);
+
+    // The axes as the report lays them out: a grouped field contributes one
+    // level per part, senior first, or one span level; the columns they
+    // need grow onto `data`.
+    let plans = Plans::build(&def, &cache_fields, &names, captions, epoch, &mut data);
 
     // The page filters, and the cache's items for every field on an axis.
     let mut shared: Vec<Vec<String>> = vec![Vec::new(); count];
     for &f in &on_axis {
-        shared[f] = items_of(&data[f]);
+        if f < count {
+            shared[f] = items_of(&data[f]);
+        }
     }
-    let kept = page_filter(&mut def, &data, &shared, height);
+    let kept = page_filter(&mut def, &plans, &data, height);
 
-    let layout = Layout::new(&def, &data, &kept);
+    let layout = Layout::new(&def, &plans, &data, &kept);
     let rows = layout.header_rows + layout.rows.len();
     let cols = layout.label_cols + layout.cols.len();
     let start = old.start;
@@ -266,22 +382,30 @@ pub fn refresh_pivot(
             def.name
         )));
     }
-    let cells = layout.cells(&def, &data, &names, captions);
+    let cells = layout.cells(&def, &data, captions, &plans);
 
     def.location = Some(area);
     def.first_data_row = u32::try_from(layout.header_rows).unwrap_or(u32::MAX);
     def.first_data_col = u32::try_from(layout.label_cols).unwrap_or(u32::MAX);
     let cache = &mut book.pivot_caches[cache_at];
-    cache.fields = names
+    let old_fields = std::mem::take(&mut cache.fields);
+    let mut fields: Vec<CacheField> = names
         .into_iter()
         .zip(shared)
         .enumerate()
         .map(|(i, (name, shared_items))| CacheField {
             name,
-            number_format: cache.fields.get(i).and_then(|f| f.number_format),
+            number_format: old_fields.get(i).and_then(|f| f.number_format),
             shared_items,
+            formula: old_fields.get(i).and_then(|f| f.formula.clone()),
+            grouping: old_fields.get(i).and_then(|f| f.grouping.clone()),
         })
         .collect();
+    // The fields past the source's columns - calculated fields, and the
+    // level fields a foreign file adds per level of a grouping - keep their
+    // places, and so do the indexes that point at them.
+    fields.extend(old_fields.into_iter().skip(count));
+    cache.fields = fields;
 
     let ws = book
         .sheet_mut(sheet)
@@ -302,22 +426,204 @@ pub fn refresh_pivot(
     Ok(area)
 }
 
+/// One level a field on an axis contributes: the column its labels come
+/// from and the header over them.
+struct Slot {
+    /// The place of the column in the data.
+    column: usize,
+    /// The header the labels sit under.
+    header: String,
+}
+
+/// The axes as the report lays them out. A field with a grouping
+/// contributes one entry per level - date parts senior first, or one span
+/// level - and the entries carry the columns the levels were derived into.
+struct Plans {
+    rows: Vec<Slot>,
+    /// `-2` where the values field sits, a level's column elsewhere.
+    row_list: Vec<i32>,
+    /// Whether each entry gets a subtotal when a deeper level follows.
+    row_subtotals: Vec<bool>,
+    cols: Vec<Slot>,
+    col_list: Vec<i32>,
+    col_subtotals: Vec<bool>,
+    /// Each page field's own level column, in the order the definition
+    /// lists the fields.
+    pages: Vec<usize>,
+}
+
+impl Plans {
+    fn build(
+        def: &PivotTable,
+        cache_fields: &[CacheField],
+        names: &[String],
+        captions: &PivotCaptions,
+        epoch: Epoch,
+        data: &mut Vec<Vec<Item>>,
+    ) -> Self {
+        let (rows, row_list, row_subtotals) = expand_axis(
+            &def.row_fields,
+            def,
+            cache_fields,
+            names,
+            captions,
+            epoch,
+            data,
+        );
+        let (cols, col_list, col_subtotals) = expand_axis(
+            &def.column_fields,
+            def,
+            cache_fields,
+            names,
+            captions,
+            epoch,
+            data,
+        );
+        let (page_slots, _, _) = expand_axis(
+            &def.page_fields,
+            def,
+            cache_fields,
+            names,
+            captions,
+            epoch,
+            data,
+        );
+        let pages = page_slots.iter().map(|slot| slot.column).collect();
+        Self {
+            rows,
+            row_list,
+            row_subtotals,
+            cols,
+            col_list,
+            col_subtotals,
+            pages,
+        }
+    }
+}
+
+/// Expands one axis's fields into their entries: a field with a grouping
+/// becomes one entry per level, any other field stands for its own column,
+/// and the values field's `-2` rides along as it is. The derived columns
+/// the levels need grow onto `data`.
+fn expand_axis(
+    list: &[i32],
+    def: &PivotTable,
+    cache_fields: &[CacheField],
+    names: &[String],
+    captions: &PivotCaptions,
+    epoch: Epoch,
+    data: &mut Vec<Vec<Item>>,
+) -> (Vec<Slot>, Vec<i32>, Vec<bool>) {
+    let mut slots = Vec::new();
+    let mut entries = Vec::new();
+    let mut subtotals = Vec::new();
+    for &x in list {
+        let Ok(f) = usize::try_from(x) else {
+            // The values field: its header is the word for it, and the
+            // axis's entries know `-2` on their own.
+            slots.push(Slot {
+                column: usize::MAX,
+                header: captions.values.clone(),
+            });
+            entries.push(x);
+            subtotals.push(false);
+            continue;
+        };
+        let subtotal = def
+            .fields
+            .get(f)
+            .is_some_and(|field| field.default_subtotal);
+        let own_header = || {
+            names
+                .get(f)
+                .cloned()
+                .unwrap_or_else(|| captions.values.clone())
+        };
+        let Some(grouping) = cache_fields
+            .get(f)
+            .and_then(|field| field.grouping.as_ref())
+        else {
+            slots.push(Slot {
+                column: f,
+                header: own_header(),
+            });
+            entries.push(x);
+            subtotals.push(subtotal);
+            continue;
+        };
+        // The values the levels are derived from: another field's, when the
+        // field is a level of a foreign file's grouping, else its own.
+        let source = grouping
+            .parent
+            .and_then(|p| usize::try_from(p).ok())
+            .unwrap_or(f);
+        let values = data.get(source).cloned().unwrap_or_default();
+        // The parts of a grouping made in this crate carry every level, and
+        // their headers are the words for the parts; a field of a foreign
+        // file carries one level, under the field's own name, as Excel
+        // spells it.
+        let multi = grouping.parent.is_none() && grouping.parts.len() > 1;
+        if let Some(range) = &grouping.range {
+            let column = data.len();
+            data.push(span_column(&values, range, &captions.other));
+            slots.push(Slot {
+                column,
+                header: own_header(),
+            });
+            entries.push(level_index(column));
+            subtotals.push(subtotal);
+        }
+        let mut parts = grouping.parts.clone();
+        parts.sort();
+        for part in parts {
+            let column = data.len();
+            data.push(part_column(&values, part, epoch, captions));
+            let header = if multi {
+                captions.part_name(part).clone()
+            } else {
+                own_header()
+            };
+            slots.push(Slot { column, header });
+            entries.push(level_index(column));
+            subtotals.push(subtotal);
+        }
+    }
+    (slots, entries, subtotals)
+}
+
+/// The place of a derived column on an axis. The columns a report derives
+/// are counted in tens, far below what `i32` holds.
+fn level_index(column: usize) -> i32 {
+    i32::try_from(column).unwrap_or(i32::MAX)
+}
+
 /// The records the page filters let through. A filter whose item the source
-/// no longer has shows everything again, as in Excel.
+/// no longer has shows everything again, as in Excel. A grouped field's
+/// filter matches its senior-most level.
 fn page_filter(
     def: &mut PivotTable,
+    plans: &Plans,
     data: &[Vec<Item>],
-    shared: &[Vec<String>],
     height: usize,
 ) -> Vec<usize> {
     let mut kept: Vec<usize> = (0..height).collect();
-    for &p in &def.page_fields {
-        let Ok(p) = usize::try_from(p) else { continue };
+    for (i, &p) in def.page_fields.iter().enumerate() {
+        let Ok(p) = usize::try_from(p) else {
+            continue;
+        };
+        let Some(&column) = plans.pages.get(i) else {
+            continue;
+        };
         let field = &mut def.fields[p];
         if let Some(wanted) = &field.page_item {
+            let shown = |r: usize| {
+                data.get(column)
+                    .and_then(|c| c.get(r))
+                    .map_or(String::new(), |i| i.text().to_lowercase())
+            };
             let wanted = wanted.to_lowercase();
-            if shared[p].iter().any(|s| s.to_lowercase() == wanted) {
-                kept.retain(|&r| data[p][r].text().to_lowercase() == wanted);
+            if (0..height).any(|r| shown(r) == wanted) {
+                kept.retain(|&r| shown(r) == wanted);
             } else {
                 field.page_item = None;
             }
@@ -344,9 +650,10 @@ fn offset(start: CellRef, rows: usize, cols: usize) -> Option<CellRef> {
     Some(CellRef::new(Col::new(col)?, Row::new(row)?))
 }
 
-/// Every field the definition names is a column of the source.
-fn check_fields(def: &PivotTable, count: usize) -> Result<()> {
-    let in_source = |x: i32| usize::try_from(x).is_ok_and(|x| x < count);
+/// Every field the definition names is a column of the source, or a field
+/// of the cache that has no column of its own: a calculated field, or a
+/// level of another field's grouping.
+fn check_fields(def: &PivotTable, count: usize, cache_len: usize) -> Result<()> {
     let listed = def
         .row_fields
         .iter()
@@ -355,17 +662,166 @@ fn check_fields(def: &PivotTable, count: usize) -> Result<()> {
         .copied()
         .filter(|&x| x != VALUES);
     let data_listed = def.data_fields.iter().map(|d| i32::try_from(d.field));
-    match listed
-        .map(Ok)
-        .chain(data_listed)
-        .find(|x| !x.is_ok_and(in_source))
-    {
-        Some(x) => Err(bad(format!(
-            "pivot table {:?} uses field {}, and its source has {count}",
-            def.name,
-            x.map_or_else(|_| "past i32".to_owned(), |x| x.to_string())
-        ))),
-        None => Ok(()),
+    let in_source = |x: i32| usize::try_from(x).is_ok_and(|x| x < count);
+    let in_cache = |x: i32| usize::try_from(x).is_ok_and(|x| x < cache_len);
+    for x in listed.map(Ok).chain(data_listed) {
+        if !x.is_ok_and(|x| in_source(x) || in_cache(x)) {
+            return Err(bad(format!(
+                "pivot table {:?} uses field {}, and the source has {count} columns",
+                def.name,
+                x.map_or_else(|_| "past i32".to_owned(), |x| x.to_string())
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// A grouping a refresh can lay out: a calculated field cannot be grouped,
+/// a level field's parent must be a plain column of the source, a span
+/// grouping needs a positive interval, and a grouping needs something to
+/// group over.
+fn check_grouping(fields: &[CacheField], count: usize) -> Result<()> {
+    for (i, field) in fields.iter().enumerate() {
+        if field.formula.is_some() && field.grouping.is_some() {
+            return Err(bad(format!(
+                "cache field {:?} has both a formula and a grouping",
+                field.name
+            )));
+        }
+        let Some(grouping) = &field.grouping else {
+            continue;
+        };
+        if let Some(range) = &grouping.range {
+            let spans = range.interval.is_finite()
+                && range.interval > 0.0
+                && range.start.is_finite()
+                && range.end.is_finite();
+            if !spans {
+                return Err(bad(format!(
+                    "cache field {:?} groups numbers over a range that is not a range",
+                    field.name
+                )));
+            }
+            if !grouping.parts.is_empty() {
+                return Err(bad(format!(
+                    "cache field {:?} groups numbers and dates at once",
+                    field.name
+                )));
+            }
+        }
+        if grouping.parts.is_empty() && grouping.range.is_none() {
+            return Err(bad(format!("cache field {:?} groups nothing", field.name)));
+        }
+        match grouping.parent {
+            Some(parent) => {
+                // The parent must be a column of the source with values of
+                // its own: not a calculated field, and not a level field of
+                // yet another grouping.
+                let plain = usize::try_from(parent).is_ok_and(|p| {
+                    p < count
+                        && fields.get(p).is_some_and(|f| {
+                            f.formula.is_none()
+                                && f.grouping.as_ref().and_then(|g| g.parent).is_none()
+                        })
+                });
+                if !plain {
+                    return Err(bad(format!(
+                        "cache field {:?} groups field {parent}, which is not a plain column of the source",
+                        field.name
+                    )));
+                }
+            }
+            // A grouping without a parent derives its levels from the
+            // field's own values, which only a column of the source has.
+            None if i >= count => {
+                return Err(bad(format!(
+                    "cache field {:?} has no column in the source to group",
+                    field.name
+                )));
+            }
+            None => {}
+        }
+    }
+    Ok(())
+}
+
+/// Whether the field has no column of its own: its values are computed from
+/// the other fields of the row, or derived from another field's values.
+fn is_computed(field: &CacheField) -> bool {
+    field.formula.is_some() || field.grouping.as_ref().is_some_and(|g| g.parent.is_some())
+}
+
+/// The column of the field a formula names, without regard to case.
+fn column_of(name: &str, fields: &[CacheField]) -> Option<usize> {
+    let name = name.to_lowercase();
+    fields.iter().position(|f| f.name.to_lowercase() == name)
+}
+
+fn formula_error(field: &CacheField) -> String {
+    format!(
+        "cache field {:?} has a formula that does not compute: {:?}",
+        field.name,
+        field.formula.as_deref().unwrap_or_default()
+    )
+}
+
+/// The columns of the calculated fields: one per field with a formula,
+/// computed row by row from the other fields' values of that row. A formula
+/// that names another calculated field waits for that one's column; a
+/// formula that cannot compute is an error, which
+/// [`refresh_pivot`](crate::edit::refresh_pivot) refuses before anything is
+/// laid out.
+fn calculated_columns(data: &mut [Vec<Item>], fields: &[CacheField], height: usize) {
+    let formulas: Vec<(usize, Terms)> = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, field)| {
+            field
+                .formula
+                .as_deref()
+                .and_then(Terms::parse)
+                .and_then(|t| t.bind(&|name| column_of(name, fields)).map(|t| (i, t)))
+        })
+        .collect();
+    // A column is known when it was read or its field's formula is done;
+    // a formula over nothing but known columns can compute.
+    let mut done = vec![false; fields.len()];
+    for _ in 0..=formulas.len() {
+        let mut progressed = false;
+        for (i, terms) in &formulas {
+            if done[*i] {
+                continue;
+            }
+            let ready = terms.named().iter().all(|&j| {
+                data.get(j).is_some_and(|c| !c.is_empty()) || done.get(j).copied().unwrap_or(false)
+            });
+            if !ready {
+                continue;
+            }
+            let mut column = Vec::with_capacity(height);
+            for row in 0..height {
+                let value = |at: usize| {
+                    data.get(at)
+                        .and_then(|c| c.get(row))
+                        .and_then(|item| match item {
+                            Item::Number(n) => Some(*n),
+                            _ => None,
+                        })
+                };
+                column.push(match terms.eval(&value) {
+                    Some(n) => Item::Number(n),
+                    None => Item::Blank,
+                });
+            }
+            if let Some(slot) = data.get_mut(*i) {
+                *slot = column;
+            }
+            done[*i] = true;
+            progressed = true;
+        }
+        if !progressed {
+            break;
+        }
     }
 }
 
@@ -488,10 +944,15 @@ fn records(
 }
 
 /// Brings the definition in line with its source, as Excel does on refresh.
-fn normalise(def: &mut PivotTable, names: &[String], captions: &PivotCaptions) {
+fn normalise(
+    def: &mut PivotTable,
+    names: &[String],
+    cache_fields: &[CacheField],
+    captions: &PivotCaptions,
+) {
     let count = names.len();
     def.fields.resize(
-        count,
+        count.max(cache_fields.len()),
         PivotField {
             default_subtotal: true,
             ..PivotField::default()
@@ -529,9 +990,16 @@ fn normalise(def: &mut PivotTable, names: &[String], captions: &PivotCaptions) {
             continue;
         }
         let data = &def.data_fields[i];
+        // A calculated field sits past the source's columns: its caption
+        // names the cache field, not a heading.
         let source = usize::try_from(data.field)
             .ok()
             .and_then(|f| names.get(f))
+            .or_else(|| {
+                cache_fields
+                    .get(usize::try_from(data.field).unwrap_or(usize::MAX))
+                    .map(|f| &f.name)
+            })
             .map_or("", String::as_str);
         let name = fill(captions.function(data.subtotal), source);
         let mut unique = name.clone();
@@ -553,6 +1021,13 @@ fn normalise(def: &mut PivotTable, names: &[String], captions: &PivotCaptions) {
 enum Item {
     Number(f64),
     Text(String),
+    /// A grouping level's label, with the place it takes among the column's
+    /// labels: calendar order for the parts of a date, span order for a
+    /// number grouping, which is why the labels do not sort as text.
+    Level {
+        label: String,
+        order: u32,
+    },
     Bool(bool),
     Error(CellError),
     Blank,
@@ -581,7 +1056,7 @@ impl Item {
     const fn rank(&self) -> u8 {
         match self {
             Self::Number(_) => 0,
-            Self::Text(_) => 1,
+            Self::Text(_) | Self::Level { .. } => 1,
             Self::Bool(_) => 2,
             Self::Error(_) => 3,
             Self::Blank => 4,
@@ -592,6 +1067,16 @@ impl Item {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Self::Number(a), Self::Number(b)) => a.partial_cmp(b).unwrap_or(Ordering::Equal),
+            (
+                Self::Level {
+                    order: a,
+                    label: la,
+                },
+                Self::Level {
+                    order: b,
+                    label: lb,
+                },
+            ) => a.cmp(b).then_with(|| la.cmp(lb)),
             (Self::Text(a), Self::Text(b)) => {
                 if a.is_ascii() && b.is_ascii() {
                     a.bytes()
@@ -619,6 +1104,7 @@ impl Item {
                 crate::shared::date::Epoch::Windows1900,
             ),
             Self::Text(t) => t.clone(),
+            Self::Level { label, .. } => label.clone(),
             Self::Bool(b) => if *b { "TRUE" } else { "FALSE" }.to_owned(),
             Self::Error(e) => e.as_str().to_owned(),
             Self::Blank => String::new(),
@@ -630,6 +1116,7 @@ impl Item {
         match self {
             Self::Number(n) => CellValue::Number(*n),
             Self::Text(t) => CellValue::text(t.as_str()),
+            Self::Level { label, .. } => CellValue::text(label.as_str()),
             Self::Bool(b) => CellValue::Bool(*b),
             Self::Error(e) => CellValue::Error(*e),
             Self::Blank => CellValue::text(captions.blank.as_str()),
@@ -644,6 +1131,365 @@ impl Item {
             self.text()
         }
     }
+}
+
+/// A number the way Excel's General format shows it, which is how a span
+/// grouping's labels spell their bounds.
+fn general_number(n: f64) -> String {
+    crate::style::format::format(
+        crate::style::format::Value::Number(n),
+        crate::style::format::GENERAL,
+        Epoch::Windows1900,
+    )
+}
+
+/// One calculated field's formula, as a tree of arithmetic: numbers, field
+/// names, `+`, `-`, `*`, `/`, parentheses and a unary minus, which is what
+/// the file's `formula` attribute allows. Functions Excel has are not part
+/// of it; a `Name(` that looks like one does not parse.
+#[derive(Debug, Clone)]
+enum Terms {
+    Number(f64),
+    /// A field, named as the cache names it, apostrophes around a name with
+    /// a space or a quote of its own.
+    Name(String),
+    /// A `Name` that found its column, as [`Terms::bind`] leaves it.
+    Field(usize),
+    Sum(Box<Self>, Box<Self>),
+    Difference(Box<Self>, Box<Self>),
+    Product(Box<Self>, Box<Self>),
+    Quotient(Box<Self>, Box<Self>),
+    Negated(Box<Self>),
+}
+
+impl Terms {
+    /// Parses the text of a formula, without the leading `=`. Everything
+    /// after the last term must be spaces.
+    fn parse(text: &str) -> Option<Self> {
+        let bytes = text.as_bytes();
+        let mut at = 0;
+        let terms = Self::sum(bytes, &mut at)?;
+        skip_spaces(bytes, &mut at);
+        (at == bytes.len()).then_some(terms)
+    }
+
+    fn sum(bytes: &[u8], at: &mut usize) -> Option<Self> {
+        let mut left = Self::product(bytes, at)?;
+        loop {
+            let before = *at;
+            skip_spaces(bytes, at);
+            let plus = matches!(bytes.get(*at), Some(b'+'));
+            let minus = matches!(bytes.get(*at), Some(b'-'));
+            if !plus && !minus {
+                *at = before;
+                return Some(left);
+            }
+            *at += 1;
+            skip_spaces(bytes, at);
+            let right = Self::product(bytes, at)?;
+            left = if plus {
+                Self::Sum(Box::new(left), Box::new(right))
+            } else {
+                Self::Difference(Box::new(left), Box::new(right))
+            };
+        }
+    }
+
+    fn product(bytes: &[u8], at: &mut usize) -> Option<Self> {
+        let mut left = Self::unary(bytes, at)?;
+        loop {
+            let before = *at;
+            skip_spaces(bytes, at);
+            let times = matches!(bytes.get(*at), Some(b'*'));
+            let by = matches!(bytes.get(*at), Some(b'/'));
+            if !times && !by {
+                *at = before;
+                return Some(left);
+            }
+            *at += 1;
+            skip_spaces(bytes, at);
+            let right = Self::unary(bytes, at)?;
+            left = if times {
+                Self::Product(Box::new(left), Box::new(right))
+            } else {
+                Self::Quotient(Box::new(left), Box::new(right))
+            };
+        }
+    }
+
+    fn unary(bytes: &[u8], at: &mut usize) -> Option<Self> {
+        skip_spaces(bytes, at);
+        if bytes.get(*at) == Some(&b'-') {
+            *at += 1;
+            return Some(Self::Negated(Box::new(Self::unary(bytes, at)?)));
+        }
+        Self::primary(bytes, at)
+    }
+
+    fn primary(bytes: &[u8], at: &mut usize) -> Option<Self> {
+        skip_spaces(bytes, at);
+        match bytes.get(*at)? {
+            b'(' => {
+                *at += 1;
+                let inner = Self::sum(bytes, at)?;
+                skip_spaces(bytes, at);
+                if bytes.get(*at) == Some(&b')') {
+                    *at += 1;
+                } else {
+                    return None;
+                }
+                Some(inner)
+            }
+            b'\'' => quoted_name(bytes, at).map(Self::Name),
+            b'+' => {
+                *at += 1;
+                Self::unary(bytes, at)
+            }
+            byte if byte.is_ascii_digit() || *byte == b'.' => Self::number(bytes, at),
+            _ => Some(Self::Name(bare_name(bytes, at)?)),
+        }
+    }
+
+    fn number(bytes: &[u8], at: &mut usize) -> Option<Self> {
+        let start = *at;
+        while bytes
+            .get(*at)
+            .is_some_and(|b| b.is_ascii_digit() || *b == b'.')
+        {
+            *at += 1;
+        }
+        // The scan stopped on ASCII digits and dots, so the slice is a
+        // string.
+        let text = std::str::from_utf8(bytes.get(start..*at)?).ok()?;
+        text.parse().ok().map(Self::Number)
+    }
+
+    /// Every field name the terms mention, in no particular order.
+    fn names(&self) -> Vec<&str> {
+        match self {
+            Self::Name(name) => vec![name.as_str()],
+            Self::Number(_) | Self::Field(_) => Vec::new(),
+            Self::Sum(a, b)
+            | Self::Difference(a, b)
+            | Self::Product(a, b)
+            | Self::Quotient(a, b) => {
+                let mut out = a.names();
+                out.extend(b.names());
+                out
+            }
+            Self::Negated(a) => a.names(),
+        }
+    }
+
+    /// Turns every `Name` into the column of the cache field it names;
+    /// `None` when a name names nothing.
+    fn bind(&self, columns: &dyn Fn(&str) -> Option<usize>) -> Option<Self> {
+        match self {
+            Self::Name(name) => Some(Self::Field(columns(name)?)),
+            Self::Number(_) | Self::Field(_) => Some(self.clone()),
+            Self::Sum(a, b) => Some(Self::Sum(
+                Box::new(a.bind(columns)?),
+                Box::new(b.bind(columns)?),
+            )),
+            Self::Difference(a, b) => Some(Self::Difference(
+                Box::new(a.bind(columns)?),
+                Box::new(b.bind(columns)?),
+            )),
+            Self::Product(a, b) => Some(Self::Product(
+                Box::new(a.bind(columns)?),
+                Box::new(b.bind(columns)?),
+            )),
+            Self::Quotient(a, b) => Some(Self::Quotient(
+                Box::new(a.bind(columns)?),
+                Box::new(b.bind(columns)?),
+            )),
+            Self::Negated(a) => Some(Self::Negated(Box::new(a.bind(columns)?))),
+        }
+    }
+
+    /// The columns the terms read.
+    fn named(&self) -> Vec<usize> {
+        match self {
+            Self::Field(f) => vec![*f],
+            Self::Number(_) | Self::Name(_) => Vec::new(),
+            Self::Sum(a, b)
+            | Self::Difference(a, b)
+            | Self::Product(a, b)
+            | Self::Quotient(a, b) => {
+                let mut out = a.named();
+                out.extend(b.named());
+                out
+            }
+            Self::Negated(a) => a.named(),
+        }
+    }
+
+    /// The value of the terms over a row's fields. A field without a
+    /// number, a division by zero and a result that is not a finite number
+    /// all give `None`, which is the empty value a calculated field shows.
+    fn eval(&self, values: &dyn Fn(usize) -> Option<f64>) -> Option<f64> {
+        let value = match self {
+            Self::Number(n) => Some(*n),
+            Self::Field(f) => values(*f),
+            Self::Name(_) => None,
+            Self::Negated(a) => Some(-a.eval(values)?),
+            Self::Sum(a, b) => Some(a.eval(values)? + b.eval(values)?),
+            Self::Difference(a, b) => Some(a.eval(values)? - b.eval(values)?),
+            Self::Product(a, b) => Some(a.eval(values)? * b.eval(values)?),
+            Self::Quotient(a, b) => {
+                let by = b.eval(values)?;
+                if by == 0.0 {
+                    None
+                } else {
+                    Some(a.eval(values)? / by)
+                }
+            }
+        };
+        value.filter(|v| v.is_finite())
+    }
+}
+
+fn skip_spaces(bytes: &[u8], at: &mut usize) {
+    while bytes.get(*at).is_some_and(u8::is_ascii_whitespace) {
+        *at += 1;
+    }
+}
+
+/// A name in apostrophes, `''` inside standing for the apostrophe itself.
+fn quoted_name(bytes: &[u8], at: &mut usize) -> Option<String> {
+    *at += 1;
+    let start = *at;
+    let mut cursor = *at;
+    loop {
+        match bytes.get(cursor)? {
+            b'\'' if bytes.get(cursor + 1) == Some(&b'\'') => cursor += 2,
+            b'\'' => break,
+            _ => cursor += 1,
+        }
+    }
+    // The scan stopped on ASCII apostrophes, so the slice is a string.
+    let raw = std::str::from_utf8(bytes.get(start..cursor)?).ok()?;
+    *at = cursor + 1;
+    Some(raw.replace("''", "'"))
+}
+
+/// A name that stands bare: everything until a space or one of the signs
+/// the arithmetic is written with.
+fn bare_name(bytes: &[u8], at: &mut usize) -> Option<String> {
+    let start = *at;
+    while bytes
+        .get(*at)
+        .is_some_and(|b| !b.is_ascii_whitespace() && !b"+-*/()'".contains(b))
+    {
+        *at += 1;
+    }
+    if *at == start {
+        return None;
+    }
+    // The scan stopped on ASCII signs and spaces, so the slice is a string.
+    std::str::from_utf8(bytes.get(start..*at)?)
+        .ok()
+        .map(str::to_owned)
+}
+
+/// Evaluates one calculated field's formula - the text without the leading
+/// `=` - over a row's values, as `("Sales", 100.0)` pairs named the way the
+/// cache names its fields. Names match without regard to case; a missing
+/// name, a division by zero and a result that is not a finite number give
+/// `None`, which is the empty value [`refresh_pivot`] writes for them.
+///
+/// ```
+/// use excelerate::edit::eval_pivot_formula;
+///
+/// let row = [("Sales".to_owned(), 100.0), ("Rate".to_owned(), 0.2)];
+/// assert_eq!(eval_pivot_formula("Sales * Rate", &row), Some(20.0));
+/// assert_eq!(eval_pivot_formula("'Sales' / 0", &row), None);
+/// assert_eq!(eval_pivot_formula("-Sales + 1", &row), Some(-99.0));
+/// assert_eq!(eval_pivot_formula("SUM(Sales)", &row), None);
+/// ```
+///
+/// An empty value is what the app can show before a refresh recomputes the
+/// field from the source.
+#[must_use]
+pub fn eval_pivot_formula(formula: &str, fields: &[(String, f64)]) -> Option<f64> {
+    let terms = Terms::parse(formula)?;
+    let columns = |name: &str| {
+        fields
+            .iter()
+            .position(|(field, _)| field.to_lowercase() == name.to_lowercase())
+    };
+    let bound = terms.bind(&columns)?;
+    bound.eval(&|at| fields.get(at).map(|(_, value)| *value))
+}
+
+/// The years, quarters, months or days of a column of dates, as level
+/// items. A date that is not a number leaves a blank, and so does a serial
+/// that names no date.
+fn part_column(
+    source: &[Item],
+    part: DatePart,
+    epoch: Epoch,
+    captions: &PivotCaptions,
+) -> Vec<Item> {
+    source
+        .iter()
+        .map(|item| {
+            let Item::Number(serial) = item else {
+                return Item::Blank;
+            };
+            let Ok(date) = date::from_serial(*serial, epoch) else {
+                return Item::Blank;
+            };
+            let year = u32::try_from(date.year.max(0)).unwrap_or(u32::MAX);
+            let (label, order) = match part {
+                DatePart::Years => (year.to_string(), year),
+                DatePart::Quarters => {
+                    let quarter = date.month.saturating_sub(1) / 3 + 1;
+                    (fill(&captions.quarter, &quarter.to_string()), quarter)
+                }
+                DatePart::Months => (captions.month_name(date.month).to_owned(), date.month),
+                DatePart::Days => (
+                    format!("{:02}-{}", date.day, captions.month_name(date.month)),
+                    date.day,
+                ),
+            };
+            Item::Level { label, order }
+        })
+        .collect()
+}
+
+/// A column of numbers folded into spans of `interval` between `start` and
+/// `end`, labelled "10-20" after their bounds; values outside fall into the
+/// rest group, which sorts last.
+fn span_column(source: &[Item], range: &RangeGroup, other: &str) -> Vec<Item> {
+    source
+        .iter()
+        .map(|item| {
+            let Item::Number(value) = item else {
+                return Item::Blank;
+            };
+            if !value.is_finite() || *value < range.start || *value > range.end {
+                return Item::Level {
+                    label: other.to_owned(),
+                    order: u32::MAX,
+                };
+            }
+            let at = ((*value - range.start) / range.interval).floor();
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "the floor is taken above and a negative span index cannot happen"
+            )]
+            let order = u32::try_from(at as u64).unwrap_or(u32::MAX - 1);
+            let lo = range.start + at * range.interval;
+            let label = format!(
+                "{}-{}",
+                general_number(lo),
+                general_number(lo + range.interval)
+            );
+            Item::Level { label, order }
+        })
+        .collect()
 }
 
 /// What `function` makes of `values`. An error among them is the answer, as
@@ -674,7 +1520,7 @@ fn summarise<'a, K: PartialEq>(
                 filled += 1;
             }
             Item::Blank => {}
-            Item::Text(_) | Item::Bool(_) => filled += 1,
+            Item::Text(_) | Item::Bool(_) | Item::Level { .. } => filled += 1,
         }
     }
     let n = f64::from(u32::try_from(numbers.len()).unwrap_or(u32::MAX));
@@ -777,7 +1623,8 @@ struct Axis<'a> {
 impl Axis<'_> {
     fn entries(
         fields: &[i32],
-        def: &PivotTable,
+        subtotals: &[bool],
+        values: usize,
         data: &[Vec<Item>],
         records: &[usize],
         grand: bool,
@@ -786,8 +1633,8 @@ impl Axis<'_> {
         let subtotals = fields
             .iter()
             .enumerate()
-            .map(|(level, &f)| {
-                usize::try_from(f).is_ok_and(|f| def.fields[f].default_subtotal)
+            .map(|(level, _)| {
+                subtotals.get(level).copied().unwrap_or(false)
                     && fields[level + 1..].iter().any(real)
             })
             .collect();
@@ -795,7 +1642,7 @@ impl Axis<'_> {
             fields,
             data,
             subtotals,
-            values: def.data_fields.len(),
+            values,
             out: Vec::new(),
         };
         axis.level(0, records.to_vec(), Vec::new());
@@ -880,15 +1727,30 @@ struct Layout {
 }
 
 impl Layout {
-    fn new(def: &PivotTable, data: &[Vec<Item>], kept: &[usize]) -> Self {
+    fn new(def: &PivotTable, plans: &Plans, data: &[Vec<Item>], kept: &[usize]) -> Self {
         let height = data.iter().map(Vec::len).max().unwrap_or(0);
-        let rows = Axis::entries(&def.row_fields, def, data, kept, def.column_grand_totals);
-        let mut cols = Axis::entries(&def.column_fields, def, data, kept, def.row_grand_totals);
-        if def.data_fields.is_empty() && def.column_fields.is_empty() {
+        let values = def.data_fields.len();
+        let rows = Axis::entries(
+            &plans.row_list,
+            &plans.row_subtotals,
+            values,
+            data,
+            kept,
+            def.column_grand_totals,
+        );
+        let mut cols = Axis::entries(
+            &plans.col_list,
+            &plans.col_subtotals,
+            values,
+            data,
+            kept,
+            def.row_grand_totals,
+        );
+        if values == 0 && plans.col_list.is_empty() {
             cols.clear();
         }
-        let leaf_of = leaves(&def.column_fields, data, kept, height);
-        let row_leaf_of = leaves(&def.row_fields, data, kept, height);
+        let leaf_of = leaves(&plans.col_list, data, kept, height);
+        let row_leaf_of = leaves(&plans.row_list, data, kept, height);
         let spans = cols
             .iter()
             .map(|c| {
@@ -902,8 +1764,8 @@ impl Layout {
                 (lo, hi)
             })
             .collect();
-        let header_rows = 1 + def.column_fields.len();
-        let label_cols = def.row_fields.len().max(1);
+        let header_rows = 1 + plans.col_list.len();
+        let label_cols = plans.rows.len().max(1);
         Self {
             header_rows,
             label_cols,
@@ -920,8 +1782,8 @@ impl Layout {
         &self,
         def: &PivotTable,
         data: &[Vec<Item>],
-        names: &[String],
         captions: &PivotCaptions,
+        plans: &Plans,
     ) -> Vec<(usize, usize, CellValue)> {
         let caption = |i: usize| {
             def.data_fields
@@ -929,27 +1791,25 @@ impl Layout {
                 .and_then(|d| d.name.clone())
                 .unwrap_or_default()
         };
-        let field_name = |x: i32| {
-            usize::try_from(x)
-                .ok()
-                .and_then(|f| names.get(f))
-                .map_or_else(|| captions.values.clone(), Clone::clone)
-        };
         let single = def.data_fields.len() == 1;
         let mut out = Vec::new();
         let last_header = self.header_rows - 1;
 
         // The headers.
-        if !def.column_fields.is_empty() && single && !def.row_fields.is_empty() {
+        if !plans.cols.is_empty() && single && !plans.rows.is_empty() {
             out.push((0, 0, CellValue::text(caption(0))));
         }
-        for (j, &x) in def.column_fields.iter().enumerate() {
-            out.push((0, self.label_cols + j, CellValue::text(field_name(x))));
+        for (j, slot) in plans.cols.iter().enumerate() {
+            out.push((
+                0,
+                self.label_cols + j,
+                CellValue::text(slot.header.as_str()),
+            ));
         }
-        for (i, &x) in def.row_fields.iter().enumerate() {
-            out.push((last_header, i, CellValue::text(field_name(x))));
+        for (i, slot) in plans.rows.iter().enumerate() {
+            out.push((last_header, i, CellValue::text(slot.header.as_str())));
         }
-        if def.column_fields.is_empty() && single {
+        if plans.cols.is_empty() && single {
             out.push((last_header, self.label_cols, CellValue::text(caption(0))));
         }
         for (k, col) in self.cols.iter().enumerate() {
@@ -962,7 +1822,7 @@ impl Layout {
         for (k, row) in self.rows.iter().enumerate() {
             let before = k.checked_sub(1).and_then(|b| self.rows.get(b));
             let r = self.header_rows + k;
-            if def.row_fields.is_empty() {
+            if plans.rows.is_empty() {
                 if single {
                     out.push((r, 0, CellValue::text(caption(0))));
                 }

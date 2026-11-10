@@ -20,8 +20,8 @@ use crate::coordinate::{CellRef, Col, Range, Row, shift_references};
 use crate::error::{CellError, Error, Result};
 use crate::model::chart::{Chart, ChartEx, ChartExOrigin, ChartOrigin};
 use crate::model::pivot::{
-    CacheField, CacheSource, DataField, PivotAxis, PivotCache, PivotField, PivotOrigin,
-    PivotStyleInfo, PivotTable, Subtotal,
+    CacheField, CacheSource, DataField, DatePart, Grouping, PivotAxis, PivotCache, PivotField,
+    PivotOrigin, PivotStyleInfo, PivotTable, RangeGroup, Subtotal,
 };
 use crate::model::protection::PasswordAttrs;
 use crate::model::table::{Table, TableColumn, TableStyle};
@@ -1207,6 +1207,9 @@ fn read_pivot_cache<R: Read + Seek>(
     // Shared items belong to the field being read; they are only listed when
     // the cache was saved with its data.
     let mut in_shared = false;
+    // The `base` of the `<fieldGroup>` being read: the field whose values
+    // the grouping derives its levels from.
+    let mut group_base = None;
     loop {
         match reader.read_event() {
             Ok(Event::Start(ref e) | Event::Empty(ref e)) => match e.local_name().as_ref() {
@@ -1219,16 +1222,30 @@ fn read_pivot_cache<R: Read + Seek>(
                 }
                 "cacheField" => {
                     raw.push(Vec::new());
+                    group_base = None;
                     out.fields.push(CacheField {
                         name: attr(e, "name").unwrap_or_default(),
                         number_format: attr(e, "numFmtId").and_then(|v| v.parse().ok()),
                         shared_items: Vec::new(),
+                        formula: attr(e, "formula"),
+                        grouping: None,
                     });
+                }
+                "fieldGroup" => {
+                    group_base = attr(e, "base").and_then(|v| v.parse().ok());
+                }
+                "rangePr" => {
+                    let own = u32::try_from(out.fields.len().saturating_sub(1)).ok();
+                    if let Some(field) = out.fields.last_mut() {
+                        field.grouping = range_group(e, group_base, own);
+                    }
                 }
                 "sharedItems" => in_shared = true,
                 // Inside `<sharedItems>` the tag says the type and `v` the
                 // value: `s` text, `n` number, `b` boolean, `d` date, `m` a
-                // blank, which has no value at all.
+                // blank, which has no value at all. A `fieldGroup`'s
+                // `groupItems` spell their items the same way; they stay
+                // unread - the group's labels come from the settings.
                 "s" | "n" | "b" | "d" | "e" | "m" if in_shared => {
                     let value = attr(e, "v");
                     if let (Some(field), Some(value)) = (out.fields.last_mut(), &value) {
@@ -1247,6 +1264,62 @@ fn read_pivot_cache<R: Read + Seek>(
         }
     }
     Ok((out, raw))
+}
+
+/// The grouping a `<rangePr>` spells: one part of a date, or the span
+/// grouping of numbers. `base` names the field whose values the levels come
+/// from; it is this field's own index when the grouping rides the base
+/// field itself, which is how Excel spells a grouping with a single level.
+///
+/// What this crate does not lay out reads as no grouping, and the rest of
+/// the file keeps its bytes: grouping over seconds, minutes or hours, and a
+/// day grouping with a step above one day.
+fn range_group(
+    e: &quick_xml::events::BytesStart<'_>,
+    base: Option<u32>,
+    own: Option<u32>,
+) -> Option<Grouping> {
+    let parent = match (base, own) {
+        (Some(base), Some(own)) if base != own => Some(base),
+        _ => None,
+    };
+    let part = |p| {
+        Some(Grouping {
+            parts: vec![p],
+            range: None,
+            parent,
+        })
+    };
+    match attr(e, "groupBy").as_deref() {
+        Some("years") => part(DatePart::Years),
+        Some("quarters") => part(DatePart::Quarters),
+        Some("months") => part(DatePart::Months),
+        Some("days") if attr(e, "groupInterval").is_none() => part(DatePart::Days),
+        None | Some("range") => {
+            let start = attr(e, "startNum").and_then(|v| v.parse::<f64>().ok())?;
+            let end = attr(e, "endNum")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(start);
+            let interval = attr(e, "groupInterval")
+                .and_then(|v| v.parse::<f64>().ok())
+                .unwrap_or(1.0);
+            (interval.is_finite()
+                && interval > 0.0
+                && start.is_finite()
+                && end.is_finite()
+                && start <= end)
+                .then_some(Grouping {
+                    parts: Vec::new(),
+                    range: Some(RangeGroup {
+                        start,
+                        end,
+                        interval,
+                    }),
+                    parent,
+                })
+        }
+        _ => None,
+    }
 }
 
 /// One element of a part, from its opening tag to its closing one, as it

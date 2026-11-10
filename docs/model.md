@@ -366,6 +366,14 @@ location, the fields on each axis, the values area with its functions, style,
 grand totals), and `Spreadsheet::pivot_caches` the data they read
 (`PivotCache`: source sheet and range, or a name, and the columns).
 
+A cache field may compute its values (`CacheField::formula`: arithmetic over
+the other fields of the same row, no functions, as Excel's calculated fields)
+and may group them (`CacheField::grouping`): date parts - years, quarters,
+months, days, senior levels first - or spans of numbers, values past the
+range falling into the rest group. A file spells a multi-part grouping the
+way Excel does: the base field carries the finest part, and a field per
+coarser part points at it through `Grouping::parent`.
+
 An untouched report or cache goes back byte for byte. One changed or built in
 code is written the way excelize writes a new pivot: fields on their axes, the
 values area and a placeholder for the laid-out rows, with the cache marked
@@ -377,8 +385,8 @@ report removed from the sheet takes its part with it.
 lays a report out in the cells, as Excel's Refresh does: it reads the source,
 writes labels and numbers in Excel's tabular form from the report's top-left
 corner, clears the old report and brings the definition and its cache up to
-date. `PivotCaptions` carries the words ("Grand Total", "Sum of {}"), English
-by default.
+date. `PivotCaptions` carries the words ("Grand Total", "Sum of {}",
+"Years", "Qtr{}", "(other)"), English by default.
 
 ```rust
 # use excelerate::Range;
