@@ -192,6 +192,7 @@ fn defined_names_are_rewritten_too() {
         sheet: None,
         formula: "Data!$A$1:$A$3".into(),
         hidden: false,
+        comment: None,
     });
 
     insert_rows(&mut book, 0, row(2), 1).unwrap();
@@ -459,12 +460,14 @@ fn busy_book() -> Spreadsheet {
         sheet: None,
         formula: "Data!$A$1:$H$30".into(),
         hidden: false,
+        comment: None,
     });
     book.defined_names.push(DefinedName {
         name: "Gone".into(),
         sheet: Some(0),
         formula: "Data!$A$9".into(),
         hidden: false,
+        comment: None,
     });
     book
 }

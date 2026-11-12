@@ -1061,6 +1061,7 @@ impl<'a> Reader<'a> {
                 sheet: sheet.checked_sub(1).map(usize::from),
                 formula,
                 hidden: flags & 0x01 != 0,
+                comment: None,
             });
         }
     }

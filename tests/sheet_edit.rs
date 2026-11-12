@@ -96,6 +96,7 @@ fn a_removed_sheet_leaves_ref_errors_behind() {
         sheet: None,
         formula: "Data!A1".into(),
         hidden: false,
+        comment: None,
     });
     // A name belonging to the sheet after the one removed keeps its sheet.
     wb.defined_names.push(DefinedName {
@@ -103,6 +104,7 @@ fn a_removed_sheet_leaves_ref_errors_behind() {
         sheet: Some(3),
         formula: "A1".into(),
         hidden: false,
+        comment: None,
     });
     remove_sheet(&mut wb, 1).unwrap();
 

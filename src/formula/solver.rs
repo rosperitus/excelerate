@@ -1350,6 +1350,7 @@ pub fn save_model(book: &mut Spreadsheet, sheet: usize, model: &SolverModel) {
             sheet: Some(sheet),
             formula,
             hidden: true,
+            comment: None,
         });
     }
 }

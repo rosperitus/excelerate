@@ -596,6 +596,7 @@ impl NameRecord {
             sheet: self.sheet,
             formula,
             hidden: self.hidden,
+            comment: None,
         })
     }
 }

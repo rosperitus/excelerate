@@ -3341,6 +3341,7 @@ fn read_defined_names<R: Read + Seek>(
                     sheet: attr(&e, "localSheetId").and_then(|v| v.parse().ok()),
                     formula: String::new(),
                     hidden: attr(&e, "hidden").is_some_and(|v| is_true(&v)),
+                    comment: attr(&e, "comment").filter(|c| !c.is_empty()),
                 });
                 open = true;
             }

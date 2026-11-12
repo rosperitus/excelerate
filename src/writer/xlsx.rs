@@ -516,6 +516,9 @@ fn workbook(book: &Spreadsheet) -> String {
             if name.hidden {
                 s.push_str(r#" hidden="1""#);
             }
+            if let Some(comment) = &name.comment {
+                let _ = write!(s, r#" comment="{}""#, escape(comment));
+            }
             let _ = write!(s, ">{}</definedName>", escape(&name.formula));
         }
         s.push_str("</definedNames>");

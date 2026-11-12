@@ -46,12 +46,14 @@ fn book() -> Spreadsheet {
         sheet: None,
         formula: "0.15".into(),
         hidden: false,
+        comment: None,
     });
     wb.defined_names.push(DefinedName {
         name: "Числа".into(),
         sheet: None,
         formula: "Data!$A$1:$A$3".into(),
         hidden: false,
+        comment: None,
     });
     // The same name means one thing on one sheet and another on the next.
     wb.defined_names.push(DefinedName {
@@ -59,12 +61,14 @@ fn book() -> Spreadsheet {
         sheet: Some(0),
         formula: "111".into(),
         hidden: false,
+        comment: None,
     });
     wb.defined_names.push(DefinedName {
         name: "Свой".into(),
         sheet: Some(1),
         formula: "222".into(),
         hidden: false,
+        comment: None,
     });
     // A name that stands for itself.
     wb.defined_names.push(DefinedName {
@@ -72,6 +76,7 @@ fn book() -> Spreadsheet {
         sheet: None,
         formula: "Петля+1".into(),
         hidden: false,
+        comment: None,
     });
     wb
 }
@@ -1915,6 +1920,7 @@ fn a_defined_name_holding_a_lambda_is_a_function() {
             sheet: None,
             formula: formula.into(),
             hidden: false,
+            comment: None,
         });
     }
     let mut engine = Engine::new(&wb);

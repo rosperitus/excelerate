@@ -531,6 +531,7 @@ fn isolated(dir: &str) -> Fallible {
             sheet: None,
             formula: formula.to_owned(),
             hidden: true,
+            comment: None,
         });
     }
     excelerate::writer::xlsx::write_xlsx(&book, format!("{dir}/probe-cx-2-имена.xlsx"))?;

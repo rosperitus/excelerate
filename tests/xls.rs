@@ -215,12 +215,14 @@ fn every_kind_of_formula_survives_a_round_trip() {
         sheet: None,
         formula: "'Данные 2'!$B$2".to_owned(),
         hidden: false,
+        comment: None,
     });
     book.defined_names.push(DefinedName {
         name: "_xlnm.Print_Area".to_owned(),
         sheet: Some(0),
         formula: "Worksheet!$A$1:$C$10".to_owned(),
         hidden: false,
+        comment: None,
     });
     let formulas = [
         "(A1+B1)*2",

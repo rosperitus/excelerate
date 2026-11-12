@@ -1474,6 +1474,7 @@ fn a_dimension_reads_its_labels_from_the_cells() {
         sheet: None,
         formula: "Worksheet!$A$1:$A$3".into(),
         hidden: true,
+        comment: None,
     });
     let dimension = Dimension {
         role: DimensionRole::Categories,

@@ -610,16 +610,25 @@ fn printing_and_links_survive() {
         sheet: Some(0),
         formula: "Печать!$A$1:$K$50".into(),
         hidden: false,
+        comment: None,
     });
     book.defined_names.push(DefinedName {
         name: "Ставка".into(),
         sheet: None,
         formula: "0.15".into(),
-        hidden: false,
+        hidden: true,
+        // A note with a quote and an ampersand, to prove both the attribute
+        // escaping and the read-back.
+        comment: Some("годовая, \"на 2026\" & дальше".into()),
     });
 
     let back = cycle(&book);
     assert_same(&book, &back);
+    assert_eq!(
+        back.defined_names[1].comment.as_deref(),
+        Some("годовая, \"на 2026\" & дальше"),
+        "the name manager keeps its note"
+    );
     let sheet = back.sheet(0).unwrap();
     assert_eq!(sheet.page_setup.scale, Some(21));
     assert_eq!(

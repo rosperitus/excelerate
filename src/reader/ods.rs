@@ -417,6 +417,7 @@ impl ContentReader {
                 sheet: None,
                 formula: odf_formula::to_a1(&target),
                 hidden: false,
+                comment: None,
             });
         }
         Ok(self.book)

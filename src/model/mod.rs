@@ -1109,6 +1109,9 @@ pub struct DefinedName {
     pub formula: String,
     /// Whether Excel hides it from the name manager.
     pub hidden: bool,
+    /// The note the name manager shows beside the name; `None` when there is
+    /// none. Excel keeps it in the `comment` attribute.
+    pub comment: Option<String>,
 }
 
 /// What a conditional formatting rule tests.

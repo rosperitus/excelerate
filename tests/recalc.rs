@@ -432,6 +432,7 @@ fn implicit_intersection_reaches_operators_and_parameters() {
         sheet: None,
         formula: "S!$A$1:$A$3".to_owned(),
         hidden: false,
+        comment: None,
     });
     recalculate(&mut book, None, &Options::default());
 
@@ -502,6 +503,7 @@ fn a_name_is_followed_to_the_cells_it_stands_for() {
         sheet: None,
         formula: "S!$B$1".into(),
         hidden: false,
+        comment: None,
     });
     recalculate(&mut book, None, &Options::default());
     assert_eq!(cached(&book, 0, "A1"), Some(20.0));
@@ -735,6 +737,7 @@ fn reference_of_resolves_single_cells_through_names_and_index() {
             sheet: None,
             formula: formula.to_owned(),
             hidden: false,
+            comment: None,
         });
     }
     let mut engine = Engine::new(&book);

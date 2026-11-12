@@ -457,6 +457,7 @@ mod tests {
             sheet: None,
             formula: "('My Data'!$A$1:$A$2,'My Data'!$C$3)".into(),
             hidden: false,
+            comment: None,
         });
         book
     }

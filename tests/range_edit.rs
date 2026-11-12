@@ -189,6 +189,7 @@ fn moving_a_sheet_renumbers_what_counts_tabs_and_leaves_the_formulas_alone() {
         sheet: Some(2),
         formula: "Three!$A$1".to_owned(),
         hidden: false,
+        comment: None,
     });
     wb.set_active(2).unwrap();
 
