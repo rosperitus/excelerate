@@ -502,6 +502,7 @@ impl Book {
             sheet,
             formula: formula.to_owned(),
             hidden: false,
+            comment: None,
         });
         self.forget_dependencies();
         Ok(())
