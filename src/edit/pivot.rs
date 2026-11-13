@@ -344,11 +344,17 @@ pub fn refresh_pivot(
         .ok_or(Error::SheetIndexOutOfRange(source_sheet))?;
     let names = headings(src, source)?;
     let count = names.len();
-    let cache_fields = book.pivot_caches[cache_at].fields.clone();
+    let mut cache_fields = book.pivot_caches[cache_at].fields.clone();
     let width = count.max(cache_fields.len());
 
     check_fields(&def, count, cache_fields.len())?;
     check_grouping(&cache_fields, count)?;
+    // A foreign file spreads a multi-part grouping over several cache
+    // fields: the base carries the finest part, one field per coarser part
+    // points at it. For the layout they fold back into the base, which
+    // lays every level out as one multi-part grouping; the axis then lists
+    // the base once.
+    fold_groupings(&mut def, &mut cache_fields);
     normalise(&mut def, &names, &cache_fields, captions);
     let (on_axis, read) = columns_to_read(&def, &cache_fields, count)?;
     let mut data = records(src, source, width, &read)?;
@@ -941,6 +947,90 @@ fn records(
             .collect();
     }
     Ok(out)
+}
+
+/// Folds the level fields of a foreign grouping back into their base.
+///
+/// A file written by Excel (or by this crate) spells a grouping over
+/// several date parts as one field per coarser part beside the base, whose
+/// grouping keeps the finest part alone. The layout derives every level
+/// from a multi-part grouping on the base, so the coarser parts move into
+/// it and every reference to a level field - on the axes, and the field a
+/// page filter sits on - comes back to the base. The level fields stay in
+/// the cache: the file spells them back out on write.
+fn fold_groupings(def: &mut PivotTable, fields: &mut [CacheField]) {
+    // The part each level field carries, by the base field it points at.
+    let levels: Vec<(usize, usize, DatePart)> = fields
+        .iter()
+        .enumerate()
+        .filter_map(|(i, field)| {
+            let grouping = field.grouping.as_ref()?;
+            let parent = usize::try_from(grouping.parent?).ok()?;
+            let part = (*grouping.parts.first()?).max(*grouping.parts.last()?);
+            Some((i, parent, part))
+        })
+        .collect();
+    if levels.is_empty() {
+        return;
+    }
+    for (_, base, part) in &levels {
+        let Some(grouping) = fields
+            .get_mut(*base)
+            .and_then(|field| field.grouping.as_mut())
+        else {
+            continue;
+        };
+        if !grouping.parts.contains(part) {
+            grouping.parts.push(*part);
+        }
+        grouping.parts.sort();
+    }
+    let base_of = |x: &mut i32| {
+        let Ok(at) = usize::try_from(*x) else {
+            return;
+        };
+        if let Some(&(_, base, _)) = levels.iter().find(|(i, _, _)| *i == at) {
+            *x = i32::try_from(base).unwrap_or(*x);
+        }
+    };
+    for list in [
+        &mut def.row_fields,
+        &mut def.column_fields,
+        &mut def.page_fields,
+    ] {
+        for x in list.iter_mut() {
+            base_of(x);
+        }
+        // A senior level and the base the file listed beside it fold into
+        // one entry.
+        let mut seen: Vec<i32> = Vec::new();
+        list.retain(|&x| {
+            x == VALUES
+                || !seen.contains(&x) && {
+                    seen.push(x);
+                    true
+                }
+        });
+    }
+    // The item a page filter shows was read off the level field's own
+    // `<pivotField>`; it travels with the base now.
+    for (_, base_index, _) in &levels {
+        if def
+            .fields
+            .get(*base_index)
+            .and_then(|f| f.page_item.as_ref())
+            .is_some()
+        {
+            continue;
+        }
+        let Some((i, _, _)) = levels.iter().find(|(_, b, _)| *b == *base_index) else {
+            continue;
+        };
+        let item = def.fields.get(*i).and_then(|f| f.page_item.clone());
+        if let Some(slot) = def.fields.get_mut(*base_index) {
+            slot.page_item = item;
+        }
+    }
 }
 
 /// Brings the definition in line with its source, as Excel does on refresh.

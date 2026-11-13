@@ -1,7 +1,7 @@
 //! Date and number grouping and calculated fields of a pivot cache: the
 //! model, the reader/writer and the report they lay out.
 
-#![allow(clippy::unwrap_used, clippy::cast_possible_truncation)]
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::cast_possible_truncation)]
 
 use std::io::Cursor;
 
@@ -360,5 +360,37 @@ fn grouping_and_formulas_round_trip_xlsx() {
         grid(&back, 1, back_range),
         grid(&book, 1, before_range),
         "the report reads the same from the file as from the model"
+    );
+}
+#[test]
+fn a_multi_part_group_round_trips_and_lays_out_again() {
+    let mut book = dated_book(Grouping {
+        parts: vec![DatePart::Years, DatePart::Months],
+        range: None,
+        parent: None,
+    });
+    let before_range = refresh_pivot(&mut book, 1, 0, &PivotCaptions::default()).unwrap();
+    let before = grid(&book, 1, before_range);
+    let mut bytes = Vec::new();
+    write_xlsx_to(&book, Cursor::new(&mut bytes)).unwrap();
+    let mut back = excelerate::reader::xlsx::read_xlsx_from(Cursor::new(bytes)).unwrap();
+    let cache = &back.pivot_caches[0];
+    let base = cache
+        .fields
+        .iter()
+        .find(|f| f.name == "Дата")
+        .and_then(|f| f.grouping.clone())
+        .expect("the base keeps its grouping");
+    let levels = cache
+        .fields
+        .iter()
+        .filter_map(|f| f.grouping.clone())
+        .filter(|g| g.parent.is_some())
+        .count();
+    let after_range = refresh_pivot(&mut back, 1, 0, &PivotCaptions::default()).unwrap();
+    let after = grid(&back, 1, after_range);
+    assert_eq!(
+        after, before,
+        "the report lays out the same after a round trip ({levels} level fields, base parts {base:?})"
     );
 }
