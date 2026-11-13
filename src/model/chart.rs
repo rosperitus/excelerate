@@ -58,6 +58,9 @@ pub struct Chart {
     pub format: Option<ShapeFormat>,
     /// The fill and outline of the plot area (`c:plotArea/c:spPr`).
     pub plot_format: Option<ShapeFormat>,
+    /// The font of all the chart's text (`c:chartSpace/c:txPr`), what
+    /// Excel's "Font" on the chart area sets.
+    pub text: Option<ChartFont>,
     /// Everything the model does not name, where it stood.
     pub markup: ChartMarkup,
     /// The part this chart was read from; `None` for a chart made in code.
@@ -104,6 +107,7 @@ impl Chart {
             legend,
             format,
             plot_format,
+            text,
             markup,
             origin: _,
         } = self;
@@ -114,6 +118,7 @@ impl Chart {
             && *legend == other.legend
             && *format == other.format
             && *plot_format == other.plot_format
+            && *text == other.text
             && *markup == other.markup
     }
 
@@ -152,6 +157,7 @@ impl Chart {
             after_axes,
             after_legend,
             after_chart,
+            chart_text: _,
         } = &mut self.markup;
         let mut out = vec![
             before_chart,
@@ -1215,14 +1221,17 @@ pub struct DataLabels {
     pub show_series_name: bool,
     /// Shows the share of the whole, on a pie.
     pub show_percent: bool,
+    /// The number format of the labels (`c:numFmt`) and whether it follows
+    /// the source cells.
+    pub number_format: Option<(String, bool)>,
     /// The element as read; `None` for one made in code.
     pub source: Option<String>,
 }
 
 /// The label of one point, set apart from the rest (`c:dLbl`).
 ///
-/// Its own text, layout, number format, font and fill are not modelled and
-/// stay in `source`.
+/// Its own text, layout, font and fill are not modelled and stay in
+/// `source`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -1245,6 +1254,9 @@ pub struct DataLabel {
     pub show_series_name: bool,
     /// Shows the share of the whole, on a pie.
     pub show_percent: bool,
+    /// This point's own number format (`c:numFmt`) and whether it follows
+    /// the source cells.
+    pub number_format: Option<(String, bool)>,
     /// The element as read; `None` for one made in code.
     pub source: Option<String>,
 }
@@ -1579,6 +1591,26 @@ impl LegendPosition {
     }
 }
 
+/// The font of the chart's text, from `c:chartSpace/c:txPr`.
+///
+/// A font set here applies to every label, tick and title of the chart, as
+/// the chart area font does in Excel.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ChartFont {
+    /// Size in points.
+    pub size: Option<f64>,
+    /// Bold text.
+    pub bold: bool,
+    /// Italic text.
+    pub italic: bool,
+    /// The Latin typeface.
+    pub name: Option<String>,
+    /// The colour of the text.
+    pub color: Option<ChartColor>,
+    /// The element as read; `None` for one made in code.
+    pub source: Option<String>,
+}
+
 /// What a chart says beyond the model, split where the model's elements sit.
 ///
 /// Each slot is the markup between two elements the model does name, so a
@@ -1598,6 +1630,9 @@ pub struct ChartMarkup {
     pub after_legend: String,
     /// After the chart: chart area formatting, text, print settings.
     pub after_chart: String,
+    /// The chart's text properties (`c:txPr`), as read; a font set through
+    /// [`Chart::text`] replaces it.
+    pub chart_text: String,
 }
 
 /// A chart of the 2016 schema: waterfall, funnel, treemap and the rest.

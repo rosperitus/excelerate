@@ -1487,3 +1487,37 @@ fn a_dimension_reads_its_labels_from_the_cells() {
         Some(vec![(0, "North".to_owned()), (2, "2024".to_owned())])
     );
 }
+
+#[test]
+fn chart_text_and_label_number_formats_are_read_and_written() {
+    let mut book = open("chart2.xlsx");
+    let chart = &mut book.sheet_mut(0).unwrap().charts[0];
+    // The chart space carries an empty txPr; Excel's default font reads as
+    // "nothing set".
+    let font = chart.text.clone().expect("the chart has text properties");
+    assert_eq!((font.size, font.bold, font.italic), (None, false, false));
+    assert_eq!(font.name, None);
+
+    let mut font = font;
+    font.size = Some(14.0);
+    font.bold = true;
+    font.italic = true;
+    font.name = Some("Arial".to_owned());
+    font.color = Some(ChartColor::rgb(0xFF_0000));
+    chart.text = Some(font);
+    chart.plots[0].labels = Some(DataLabels {
+        show_value: true,
+        number_format: Some(("0.0%".to_owned(), false)),
+        ..DataLabels::default()
+    });
+
+    let back = cycle(&book);
+    let chart = &back.sheet(0).unwrap().charts[0];
+    let font = chart.text.as_ref().expect("text properties are written");
+    assert_eq!(font.size, Some(14.0));
+    assert!(font.bold && font.italic);
+    assert_eq!(font.name.as_deref(), Some("Arial"));
+    assert_eq!(font.color, Some(ChartColor::rgb(0xFF_0000)));
+    let labels = chart.plots[0].labels.as_ref().unwrap();
+    assert_eq!(labels.number_format, Some(("0.0%".to_owned(), false)));
+}

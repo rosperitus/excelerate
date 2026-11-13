@@ -18,14 +18,14 @@ use crate::error::{Error, Result};
 use crate::model::chart::{Anchor, ChartText, DataSource, Marker, Plot, PlotKind, Series, Title};
 use crate::model::chart::{BarDirection, Chart, ChartAxis, ManualLayout};
 use crate::model::chart::{
-    ChartColor, ColorBase, DataLabel, DataLabels, DataPoint, Fill, GradientPath, GradientStop,
-    LabelPosition, LineFormat, SeriesMarker, ShapeFormat, UpDownBars,
+    ChartColor, ChartFont, ColorBase, DataLabel, DataLabels, DataPoint, Fill, GradientPath,
+    GradientStop, LabelPosition, LineFormat, SeriesMarker, ShapeFormat, UpDownBars,
 };
 use crate::model::{Attachment, OpaquePart, Spreadsheet, Worksheet};
 use crate::reader::chart::{FILLS, Node, children, read_chart, rich_text, scan_drawing};
 use crate::reader::chart::{
-    read_fill, read_label, read_labels, read_line, read_marker, read_point, read_shape_format,
-    read_up_down_bars, tag_attr,
+    read_chart_font, read_fill, read_label, read_labels, read_line, read_marker, read_point,
+    read_shape_format, read_up_down_bars, tag_attr,
 };
 use core::ops::Range;
 use std::borrow::Cow;
@@ -594,6 +594,7 @@ pub(crate) fn render_chart(chart: &Chart) -> String {
     if let Some(format) = &chart.format {
         w.s.push_str(&shape_format(&w.p, format));
     }
+    w.s.push_str(&chart_text(&w.p, chart.text.as_ref(), &m.chart_text));
     w.s.push_str(&m.after_chart);
     w.close("chartSpace");
     w.s
@@ -1395,6 +1396,10 @@ fn data_labels(p: &str, labels: &DataLabels) -> String {
         ],
     );
     owned.push((0, labels.points.iter().map(|l| data_label(p, l)).collect()));
+    owned.push((
+        num_fmt_slot(LABELS),
+        label_num_fmt(p, labels.number_format.as_ref()),
+    ));
     label_element(p, "dLbls", LABELS, read, owned, labels.deleted)
 }
 
@@ -1419,7 +1424,61 @@ fn data_label(p: &str, label: &DataLabel) -> String {
         ],
     );
     owned.push((0, format!(r#"<{p}idx val="{}"/>"#, label.index)));
+    owned.push((
+        num_fmt_slot(LABEL),
+        label_num_fmt(p, label.number_format.as_ref()),
+    ));
     label_element(p, "dLbl", LABEL, read, owned, label.deleted)
+}
+
+/// Slot `c:numFmt` takes in the order of a label element.
+fn num_fmt_slot(order: &[&[&str]]) -> usize {
+    order
+        .iter()
+        .position(|names| names.contains(&"numFmt"))
+        .unwrap_or(0)
+}
+
+/// `<c:numFmt>` of a label, empty when it has none of its own.
+fn label_num_fmt(p: &str, format: Option<&(String, bool)>) -> String {
+    format.map_or_else(String::new, |(code, linked)| {
+        format!(
+            r#"<{p}numFmt formatCode="{}" sourceLinked="{}"/>"#,
+            escape(code),
+            u8::from(*linked)
+        )
+    })
+}
+
+/// The chart's text properties: the element as read while the font says what
+/// it said, one built from the model otherwise.
+fn chart_text(p: &str, font: Option<&ChartFont>, read: &str) -> String {
+    let node = element(read);
+    match (font, node) {
+        (None, _) => read.to_owned(),
+        (Some(font), Some(node)) if read_chart_font(&node) == *font => read.to_owned(),
+        (Some(font), _) => {
+            let mut attrs = String::new();
+            if let Some(size) = font.size {
+                let _ = write!(attrs, r#" sz="{:.0}""#, size * 100.0);
+            }
+            if font.bold {
+                attrs.push_str(r#" b="1""#);
+            }
+            if font.italic {
+                attrs.push_str(r#" i="1""#);
+            }
+            let color = font.color.as_ref().map_or_else(String::new, |c| {
+                format!("<a:solidFill>{}</a:solidFill>", color_xml(c))
+            });
+            let latin = font.name.as_ref().map_or_else(String::new, |name| {
+                format!(r#"<a:latin typeface="{}"/>"#, escape(name))
+            });
+            format!(
+                r#"<{p}txPr xmlns:a="{MAIN_NS}"><a:bodyPr/><a:lstStyle/><a:p><a:pPr><a:defRPr{attrs}>{color}{latin}</a:defRPr></a:pPr></a:p></{p}txPr>"#
+            )
+        }
+    }
 }
 
 /// What a label element says through the model, as slots of `order`: the

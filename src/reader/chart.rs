@@ -10,9 +10,9 @@
 use crate::coordinate::{Col, Row};
 use crate::model::chart::{
     Anchor, AxisKind, AxisMarkup, AxisPosition, BarDirection, BinEdge, Binning, Bins, Chart,
-    ChartAxis, ChartColor, ChartEx, ChartLines, ChartText, ColorBase, ColorTransform, DataLabel,
-    DataLabels, DataPoint, DataSource, Dimension, DimensionRole, EditAs, ExLabels, ExLegend,
-    ExPoint, ExSeries, Fill, GradientPath, GradientStop, Grouping, LabelPosition, Legend,
+    ChartAxis, ChartColor, ChartEx, ChartFont, ChartLines, ChartText, ColorBase, ColorTransform,
+    DataLabel, DataLabels, DataPoint, DataSource, Dimension, DimensionRole, EditAs, ExLabels,
+    ExLegend, ExPoint, ExSeries, Fill, GradientPath, GradientStop, Grouping, LabelPosition, Legend,
     LegendPosition, LineFormat, ManualLayout, Marker, MarkerSymbol, Plot, PlotKind, RadarStyle,
     ScatterStyle, Series, SeriesLayout, SeriesMarker, ShapeFormat, Title, UpDownBars,
 };
@@ -366,6 +366,9 @@ pub(crate) fn read_chart(xml: &str) -> Option<(Chart, String, String)> {
             read_chart_body(&child, &mut out);
         } else if seen_chart && child.name == "spPr" {
             out.format = Some(read_shape_format(&child));
+        } else if seen_chart && child.name == "txPr" {
+            child.outer.clone_into(&mut out.markup.chart_text);
+            out.text = Some(read_chart_font(&child));
         } else if seen_chart {
             out.markup.after_chart.push_str(child.outer);
         } else {
@@ -831,6 +834,12 @@ pub(crate) fn read_labels(node: &Node<'_>) -> DataLabels {
         show_category_name: flag("showCatName"),
         show_series_name: flag("showSerName"),
         show_percent: flag("showPercent"),
+        number_format: find("numFmt").map(|n| {
+            (
+                n.attr_text("formatCode").unwrap_or_default(),
+                n.attr("sourceLinked").is_some_and(is_true),
+            )
+        }),
         source: Some(node.outer.to_owned()),
     }
 }
@@ -846,6 +855,7 @@ pub(crate) fn read_label(node: &Node<'_>) -> DataLabel {
         show_category_name,
         show_series_name,
         show_percent,
+        number_format,
         source,
     } = read_labels(node);
     DataLabel {
@@ -860,7 +870,39 @@ pub(crate) fn read_label(node: &Node<'_>) -> DataLabel {
         show_category_name,
         show_series_name,
         show_percent,
+        number_format,
         source,
+    }
+}
+
+/// Reads `<c:txPr>` of the chart space: the font of all its text.
+pub(crate) fn read_chart_font(node: &Node<'_>) -> ChartFont {
+    let def = node
+        .child("p")
+        .and_then(|p| p.child("pPr"))
+        .and_then(|p| p.child("defRPr"));
+    let Some(def) = def else {
+        return ChartFont {
+            source: Some(node.outer.to_owned()),
+            ..ChartFont::default()
+        };
+    };
+    let color = def
+        .children()
+        .iter()
+        .find(|n| FILLS.contains(&n.name) && n.name == "solidFill")
+        .and_then(|n| n.children().into_iter().next())
+        .and_then(|n| read_color(&n));
+    ChartFont {
+        size: def
+            .attr("sz")
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(|v| v / 100.0),
+        bold: def.attr("b").is_some_and(is_true),
+        italic: def.attr("i").is_some_and(is_true),
+        name: def.child("latin").and_then(|n| n.attr_text("typeface")),
+        color,
+        source: Some(node.outer.to_owned()),
     }
 }
 
